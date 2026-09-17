@@ -1607,8 +1607,8 @@ class RNRD_Admin {
 				</div>
 				<p class="rnrd-aside-card__version">v<?php echo esc_html( RNRD_VERSION ); ?></p>
 				<ul class="rnrd-aside-changes">
-					<li><strong><?php esc_html_e( 'Clearer admin tabs.', 'rankready-ai-llm-seo' ); ?></strong> <?php esc_html_e( 'AI Visibility, AI Content, and Settings now use focused subtabs so Brand Identity, API keys, and Advanced tools are easier to find.', 'rankready-ai-llm-seo' ); ?></li>
-					<li><strong><?php esc_html_e( 'More reliable saves.', 'rankready-ai-llm-seo' ); ?></strong> <?php esc_html_e( 'API keys always save, settings changes are verified, and Nginx sites get exact server-config guidance for the WebMCP endpoint.', 'rankready-ai-llm-seo' ); ?></li>
+					<li><strong><?php esc_html_e( 'Cached markdown.', 'rankready-ai-llm-seo' ); ?></strong> <?php esc_html_e( 'Post markdown is now generated on save and stored in post meta — requests are served instantly without on-the-fly conversion.', 'rankready-ai-llm-seo' ); ?></li>
+					<li><strong><?php esc_html_e( 'Page builder support.', 'rankready-ai-llm-seo' ); ?></strong> <?php esc_html_e( 'Elementor, Divi, WPBakery, Beaver Builder, Bricks, Oxygen, and BeTheme Muffin Builder content is now rendered and cleaned for AI surfaces.', 'rankready-ai-llm-seo' ); ?></li>
 				</ul>
 			</div>
 			<?php endif; ?>

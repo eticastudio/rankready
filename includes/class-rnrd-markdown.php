@@ -27,6 +27,24 @@ defined( 'ABSPATH' ) || exit;
 
 class RNRD_Markdown {
 
+	/**
+	 * Whether the current post_to_clean_markdown call should strip shortcodes
+	 * instead of executing them. Set to true by callers that pass
+	 * $run_shortcodes = false (e.g. on_save_post bulk generation).
+	 *
+	 * @var bool
+	 */
+	private static $strip_shortcodes = false;
+
+	/**
+	 * Guard: tracks which post IDs have already been processed in this
+	 * request to avoid double-regeneration across overlapping hooks
+	 * (wp_after_insert_post, save_post, transition_post_status).
+	 *
+	 * @var array<int, true>
+	 */
+	private static $processed_post_ids = array();
+
 	public static function init(): void {
 		// Admin-only hooks — gated so the markdown class (which MUST load on the
 		// frontend to serve .md) doesn't register no-op admin handlers on public
@@ -38,6 +56,9 @@ class RNRD_Markdown {
 		add_action( 'init',              array( self::class, 'add_rewrite_rules' ) );
 		// v1.2.0-rc.2 — priority 1 beats page builders (Bricks ~ default 10).
 		add_action( 'template_redirect', array( self::class, 'handle_request' ), 1 );
+
+		// v1.3.2 — Register page builder content filters.
+		self::register_page_builder_filters();
 
 		// Content negotiation: serve markdown when Accept: text/markdown is sent.
 		// Priority 2 — still before page builders but AFTER the explicit
@@ -77,6 +98,24 @@ class RNRD_Markdown {
 		add_action( 'save_post',              array( self::class, 'purge_post_md_url' ), 20, 1 );
 		add_action( 'transition_post_status', array( self::class, 'purge_post_md_on_status' ), 20, 3 );
 		add_action( 'before_delete_post',     array( self::class, 'purge_post_md_url' ), 20, 1 );
+
+		// v1.3.2 — Regenerate and cache post markdown on save/update.
+		// Priority 9999 ensures we run AFTER everything else: page builder meta
+		// saves, SEO plugin hooks, ACF field saves, Yoast/Rank Math, etc. The
+		// content we read must reflect the final saved state.
+		//
+		// Multiple hooks for reliability:
+		// - wp_after_insert_post (WP 5.6+): fires after ALL meta, terms, and
+		//   taxonomies are saved — the most reliable single hook.
+		// - save_post: fallback for edge cases (e.g. programmatic wp_update_post
+		//   calls that bypass the REST API flow).
+		// - transition_post_status: catches status changes from quick edit, bulk
+		//   actions, and REST API that may not trigger save_post.
+		// A static guard inside on_save_post() prevents double-processing within
+		// the same request.
+		add_action( 'wp_after_insert_post',   array( self::class, 'on_after_insert_post' ), 9999, 3 );
+		add_action( 'save_post',              array( self::class, 'on_save_post' ), 9999, 2 );
+		add_action( 'transition_post_status', array( self::class, 'on_transition_post_status' ), 9999, 3 );
 
 		// v1.0.1 — The Cloudflare APO ↔ content-negotiation notice
 		// (maybe_cloudflare_apo_notice) is registered above, inside the is_admin()
@@ -1735,6 +1774,784 @@ class RNRD_Markdown {
 		return null;
 	}
 
+	// ═══════════════════════════════════════════════════════════════════════════
+	// HTML-TO-MARKDOWN: Aggressive page-builder-safe converter
+	//
+	// Moved from RNRD_Llms_Txt in v1.3.2 — single source of truth for the
+	// HTML→Markdown conversion. Strips ALL page builder wrappers and converts
+	// semantic HTML to clean markdown. Page builder content is resolved via
+	// the `rankready_post_raw_content` filter (Elementor, BB, Divi, Oxygen,
+	// Bricks, WPBakery, BeTheme Muffin Builder). WooCommerce transactional
+	// blocks (cart, checkout, account) are stripped automatically.
+	// ═══════════════════════════════════════════════════════════════════════════
+
+	/**
+	 * Convert a post's HTML content to clean markdown.
+	 *
+	 * Strips ALL Elementor, Beaver Builder, Divi, WPBakery, and generic
+	 * page builder wrapper divs/sections/spans. Preserves only semantic
+	 * content: headings, paragraphs, lists, links, images, blockquotes, code.
+	 *
+	 * @param WP_Post $post             The post to convert.
+	 * @param bool    $run_shortcodes   True to execute shortcodes, false to strip them.
+	 * @return string Clean markdown body.
+	 */
+	public static function post_to_clean_markdown( $post, bool $run_shortcodes = true ): string {
+		// Set the static flag so filter_run_shortcodes() knows whether to
+		// execute or strip shortcodes. Reset after the filter pipeline.
+		self::$strip_shortcodes = ! $run_shortcodes;
+
+		/**
+		 * Filter the raw HTML content before markdown conversion.
+		 *
+		 * Page builders that don't store rendered output in post_content can
+		 * use this filter to supply their rendered HTML. Each page builder
+		 * filter also strips its own wrapper markup, so the converter below
+		 * only needs to handle generic/semantic elements.
+		 *
+		 * Shortcodes are executed by a dedicated filter at priority 90 —
+		 * after all page builder filters (which run their own do_shortcode
+		 * internally when needed) but before the WooCommerce cleanup at 99.
+		 *
+		 * @since 1.3.2-beta1
+		 * @param string  $html The raw HTML (post_content by default).
+		 * @param WP_Post $post The post being converted.
+		 */
+		$html = (string) apply_filters( 'rankready_post_raw_content', $post->post_content, $post );
+
+		self::$strip_shortcodes = false;
+
+		if ( empty( $html ) ) {
+			return '';
+		}
+
+		// ── Step 1: Strip Gutenberg block comments ────────────────────────
+		$html = preg_replace( '/<!--\s*\/?wp:[^\>]+-->/s', '', $html );
+
+		// ── Step 2: Strip remaining layout wrappers ───────────────────────
+		// Builder-specific wrappers (Elementor, Divi, WPBakery, BB, Bricks,
+		// Oxygen, Muffin) are stripped inside each builder's own filter. This
+		// step handles generic wrappers that any theme or plugin may produce.
+
+		// Strip generic layout wrappers.
+		$html = preg_replace( '/<div[^>]*class="[^"]*(?:wp-block-|entry-|post-|content-|container|wrapper|row|col-|grid)[^"]*"[^>]*>/si', '', $html );
+
+		// Remove stray closing divs and sections.
+		$html = preg_replace( '/<\/(?:div|section|article|aside|main|header|footer|nav|figure|figcaption)>/si', '', $html );
+
+		// Strip inline styles and data attributes from remaining elements.
+		$html = preg_replace( '/\s+style="[^"]*"/si', '', $html );
+		$html = preg_replace( '/\s+data-[a-z0-9_-]+="[^"]*"/si', '', $html );
+		$html = preg_replace( '/\s+class="[^"]*"/si', '', $html );
+		$html = preg_replace( '/\s+id="[^"]*"/si', '', $html );
+
+		// ── Step 3: Convert semantic HTML to markdown ─────────────────────
+
+		// Headings (callback for dynamic #).
+		$html = preg_replace_callback( '/<h([1-6])[^>]*>(.*?)<\/h\1>/si', function ( $m ) {
+			return "\n" . str_repeat( '#', (int) $m[1] ) . ' ' . wp_strip_all_tags( $m[2] ) . "\n";
+		}, $html );
+
+		// Bold and italic (before stripping tags).
+		$html = preg_replace( '/<(strong|b)>(.*?)<\/\1>/si', '**$2**', $html );
+		$html = preg_replace( '/<(em|i)>(.*?)<\/\1>/si', '*$2*', $html );
+
+		// Links — strip anchor-only hrefs (#section) since they're meaningless outside the page.
+		$html = preg_replace( '/<a\s[^>]*href=["\']#[^"\']*["\'][^>]*>(.*?)<\/a>/si', '$1', $html );
+		$html = preg_replace( '/<a\s[^>]*href=["\']([^"\']+)["\'][^>]*>(.*?)<\/a>/si', '[$2]($1)', $html );
+
+		// Images — extract src and alt only.
+		$html = preg_replace_callback( '/<img[^>]*>/si', function ( $m ) {
+			$tag = $m[0];
+			$src = '';
+			$alt = '';
+			if ( preg_match( '/src=["\']([^"\']+)["\']/i', $tag, $sm ) ) {
+				$src = $sm[1];
+			}
+			if ( preg_match( '/alt=["\']([^"\']*)["\']/', $tag, $am ) ) {
+				$alt = $am[1];
+			}
+			if ( empty( $src ) ) {
+				return '';
+			}
+			return '![' . $alt . '](' . $src . ')';
+		}, $html );
+
+		// Lists.
+		$html = preg_replace( '/<li[^>]*>(.*?)<\/li>/si', '- $1', $html );
+		$html = preg_replace( '/<\/?[ou]l[^>]*>/si', '', $html );
+
+		// Paragraphs and br.
+		$html = preg_replace( '/<p[^>]*>(.*?)<\/p>/si', "$1\n\n", $html );
+		$html = preg_replace( '/<br\s*\/?>/si', "\n", $html );
+
+		// Blockquotes.
+		$html = preg_replace_callback( '/<blockquote[^>]*>(.*?)<\/blockquote>/si', function ( $m ) {
+			$inner = wp_strip_all_tags( trim( $m[1] ) );
+			$bq_lines = explode( "\n", $inner );
+			return implode( "\n", array_map( function ( $l ) { return '> ' . trim( $l ); }, $bq_lines ) );
+		}, $html );
+
+		// Code blocks.
+		$html = preg_replace( '/<pre[^>]*><code[^>]*>(.*?)<\/code><\/pre>/si', "\n```\n$1\n```\n", $html );
+		$html = preg_replace( '/<code[^>]*>(.*?)<\/code>/si', '`$1`', $html );
+
+		// Tables (basic).
+		$html = preg_replace_callback( '/<table[^>]*>(.*?)<\/table>/si', function ( $m ) {
+			return self::table_to_markdown( $m[1] );
+		}, $html );
+
+		// Horizontal rules.
+		$html = preg_replace( '/<hr[^>]*\/?>/si', "\n---\n", $html );
+
+		// ── Step 4: Strip ALL remaining HTML tags ─────────────────────────
+		$html = wp_strip_all_tags( $html );
+
+		// ── Step 5: Decode entities and clean whitespace ──────────────────
+		$html = html_entity_decode( $html, ENT_QUOTES, 'UTF-8' );
+		$html = preg_replace( '/\n{3,}/', "\n\n", $html );
+		$html = preg_replace( '/[ \t]+/', ' ', $html );
+
+		// Clean up lines — remove lines that are just whitespace.
+		$final_lines = array();
+		foreach ( explode( "\n", $html ) as $line ) {
+			$trimmed = trim( $line );
+			if ( '' !== $trimmed || ( ! empty( $final_lines ) && '' !== end( $final_lines ) ) ) {
+				$final_lines[] = $trimmed;
+			}
+		}
+
+		return trim( implode( "\n", $final_lines ) );
+	}
+
+	/**
+	 * Basic HTML table to markdown table.
+	 */
+	public static function table_to_markdown( string $table_html ): string {
+		$rows = array();
+		preg_match_all( '/<tr[^>]*>(.*?)<\/tr>/si', $table_html, $row_matches );
+
+		if ( empty( $row_matches[1] ) ) {
+			return wp_strip_all_tags( $table_html );
+		}
+
+		$is_header = true;
+		foreach ( $row_matches[1] as $row_html ) {
+			preg_match_all( '/<t[hd][^>]*>(.*?)<\/t[hd]>/si', $row_html, $cell_matches );
+			if ( empty( $cell_matches[1] ) ) {
+				continue;
+			}
+
+			$cells  = array_map( function ( $c ) { return trim( wp_strip_all_tags( $c ) ); }, $cell_matches[1] );
+			$rows[] = '| ' . implode( ' | ', $cells ) . ' |';
+
+			if ( $is_header ) {
+				$separator = array_map( function ( $c ) { return str_repeat( '-', max( 3, strlen( $c ) ) ); }, $cells );
+				$rows[]    = '| ' . implode( ' | ', $separator ) . ' |';
+				$is_header = false;
+			}
+		}
+
+		return "\n" . implode( "\n", $rows ) . "\n";
+	}
+
+	// ═══════════════════════════════════════════════════════════════════════════
+	// CACHED MARKDOWN — post meta storage with timestamp tracking (v1.3.2)
+	//
+	// Instead of converting HTML→Markdown on every request, we cache the
+	// clean markdown body in post meta and regenerate on post save/update.
+	// ═══════════════════════════════════════════════════════════════════════════
+
+	/**
+	 * Get cached markdown for a post, generating + caching if needed.
+	 *
+	 * This is the primary entry point for consumers that need the clean
+	 * markdown body of a post. It checks post meta first and only runs
+	 * the HTML→Markdown conversion when the cache is missing.
+	 *
+	 * @since 1.3.2-beta1
+	 * @param WP_Post $post            The post to get markdown for.
+	 * @param bool    $run_shortcodes  True to execute shortcodes, false to strip them.
+	 * @return string Clean markdown body (may be empty for posts with no content).
+	 */
+	public static function get_post_markdown( WP_Post $post, bool $run_shortcodes = true ): string {
+		$cached_ts = (int) get_post_meta( $post->ID, RNRD_META_POST_MARKDOWN_TS, true );
+
+		if ( $cached_ts > 0 ) {
+			// Markdown has been generated before — return the cached version.
+			return (string) get_post_meta( $post->ID, RNRD_META_POST_MARKDOWN, true );
+		}
+
+		// No cached markdown — generate, cache, and return.
+		$markdown = self::post_to_clean_markdown( $post, $run_shortcodes );
+		self::save_post_markdown( $post->ID, $markdown );
+
+		return $markdown;
+	}
+
+	/**
+	 * Save the cached markdown and timestamp for a post.
+	 *
+	 * @since 1.3.2-beta1
+	 * @param int    $post_id  Post ID.
+	 * @param string $markdown The markdown body to cache.
+	 */
+	private static function save_post_markdown( int $post_id, string $markdown ): void {
+		update_post_meta( $post_id, RNRD_META_POST_MARKDOWN, $markdown );
+		update_post_meta( $post_id, RNRD_META_POST_MARKDOWN_TS, time() );
+	}
+
+	/**
+	 * Hook callback for wp_after_insert_post (WP 5.6+).
+	 *
+	 * This is the most reliable hook: it fires after all meta, terms, and
+	 * taxonomies have been saved, covering classic editor, Gutenberg, REST
+	 * API, and programmatic wp_insert_post/wp_update_post calls.
+	 *
+	 * @since 1.3.2-beta1
+	 * @param int          $post_id Post ID.
+	 * @param WP_Post      $post    Post object.
+	 * @param bool         $update  Whether this is an update (vs insert).
+	 */
+	public static function on_after_insert_post( $post_id, $post, $update ): void {
+		if ( ! $post instanceof WP_Post ) {
+			return;
+		}
+		self::maybe_regenerate_markdown_on_save( (int) $post_id, $post );
+	}
+
+	/**
+	 * Hook callback for save_post — fallback for edge cases not covered
+	 * by wp_after_insert_post (e.g. older WP versions, custom code paths).
+	 *
+	 * @since 1.3.2-beta1
+	 * @param int     $post_id Post ID.
+	 * @param WP_Post $post    Post object.
+	 */
+	public static function on_save_post( $post_id, $post ): void {
+		if ( ! $post instanceof WP_Post ) {
+			return;
+		}
+		self::maybe_regenerate_markdown_on_save( (int) $post_id, $post );
+	}
+
+	/**
+	 * Hook callback for transition_post_status — catches status changes from
+	 * quick edit, bulk actions, and REST API that may not trigger save_post.
+	 *
+	 * Only regenerates when the new status is 'publish'. When a post is
+	 * unpublished, the cache is cleared inside maybe_regenerate_markdown_on_save.
+	 *
+	 * @since 1.3.2-beta1
+	 * @param string  $new_status New post status.
+	 * @param string  $old_status Old post status.
+	 * @param WP_Post $post       Post object.
+	 */
+	public static function on_transition_post_status( $new_status, $old_status, $post ): void {
+		if ( ! $post instanceof WP_Post ) {
+			return;
+		}
+		// Only act when status actually changed.
+		if ( $new_status === $old_status ) {
+			return;
+		}
+		self::maybe_regenerate_markdown_on_save( (int) $post->ID, $post );
+	}
+
+	/**
+	 * Regenerate and cache a post's markdown on save/update.
+	 *
+	 * Only runs when at least one AI surface feature (Markdown endpoints,
+	 * llms.txt, or OKF) is enabled, the post type is supported by at least
+	 * one of those features, and the post is not excluded from AI surfaces.
+	 *
+	 * @since 1.3.2-beta1
+	 * @param int     $post_id Post ID.
+	 * @param WP_Post $post    Post object.
+	 */
+	public static function maybe_regenerate_markdown_on_save( int $post_id, WP_Post $post ): void {
+		// Skip revisions and autosaves.
+		if ( wp_is_post_revision( $post_id ) || wp_is_post_autosave( $post_id ) ) {
+			return;
+		}
+
+		// Only process published posts.
+		if ( 'publish' !== $post->post_status ) {
+			// If the post was unpublished, clear the cached markdown.
+			delete_post_meta( $post_id, RNRD_META_POST_MARKDOWN );
+			delete_post_meta( $post_id, RNRD_META_POST_MARKDOWN_TS );
+			return;
+		}
+
+		// Guard: multiple hooks (wp_after_insert_post, save_post,
+		// transition_post_status) may fire in the same request. Only
+		// process each post once.
+		if ( isset( self::$processed_post_ids[ $post_id ] ) ) {
+			return;
+		}
+		self::$processed_post_ids[ $post_id ] = true;
+
+		// Check if at least one AI surface feature is enabled.
+		$md_on   = 'on' === get_option( RNRD_OPT_MD_ENABLE, 'off' );
+		$llms_on = 'on' === get_option( RNRD_OPT_LLMS_ENABLE, 'off' );
+		$okf_on  = class_exists( 'RNRD_OKF' ) && 'on' === get_option( RNRD_OPT_OKF_ENABLE, 'off' );
+
+		if ( ! $md_on && ! $llms_on && ! $okf_on ) {
+			return;
+		}
+
+		// Check if the post type is supported by any enabled feature.
+		$supported = false;
+		if ( $md_on ) {
+			$md_types = (array) get_option( RNRD_OPT_MD_POST_TYPES, array( 'post', 'page' ) );
+			if ( in_array( $post->post_type, $md_types, true ) ) {
+				$supported = true;
+			}
+		}
+		if ( ! $supported && $llms_on ) {
+			$llms_types = (array) get_option( RNRD_OPT_LLMS_POST_TYPES, array( 'post', 'page' ) );
+			if ( in_array( $post->post_type, $llms_types, true ) ) {
+				$supported = true;
+			}
+		}
+		if ( ! $supported && $okf_on ) {
+			$okf_types = class_exists( 'RNRD_OKF' ) ? RNRD_OKF::post_types() : array( 'post', 'page' );
+			if ( in_array( $post->post_type, $okf_types, true ) ) {
+				$supported = true;
+			}
+		}
+
+		if ( ! $supported ) {
+			return;
+		}
+
+		// Check if the post is excluded from AI surfaces.
+		if ( class_exists( 'RNRD_Llms_Txt' ) && RNRD_Llms_Txt::should_exclude_from_llms( $post ) ) {
+			// Post is excluded — clear any stale cached markdown.
+			delete_post_meta( $post_id, RNRD_META_POST_MARKDOWN );
+			delete_post_meta( $post_id, RNRD_META_POST_MARKDOWN_TS );
+			return;
+		}
+
+		// Generate and cache the markdown.
+		$markdown = self::post_to_clean_markdown( $post, false );
+		self::save_post_markdown( $post_id, $markdown );
+	}
+
+	/**
+	 * Page builder content filters — registered once via init().
+	 *
+	 * These filters supply the rendered HTML for page builders that don't
+	 * store their output in post_content. Hooked to `rankready_post_raw_content`.
+	 *
+	 * @since 1.3.2-beta1
+	 */
+	public static function register_page_builder_filters(): void {
+		// Page builder filters (10–19): each checks if the builder is active
+		// before doing any work, renders content + strips its own wrappers.
+		add_filter( 'rankready_post_raw_content', array( self::class, 'filter_elementor_content' ), 10, 2 );
+		add_filter( 'rankready_post_raw_content', array( self::class, 'filter_beaver_builder_content' ), 11, 2 );
+		add_filter( 'rankready_post_raw_content', array( self::class, 'filter_divi_content' ), 12, 2 );
+		add_filter( 'rankready_post_raw_content', array( self::class, 'filter_oxygen_content' ), 13, 2 );
+		add_filter( 'rankready_post_raw_content', array( self::class, 'filter_bricks_content' ), 14, 2 );
+		add_filter( 'rankready_post_raw_content', array( self::class, 'filter_wpbakery_content' ), 15, 2 );
+		add_filter( 'rankready_post_raw_content', array( self::class, 'filter_muffin_builder_content' ), 16, 2 );
+
+		// Shortcode fallback (90): executes remaining shortcodes for posts
+		// NOT handled by a page builder. Runs after all builder filters so
+		// builder-managed posts (which run their own do_shortcode) are
+		// untouched, but classic-editor shortcodes still render.
+		add_filter( 'rankready_post_raw_content', array( self::class, 'filter_run_shortcodes' ), 90, 2 );
+
+		// WooCommerce cart/checkout stripping (99): runs LAST so it cleans
+		// up regardless of which builder or shortcode produced the HTML.
+		add_filter( 'rankready_post_raw_content', array( self::class, 'filter_strip_woocommerce_blocks' ), 99, 2 );
+	}
+
+	// ── Page builder content filters ─────────────────────────────────────────
+	// Each filter: (1) checks if the builder plugin is active, (2) checks if
+	// the post uses that builder, (3) renders + strips builder wrappers.
+	// Returning early when the builder isn't active avoids pointless meta reads.
+
+	/**
+	 * Elementor: render the Elementor-built content and strip wrappers.
+	 *
+	 * @since 1.3.2-beta1
+	 */
+	public static function filter_elementor_content( string $html, WP_Post $post ): string {
+		if ( ! class_exists( '\\Elementor\\Plugin' ) ) {
+			return $html;
+		}
+
+		// If we already have substantial content, just strip Elementor wrappers.
+		if ( ! empty( trim( $html ) ) && strlen( trim( wp_strip_all_tags( $html ) ) ) > 50 ) {
+			return self::strip_elementor_wrappers( $html );
+		}
+
+		// Check if this post was built with Elementor.
+		$elementor_data = get_post_meta( $post->ID, '_elementor_data', true );
+		if ( empty( $elementor_data ) ) {
+			return $html;
+		}
+
+		// Try Elementor's frontend rendering.
+		$elementor = \Elementor\Plugin::instance();
+		if ( isset( $elementor->frontend ) && method_exists( $elementor->frontend, 'get_builder_content' ) ) {
+			$rendered = $elementor->frontend->get_builder_content( $post->ID, true );
+			if ( ! empty( $rendered ) ) {
+				return self::strip_elementor_wrappers( $rendered );
+			}
+		}
+
+		return $html;
+	}
+
+	/**
+	 * Strip Elementor wrapper markup from HTML.
+	 */
+	private static function strip_elementor_wrappers( string $html ): string {
+		$html = preg_replace( '/<div[^>]*class="[^"]*(?:elementor-|e-con|e-child)[^"]*"[^>]*>/si', '', $html );
+		$html = preg_replace( '/<section[^>]*class="[^"]*elementor-[^"]*"[^>]*>/si', '', $html );
+		return $html;
+	}
+
+	/**
+	 * Beaver Builder: render the BB-built content and strip wrappers.
+	 *
+	 * @since 1.3.2-beta1
+	 */
+	public static function filter_beaver_builder_content( string $html, WP_Post $post ): string {
+		if ( ! class_exists( 'FLBuilderModel' ) ) {
+			return $html;
+		}
+
+		// If we already have substantial content, just strip BB wrappers.
+		if ( ! empty( trim( $html ) ) && strlen( trim( wp_strip_all_tags( $html ) ) ) > 50 ) {
+			return self::strip_beaver_wrappers( $html );
+		}
+
+		// Check if this post uses Beaver Builder.
+		$bb_enabled = get_post_meta( $post->ID, '_fl_builder_enabled', true );
+		if ( empty( $bb_enabled ) ) {
+			return $html;
+		}
+
+		if ( method_exists( 'FLBuilder', 'render_content_by_id' ) ) {
+			ob_start();
+			FLBuilder::render_content_by_id( $post->ID );
+			$rendered = ob_get_clean();
+			if ( ! empty( $rendered ) ) {
+				return self::strip_beaver_wrappers( $rendered );
+			}
+		}
+
+		return $html;
+	}
+
+	/**
+	 * Strip Beaver Builder wrapper markup from HTML.
+	 */
+	private static function strip_beaver_wrappers( string $html ): string {
+		return preg_replace( '/<div[^>]*class="[^"]*fl-[^"]*"[^>]*>/si', '', $html );
+	}
+
+	/**
+	 * Divi: render the Divi-built content and strip wrappers.
+	 *
+	 * @since 1.3.2-beta1
+	 */
+	public static function filter_divi_content( string $html, WP_Post $post ): string {
+		if ( ! defined( 'ET_BUILDER_PLUGIN_DIR' ) && ! defined( 'ET_BUILDER_THEME' ) ) {
+			return $html;
+		}
+
+		// If we already have substantial content, just strip Divi wrappers.
+		if ( ! empty( trim( $html ) ) && strlen( trim( wp_strip_all_tags( $html ) ) ) > 50 ) {
+			return self::strip_divi_wrappers( $html );
+		}
+
+		// Divi stores builder usage in postmeta.
+		$divi_enabled = get_post_meta( $post->ID, '_et_pb_use_builder', true );
+		if ( 'on' !== $divi_enabled ) {
+			return $html;
+		}
+
+		// Divi Theme Builder can store content separately.
+		if ( function_exists( 'et_builder_render_layout' ) ) {
+			$rendered = et_builder_render_layout( $post->post_content );
+			if ( ! empty( $rendered ) ) {
+				return self::strip_divi_wrappers( $rendered );
+			}
+		}
+
+		return $html;
+	}
+
+	/**
+	 * Strip Divi wrapper markup from HTML.
+	 */
+	private static function strip_divi_wrappers( string $html ): string {
+		return preg_replace( '/<div[^>]*class="[^"]*(?:et_pb_|et_builder_)[^"]*"[^>]*>/si', '', $html );
+	}
+
+	/**
+	 * Oxygen Builder: render content and strip wrappers.
+	 *
+	 * @since 1.3.2-beta1
+	 */
+	public static function filter_oxygen_content( string $html, WP_Post $post ): string {
+		if ( ! defined( 'CT_VERSION' ) ) {
+			return $html;
+		}
+
+		// If we already have substantial content, just strip Oxygen wrappers.
+		if ( ! empty( trim( $html ) ) && strlen( trim( wp_strip_all_tags( $html ) ) ) > 50 ) {
+			return self::strip_oxygen_wrappers( $html );
+		}
+
+		// Oxygen stores shortcodes in ct_builder_shortcodes.
+		$oxygen_shortcodes = get_post_meta( $post->ID, 'ct_builder_shortcodes', true );
+		if ( empty( $oxygen_shortcodes ) ) {
+			return $html;
+		}
+
+		$rendered = do_shortcode( $oxygen_shortcodes );
+		if ( ! empty( $rendered ) ) {
+			return self::strip_oxygen_wrappers( $rendered );
+		}
+
+		return $html;
+	}
+
+	/**
+	 * Strip Oxygen Builder wrapper markup from HTML.
+	 */
+	private static function strip_oxygen_wrappers( string $html ): string {
+		return preg_replace( '/<div[^>]*class="[^"]*(?:ct-section|ct-inner-content|oxy-)[^"]*"[^>]*>/si', '', $html );
+	}
+
+	/**
+	 * Bricks Builder: render content and strip wrappers.
+	 *
+	 * @since 1.3.2-beta1
+	 */
+	public static function filter_bricks_content( string $html, WP_Post $post ): string {
+		if ( ! defined( 'BRICKS_VERSION' ) ) {
+			return $html;
+		}
+
+		// If we already have substantial content, just strip Bricks wrappers.
+		if ( ! empty( trim( $html ) ) && strlen( trim( wp_strip_all_tags( $html ) ) ) > 50 ) {
+			return self::strip_bricks_wrappers( $html );
+		}
+
+		// Bricks stores data in _bricks_page_content_2.
+		$bricks_data = get_post_meta( $post->ID, '_bricks_page_content_2', true );
+		if ( empty( $bricks_data ) ) {
+			return $html;
+		}
+
+		if ( class_exists( '\\Bricks\\Frontend' ) && method_exists( '\\Bricks\\Frontend', 'render_data' ) ) {
+			ob_start();
+			\Bricks\Frontend::render_data( $bricks_data );
+			$rendered = ob_get_clean();
+			if ( ! empty( $rendered ) ) {
+				return self::strip_bricks_wrappers( $rendered );
+			}
+		}
+
+		return $html;
+	}
+
+	/**
+	 * Strip Bricks Builder wrapper markup from HTML.
+	 */
+	private static function strip_bricks_wrappers( string $html ): string {
+		return preg_replace( '/<div[^>]*class="[^"]*(?:brxe-|bricks-)[^"]*"[^>]*>/si', '', $html );
+	}
+
+	/**
+	 * WPBakery: render content and strip wrappers.
+	 *
+	 * @since 1.3.2-beta1
+	 */
+	public static function filter_wpbakery_content( string $html, WP_Post $post ): string {
+		if ( ! defined( 'WPB_VC_VERSION' ) ) {
+			return $html;
+		}
+
+		// If we already have substantial content, just strip WPBakery wrappers.
+		if ( ! empty( trim( $html ) ) && strlen( trim( wp_strip_all_tags( $html ) ) ) > 50 ) {
+			return self::strip_wpbakery_wrappers( $html );
+		}
+
+		// WPBakery uses _wpb_vc_js_status to track builder usage.
+		$wpb_status = get_post_meta( $post->ID, '_wpb_vc_js_status', true );
+		if ( 'true' !== $wpb_status ) {
+			return $html;
+		}
+
+		if ( function_exists( 'wpb_js_remove_wpautop' ) ) {
+			$rendered = wpb_js_remove_wpautop( $post->post_content, true );
+			if ( ! empty( $rendered ) ) {
+				return self::strip_wpbakery_wrappers( $rendered );
+			}
+		}
+
+		return $html;
+	}
+
+	/**
+	 * Strip WPBakery wrapper markup from HTML.
+	 */
+	private static function strip_wpbakery_wrappers( string $html ): string {
+		return preg_replace( '/<div[^>]*class="[^"]*(?:vc_|wpb_)[^"]*"[^>]*>/si', '', $html );
+	}
+
+	/**
+	 * BeTheme Muffin Builder: render content and strip wrappers.
+	 *
+	 * @since 1.3.2-beta1
+	 */
+	public static function filter_muffin_builder_content( string $html, WP_Post $post ): string {
+		if ( ! defined( 'MFN_THEME_VERSION' ) ) {
+			return $html;
+		}
+
+		// // If we already have substantial content, just strip Muffin wrappers.
+		// if ( ! empty( trim( $html ) ) && strlen( trim( wp_strip_all_tags( $html ) ) ) > 50 ) {
+		// 	return self::strip_muffin_wrappers( $html );
+		// }
+
+		// BeTheme stores a SEO-friendly copy in mfn-page-items-seo postmeta.
+		$mfn_seo = get_post_meta( $post->ID, 'mfn-page-items-seo', true );
+		if ( ! empty( $mfn_seo ) && is_string( $mfn_seo ) ) {
+			return self::strip_muffin_wrappers( $mfn_seo );
+		}
+
+		// Check if the post has Muffin Builder data.
+		$mfn_items = get_post_meta( $post->ID, 'mfn-page-items', true );
+		if ( empty( $mfn_items ) ) {
+			return $html;
+		}
+
+		if ( class_exists( 'Mfn_Builder_Front' ) ) {
+			$mfn_builder = new \Mfn_Builder_Front( $post->ID );
+			ob_start();
+			$mfn_builder->show();
+			$rendered = ob_get_clean();
+			if ( ! empty( $rendered ) ) {
+				return self::strip_muffin_wrappers( $rendered );
+			}
+		}
+
+		return $html;
+	}
+
+	/**
+	 * Strip BeTheme Muffin Builder wrapper markup from HTML.
+	 */
+	private static function strip_muffin_wrappers( string $html ): string {
+		$html = preg_replace( '/<div[^>]*class="[^"]*(?:mcb-|mfn-)[^"]*"[^>]*>/si', '', $html );
+		$html = preg_replace( '/<section[^>]*class="[^"]*(?:mcb-|mfn-)[^"]*"[^>]*>/si', '', $html );
+		return $html;
+	}
+
+	/**
+	 * Shortcode fallback: execute remaining shortcodes for non-builder posts.
+	 *
+	 * Runs at priority 90 — after all page builder filters (which handle
+	 * their own shortcode execution) but before WooCommerce cleanup at 99.
+	 * If a builder filter already produced rendered HTML, do_shortcode on
+	 * that output is harmless (no shortcodes left to expand).
+	 *
+	 * @since 1.3.2-beta1
+	 * @param string  $html Current HTML content.
+	 * @param WP_Post $post The post.
+	 * @return string HTML with shortcodes expanded (or stripped).
+	 */
+	public static function filter_run_shortcodes( string $html, WP_Post $post ): string {
+		if ( empty( $html ) ) {
+			return $html;
+		}
+
+		if ( self::$strip_shortcodes ) {
+			return strip_shortcodes( $html );
+		}
+
+		return do_shortcode( $html );
+	}
+
+	/**
+	 * Strip WooCommerce cart, checkout, and account blocks/shortcode output.
+	 *
+	 * WooCommerce renders interactive cart/checkout/account HTML into
+	 * post_content of its special pages. This content is meaningless in
+	 * a markdown context (form fields, nonces, AJAX placeholders) and
+	 * produces noisy, broken markdown. Strip it entirely.
+	 *
+	 * @since 1.3.2-beta1
+	 * @param string  $html Current HTML content.
+	 * @param WP_Post $post The post.
+	 * @return string HTML with WooCommerce transactional blocks removed.
+	 */
+	public static function filter_strip_woocommerce_blocks( string $html, WP_Post $post ): string {
+		if ( ! class_exists( 'WooCommerce' ) ) {
+			return $html;
+		}
+
+		if ( empty( $html ) ) {
+			return $html;
+		}
+
+		// Quick bail: nothing WooCommerce-related in the HTML.
+		if ( false === stripos( $html, 'woocommerce' ) && false === stripos( $html, 'wc-block' ) ) {
+			return $html;
+		}
+
+		// ── WooCommerce Block elements (Gutenberg blocks) ────────────────
+		$wc_block_classes = array(
+			'wp-block-woocommerce-cart',
+			'wp-block-woocommerce-checkout',
+			'wp-block-woocommerce-customer-account',
+			'wp-block-woocommerce-mini-cart',
+		);
+
+		foreach ( $wc_block_classes as $class ) {
+			$html = preg_replace(
+				'/<div[^>]*class="[^"]*' . preg_quote( $class, '/' ) . '[^"]*"[^>]*>.*?<\/div>/si',
+				'',
+				$html
+			);
+		}
+
+		// ── WooCommerce classic shortcode output ─────────────────────────
+		$raw = (string) $post->post_content;
+		$is_wc_transactional = (
+			false !== strpos( $raw, 'woocommerce_cart' )
+			|| false !== strpos( $raw, 'woocommerce_checkout' )
+			|| false !== strpos( $raw, 'woocommerce_my_account' )
+			|| false !== strpos( $raw, 'wp:woocommerce/cart' )
+			|| false !== strpos( $raw, 'wp:woocommerce/checkout' )
+			|| false !== strpos( $raw, 'wp:woocommerce/customer-account' )
+		);
+
+		if ( $is_wc_transactional ) {
+			$html = preg_replace(
+				'/<div[^>]*class="[^"]*\bwoocommerce\b[^"]*"[^>]*>.*?<\/div>/si',
+				'',
+				$html
+			);
+			$html = preg_replace(
+				'/<div[^>]*class="[^"]*woocommerce-notices-wrapper[^"]*"[^>]*>.*?<\/div>/si',
+				'',
+				$html
+			);
+		}
+
+		return $html;
+	}
+
 	// ── Markdown generator ───────────────────────────────────────────────────
 
 	public static function post_to_markdown( WP_Post $post ): string {
@@ -1814,7 +2631,7 @@ class RNRD_Markdown {
 		}
 
 		// ── Content ──────────────────────────────────────────────────────
-		$content = RNRD_Llms_Txt::post_to_clean_markdown( $post );
+		$content = self::get_post_markdown( $post );
 
 		if ( ! empty( $content ) ) {
 			$lines[] = $content;

@@ -309,6 +309,8 @@ $rnrd_meta_keys = array(
 	'_rnrd_faq_last_failure',  // v1.2.0 circuit breaker timestamp
 	'_rnrd_max_snippet',       // v1.2.0 per-post max-snippet override
 	'_rnrd_llms_exclude',      // v1.2.0 per-post llms.txt exclusion
+	'_rnrd_post_markdown',     // v1.3.2 cached clean markdown body
+	'_rnrd_post_markdown_ts',  // v1.3.2 cached markdown generation timestamp
 	'_rnrd_tokens_used',
 	'_rnrd_schema_type',
 	'_rnrd_schema_data',

@@ -4,7 +4,7 @@ Tags: seo, schema, ai seo, aeo, llms.txt
 Requires at least: 6.9
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 1.3.1
+Stable tag: 1.3.2-beta1
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -327,6 +327,18 @@ Yes. RankReady is open source under GPL-2.0-or-later. The complete source ships 
 
 
 == Changelog ==
+
+= 1.3.2-beta1, 2026-09-17 =
+
+* New: Markdown is now cached in post meta (`_rnrd_post_markdown` + `_rnrd_post_markdown_ts`) instead of being generated on every request. Markdown is regenerated automatically on post save/update when at least one AI surface feature (Markdown endpoints, llms.txt, or OKF) is enabled and the post type is supported.
+* New: Filterable post content via `rankready_post_raw_content` filter — page builders that don't store rendered output in `post_content` can supply their HTML through this hook. Each builder filter renders content, strips its own wrapper markup, and checks that the builder plugin is active before doing any work.
+* New: Built-in page builder support for Elementor, Beaver Builder, Divi, Oxygen Builder, Bricks Builder, WPBakery, and BeTheme Muffin Builder. Each builder filter checks for plugin activation, renders builder-specific content, and strips builder wrapper markup (e.g. `.elementor-*`, `.et_pb_*`, `.vc_*`, `.fl-*`, `.brxe-*`, `.oxy-*`, `.mcb-*`) keeping only semantic HTML.
+* New: Shortcode processing runs as a dedicated `rankready_post_raw_content` filter at priority 90 — after all page builder filters (which handle their own shortcode execution) but before WooCommerce cleanup. This prevents conflicts with builders like Divi and WPBakery that store layouts as shortcodes.
+* New: WooCommerce transactional pages (Cart, Checkout, My Account) are automatically stripped from markdown output when WooCommerce is active. Both WooCommerce Blocks (`.wp-block-woocommerce-cart`, `.wp-block-woocommerce-checkout`) and classic shortcode output (`.woocommerce` wrapper) are detected and removed so these pages produce clean, content-only markdown.
+* Improved: `post_to_clean_markdown()` and `table_to_markdown()` moved from `RNRD_Llms_Txt` to `RNRD_Markdown` — the natural home for all markdown conversion logic. Old references cleaned up; no backwards-compatibility wrappers needed.
+* Improved: `RNRD_Markdown::get_post_markdown()` helper — the recommended way to retrieve a post's clean markdown. Reads from the post meta cache first, only running HTML-to-Markdown conversion when the cache is empty, then stores the result for future requests.
+* Improved: Posts with empty content are cached with a timestamp so repeat requests don't re-run the conversion — the system knows the post was already processed.
+* Improved: Markdown cache is automatically cleared when a post is unpublished or excluded from AI surfaces.
 
 = 1.3.1, 2026-09-01 =
 

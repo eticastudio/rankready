@@ -3,7 +3,7 @@
  * Plugin Name:       RankReady – AI SEO, Schema, llms.txt, AEO and GEO for ChatGPT, Gemini and Perplexity
  * Plugin URI:        https://hostmy.blog/plugins/rankready/
  * Description:       Make your WordPress content readable by ChatGPT, Perplexity, Claude, Gemini, and Google AI Overviews. AI summaries, FAQ schema, llms.txt, Markdown endpoints, agent discovery headers, WebMCP, and crawler controls — in one plugin.
- * Version:           1.3.1
+ * Version:           1.3.2-beta1
  * Requires at least: 6.9
  * Requires PHP:      7.4
  * Author:            HostMyBlog
@@ -91,7 +91,7 @@ if ( defined( 'RNRD_VERSION' ) ) {
 
 // ── Constants (guarded to prevent conflicts) ─────────────────────────────────
 if ( ! defined( 'RNRD_VERSION' ) ) {
-	define( 'RNRD_VERSION',  '1.3.1' );
+	define( 'RNRD_VERSION',  '1.3.2-beta1' );
 	define( 'RNRD_FILE',     __FILE__ );
 	define( 'RNRD_DIR',      plugin_dir_path( __FILE__ ) );
 	define( 'RNRD_URL',      plugin_dir_url( __FILE__ ) );
@@ -266,6 +266,10 @@ if ( ! defined( 'RNRD_VERSION' ) ) {
 
 	// Per-post llms.txt exclusion.
 	define( 'RNRD_META_LLMS_EXCLUDE',         '_rnrd_llms_exclude' );         // '1' = exclude from AI surfaces (llms.txt, Markdown, WebMCP, OKF)
+
+	// Per-post cached markdown (v1.3.2).
+	define( 'RNRD_META_POST_MARKDOWN',        '_rnrd_post_markdown' );        // Cached clean markdown body (HTML→MD conversion).
+	define( 'RNRD_META_POST_MARKDOWN_TS',     '_rnrd_post_markdown_ts' );     // Unix timestamp of last markdown generation.
 
 	// AI Insights tracking toggles.
 	define( 'RNRD_OPT_AI_TRAINING_ENABLE',    'rnrd_ai_training_enable' ); // 'on' | 'off' — master toggle for training-bot logging.
