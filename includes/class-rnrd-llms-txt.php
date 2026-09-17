@@ -665,7 +665,7 @@ class RNRD_Llms_Txt {
 
 				$title   = self::flatten_for_list_line( self::clean_text( get_the_title( $post ) ) );
 				$url     = self::entry_url_for_post( $post );
-				$content = RNRD_Markdown::get_post_markdown( $post, false );
+				$content = RNRD_Markdown::get_post_markdown( $post );
 
 				// Per-page separator: # Title + Source URL
 				$lines[] = '# ' . $title;

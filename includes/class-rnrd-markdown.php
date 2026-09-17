@@ -28,15 +28,6 @@ defined( 'ABSPATH' ) || exit;
 class RNRD_Markdown {
 
 	/**
-	 * Whether the current post_to_clean_markdown call should strip shortcodes
-	 * instead of executing them. Set to true by callers that pass
-	 * $run_shortcodes = false (e.g. on_save_post bulk generation).
-	 *
-	 * @var bool
-	 */
-	private static $strip_shortcodes = false;
-
-	/**
 	 * Guard: tracks which post IDs have already been processed in this
 	 * request to avoid double-regeneration across overlapping hooks
 	 * (wp_after_insert_post, save_post, transition_post_status).
@@ -1792,15 +1783,10 @@ class RNRD_Markdown {
 	 * page builder wrapper divs/sections/spans. Preserves only semantic
 	 * content: headings, paragraphs, lists, links, images, blockquotes, code.
 	 *
-	 * @param WP_Post $post             The post to convert.
-	 * @param bool    $run_shortcodes   True to execute shortcodes, false to strip them.
+	 * @param WP_Post $post The post to convert.
 	 * @return string Clean markdown body.
 	 */
-	public static function post_to_clean_markdown( $post, bool $run_shortcodes = true ): string {
-		// Set the static flag so filter_run_shortcodes() knows whether to
-		// execute or strip shortcodes. Reset after the filter pipeline.
-		self::$strip_shortcodes = ! $run_shortcodes;
-
+	public static function post_to_clean_markdown( $post ): string {
 		/**
 		 * Filter the raw HTML content before markdown conversion.
 		 *
@@ -1818,8 +1804,6 @@ class RNRD_Markdown {
 		 * @param WP_Post $post The post being converted.
 		 */
 		$html = (string) apply_filters( 'rankready_post_raw_content', $post->post_content, $post );
-
-		self::$strip_shortcodes = false;
 
 		if ( empty( $html ) ) {
 			return '';
@@ -1970,11 +1954,10 @@ class RNRD_Markdown {
 	 * the HTML→Markdown conversion when the cache is missing.
 	 *
 	 * @since 1.3.2-beta1
-	 * @param WP_Post $post            The post to get markdown for.
-	 * @param bool    $run_shortcodes  True to execute shortcodes, false to strip them.
+	 * @param WP_Post $post The post to get markdown for.
 	 * @return string Clean markdown body (may be empty for posts with no content).
 	 */
-	public static function get_post_markdown( WP_Post $post, bool $run_shortcodes = true ): string {
+	public static function get_post_markdown( WP_Post $post ): string {
 		$cached_ts = (int) get_post_meta( $post->ID, RNRD_META_POST_MARKDOWN_TS, true );
 
 		if ( $cached_ts > 0 ) {
@@ -1983,7 +1966,7 @@ class RNRD_Markdown {
 		}
 
 		// No cached markdown — generate, cache, and return.
-		$markdown = self::post_to_clean_markdown( $post, $run_shortcodes );
+		$markdown = self::post_to_clean_markdown( $post );
 		self::save_post_markdown( $post->ID, $markdown );
 
 		return $markdown;
@@ -2134,7 +2117,7 @@ class RNRD_Markdown {
 		}
 
 		// Generate and cache the markdown.
-		$markdown = self::post_to_clean_markdown( $post, false );
+		$markdown = self::post_to_clean_markdown( $post );
 		self::save_post_markdown( $post_id, $markdown );
 	}
 
@@ -2473,10 +2456,6 @@ class RNRD_Markdown {
 	public static function filter_run_shortcodes( string $html, WP_Post $post ): string {
 		if ( empty( $html ) ) {
 			return $html;
-		}
-
-		if ( self::$strip_shortcodes ) {
-			return strip_shortcodes( $html );
 		}
 
 		return do_shortcode( $html );
