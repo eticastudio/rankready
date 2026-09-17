@@ -4,7 +4,7 @@ Tags: seo, schema, ai seo, aeo, llms.txt
 Requires at least: 6.9
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 1.3.2-beta1
+Stable tag: 1.3.2-beta2
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -327,6 +327,10 @@ Yes. RankReady is open source under GPL-2.0-or-later. The complete source ships 
 
 
 == Changelog ==
+
+= 1.3.2-beta2, 2026-09-17 =
+
+* New: AI Summary and AI FAQ generation now use the same page-builder-aware markdown content, so posts built with Elementor, Divi, WPBakery, and other builders produce accurate summaries and FAQs.
 
 = 1.3.2-beta1, 2026-09-17 =
 

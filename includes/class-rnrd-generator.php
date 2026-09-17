@@ -355,9 +355,13 @@ Blog Post:
 	// ── Helpers ───────────────────────────────────────────────────────────────
 
 	public static function get_content_string( $post ): string {
-		// strip_shortcodes() avoids side-effects from WooCommerce / form / cron-unsafe
-		// shortcodes when this runs under WP-Cron. We only need the raw text for the LLM.
-		$body = wp_strip_all_tags( strip_shortcodes( $post->post_content ) );
+		if ( ! class_exists( 'RNRD_Markdown' ) ) {
+			// translators: %d: Post ID.
+			trigger_error( sprintf( 'RankReady: RNRD_Markdown class not loaded for post %d. AI summary content may be empty.', $post->ID ), E_USER_WARNING );
+			return $post->post_title;
+		}
+		// Cached markdown handles page builders, shortcodes, WooCommerce stripping, and builder wrapper cleanup.
+		$body = RNRD_Markdown::get_post_markdown( $post );
 		return $post->post_title . "\n\n" . $body;
 	}
 

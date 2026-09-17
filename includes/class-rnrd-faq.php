@@ -597,14 +597,15 @@ class RNRD_Faq {
 			}
 		}
 
-		// Content hash check.
-		// v1.1.5 (#5) — guard do_shortcode under cron. generate_faq() runs via WP-Cron
-		// and the REST bulk job; many shortcodes (Elementor, EDD, BBPress, JetEngine,
-		// MailPoet) assume a frontend/current_user context and crash or fire side effects
-		// when invoked from cron. Mirror the guard already used at the generation site below.
-		$content  = wp_doing_cron()
-			? wp_strip_all_tags( strip_shortcodes( $post->post_content ) )
-			: wp_strip_all_tags( do_shortcode( $post->post_content ) );
+		// Content hash check — use the cached markdown which already handles
+		// page builders, shortcodes, and WooCommerce stripping. Safe under
+		// WP-Cron because get_post_markdown reads from post meta cache first.
+		if ( ! class_exists( 'RNRD_Markdown' ) ) {
+			// translators: %d: Post ID.
+			trigger_error( sprintf( 'RankReady: RNRD_Markdown class not loaded for post %d. FAQ generation skipped.', $post_id ), E_USER_WARNING );
+			return array();
+		}
+		$content  = RNRD_Markdown::get_post_markdown( $post );
 		$new_hash = md5( $content . $keyword . $count );
 		$old_hash = (string) get_post_meta( $post_id, RNRD_META_FAQ_HASH, true );
 
@@ -911,14 +912,10 @@ class RNRD_Faq {
 		int $count
 	): string {
 		$title = get_the_title( $post );
-		// v1.2.0-beta.4 — under WP-Cron / async we must NOT execute shortcodes.
-		// Many shortcodes (Elementor, EDD, BBPress, JetEngine, MailPoet) assume
-		// a frontend / current_user context and either crash or trigger side
-		// effects when invoked from cron. Same pattern RNRD_Llms_Txt uses.
-		// (Audit beta.3 #8.)
-		$content = wp_doing_cron()
-			? wp_strip_all_tags( strip_shortcodes( $post->post_content ) )
-			: wp_strip_all_tags( do_shortcode( $post->post_content ) );
+
+		// Use cached markdown — handles page builders, shortcodes, and
+		// WooCommerce stripping. Safe under WP-Cron (reads from post meta).
+		$content = RNRD_Markdown::get_post_markdown( $post );
 		$page_type = self::detect_page_type( $post );
 
 		// Truncate content to ~3500 words to stay within token limits.
@@ -927,11 +924,11 @@ class RNRD_Faq {
 			$content = implode( ' ', array_slice( $words, 0, 3500 ) ) . '...';
 		}
 
-		// Extract headings for structural context.
+		// Extract headings from the markdown (lines starting with ##/###).
 		$headings = array();
-		if ( preg_match_all( '/<h[2-3][^>]*>(.*?)<\/h[2-3]>/si', $post->post_content, $h_matches ) ) {
+		if ( preg_match_all( '/^#{2,3}\s+(.+)$/m', $content, $h_matches ) ) {
 			foreach ( $h_matches[1] as $h ) {
-				$headings[] = wp_strip_all_tags( trim( $h ) );
+				$headings[] = trim( $h );
 			}
 		}
 
@@ -1122,7 +1119,10 @@ class RNRD_Faq {
 	}
 
 	/**
-	 * Extract internal links from post content.
+	 * Extract internal links from the cached markdown content.
+	 *
+	 * Parses markdown-style links [text](url) so that page-builder-rendered
+	 * links are automatically included via the markdown pipeline.
 	 *
 	 * @param WP_Post $post The post.
 	 * @return array Array of {url, text} items.
@@ -1131,11 +1131,21 @@ class RNRD_Faq {
 		$links = array();
 		$home  = home_url();
 
-		preg_match_all( '/<a\s[^>]*href=["\']([^"\']+)["\'][^>]*>(.*?)<\/a>/si', $post->post_content, $matches, PREG_SET_ORDER );
+		if ( ! class_exists( 'RNRD_Markdown' ) ) {
+			return $links;
+		}
+
+		$markdown = RNRD_Markdown::get_post_markdown( $post );
+		if ( empty( $markdown ) ) {
+			return $links;
+		}
+
+		// Match markdown links: [text](url) or [text](url "title").
+		preg_match_all( '/\[([^\]]+)\]\(([^)\s]+)(?:\s+"[^"]*")?\)/', $markdown, $matches, PREG_SET_ORDER );
 
 		foreach ( $matches as $match ) {
-			$url  = $match[1];
-			$text = wp_strip_all_tags( $match[2] );
+			$text = trim( $match[1] );
+			$url  = trim( $match[2] );
 
 			// Only internal links.
 			if ( 0 !== strpos( $url, $home ) && 0 !== strpos( $url, '/' ) ) {

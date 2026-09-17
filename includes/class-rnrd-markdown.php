@@ -2166,11 +2166,6 @@ class RNRD_Markdown {
 			return $html;
 		}
 
-		// If we already have substantial content, just strip Elementor wrappers.
-		if ( ! empty( trim( $html ) ) && strlen( trim( wp_strip_all_tags( $html ) ) ) > 50 ) {
-			return self::strip_elementor_wrappers( $html );
-		}
-
 		// Check if this post was built with Elementor.
 		$elementor_data = get_post_meta( $post->ID, '_elementor_data', true );
 		if ( empty( $elementor_data ) ) {
@@ -2208,11 +2203,6 @@ class RNRD_Markdown {
 			return $html;
 		}
 
-		// If we already have substantial content, just strip BB wrappers.
-		if ( ! empty( trim( $html ) ) && strlen( trim( wp_strip_all_tags( $html ) ) ) > 50 ) {
-			return self::strip_beaver_wrappers( $html );
-		}
-
 		// Check if this post uses Beaver Builder.
 		$bb_enabled = get_post_meta( $post->ID, '_fl_builder_enabled', true );
 		if ( empty( $bb_enabled ) ) {
@@ -2246,11 +2236,6 @@ class RNRD_Markdown {
 	public static function filter_divi_content( string $html, WP_Post $post ): string {
 		if ( ! defined( 'ET_BUILDER_PLUGIN_DIR' ) && ! defined( 'ET_BUILDER_THEME' ) ) {
 			return $html;
-		}
-
-		// If we already have substantial content, just strip Divi wrappers.
-		if ( ! empty( trim( $html ) ) && strlen( trim( wp_strip_all_tags( $html ) ) ) > 50 ) {
-			return self::strip_divi_wrappers( $html );
 		}
 
 		// Divi stores builder usage in postmeta.
@@ -2287,11 +2272,6 @@ class RNRD_Markdown {
 			return $html;
 		}
 
-		// If we already have substantial content, just strip Oxygen wrappers.
-		if ( ! empty( trim( $html ) ) && strlen( trim( wp_strip_all_tags( $html ) ) ) > 50 ) {
-			return self::strip_oxygen_wrappers( $html );
-		}
-
 		// Oxygen stores shortcodes in ct_builder_shortcodes.
 		$oxygen_shortcodes = get_post_meta( $post->ID, 'ct_builder_shortcodes', true );
 		if ( empty( $oxygen_shortcodes ) ) {
@@ -2321,11 +2301,6 @@ class RNRD_Markdown {
 	public static function filter_bricks_content( string $html, WP_Post $post ): string {
 		if ( ! defined( 'BRICKS_VERSION' ) ) {
 			return $html;
-		}
-
-		// If we already have substantial content, just strip Bricks wrappers.
-		if ( ! empty( trim( $html ) ) && strlen( trim( wp_strip_all_tags( $html ) ) ) > 50 ) {
-			return self::strip_bricks_wrappers( $html );
 		}
 
 		// Bricks stores data in _bricks_page_content_2.
@@ -2363,11 +2338,6 @@ class RNRD_Markdown {
 			return $html;
 		}
 
-		// If we already have substantial content, just strip WPBakery wrappers.
-		if ( ! empty( trim( $html ) ) && strlen( trim( wp_strip_all_tags( $html ) ) ) > 50 ) {
-			return self::strip_wpbakery_wrappers( $html );
-		}
-
 		// WPBakery uses _wpb_vc_js_status to track builder usage.
 		$wpb_status = get_post_meta( $post->ID, '_wpb_vc_js_status', true );
 		if ( 'true' !== $wpb_status ) {
@@ -2399,17 +2369,6 @@ class RNRD_Markdown {
 	public static function filter_muffin_builder_content( string $html, WP_Post $post ): string {
 		if ( ! defined( 'MFN_THEME_VERSION' ) ) {
 			return $html;
-		}
-
-		// // If we already have substantial content, just strip Muffin wrappers.
-		// if ( ! empty( trim( $html ) ) && strlen( trim( wp_strip_all_tags( $html ) ) ) > 50 ) {
-		// 	return self::strip_muffin_wrappers( $html );
-		// }
-
-		// BeTheme stores a SEO-friendly copy in mfn-page-items-seo postmeta.
-		$mfn_seo = get_post_meta( $post->ID, 'mfn-page-items-seo', true );
-		if ( ! empty( $mfn_seo ) && is_string( $mfn_seo ) ) {
-			return self::strip_muffin_wrappers( $mfn_seo );
 		}
 
 		// Check if the post has Muffin Builder data.

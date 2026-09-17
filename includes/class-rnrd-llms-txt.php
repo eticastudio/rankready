@@ -1046,8 +1046,11 @@ class RNRD_Llms_Txt {
 			return self::flatten_for_list_line( self::clean_text( $post->post_excerpt ) );
 		}
 
-		// Auto excerpt.
-		$content = wp_strip_all_tags( do_shortcode( $post->post_content ) );
+		// Auto excerpt from cached markdown (page-builder-aware).
+		if ( ! class_exists( 'RNRD_Markdown' ) ) {
+			return '';
+		}
+		$content = RNRD_Markdown::get_post_markdown( $post );
 		return self::flatten_for_list_line( self::clean_text( wp_trim_words( $content, 30, '...' ) ) );
 	}
 }
