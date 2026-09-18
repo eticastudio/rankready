@@ -18,7 +18,7 @@
  * - Link HTTP header for crawler discovery
  *
  * YAML frontmatter includes title, date, author, excerpt, tags, categories.
- * Aggressively strips Elementor, Divi, WPBakery, Beaver Builder markup.
+ * Page builder rendering and stripping is handled by RNRD_Integrations.
  *
  * @package RankReady
  */
@@ -47,9 +47,6 @@ class RNRD_Markdown {
 		add_action( 'init',              array( self::class, 'add_rewrite_rules' ) );
 		// v1.2.0-rc.2 — priority 1 beats page builders (Bricks ~ default 10).
 		add_action( 'template_redirect', array( self::class, 'handle_request' ), 1 );
-
-		// v1.3.2 — Register page builder content filters.
-		self::register_page_builder_filters();
 
 		// Content negotiation: serve markdown when Accept: text/markdown is sent.
 		// Priority 2 — still before page builders but AFTER the explicit
@@ -296,14 +293,9 @@ class RNRD_Markdown {
 			return;
 		}
 
-		// v1.1.5 (#7) — purge ALL rendered-markdown transients for this post. The cache
-		// key is rnrd_md_<id>_<locale>_<mtime> (set at render time), but the old explicit
-		// delete used 'rnrd_md_<id>_<mtime>' — it omitted the locale AND rebuilt the key
-		// with the *new* post_modified time, so it never matched the stored entry (it only
-		// self-expired via the 5-min TTL, and multilingual locale variants leaked as orphan
-		// transients). Sweep by the post-ID prefix so every locale/timestamp variant is
-		// dropped and explicit busts actually work. (DB transients; with an external object
-		// cache the per-key TTL + mtime-in-key still guarantees freshness.)
+		// Legacy cleanup (v1.1.5 → v1.3.1): purge old rendered-markdown
+		// transients left over from before the post-meta cache (v1.3.2).
+		// Safe to remove in a future version once all sites have upgraded.
 		global $wpdb;
 		$rnrd_md_key_like = $wpdb->esc_like( '_transient_rnrd_md_' . (int) $post->ID . '_' ) . '%';
 		$rnrd_md_to_like  = $wpdb->esc_like( '_transient_timeout_rnrd_md_' . (int) $post->ID . '_' ) . '%';
@@ -446,6 +438,15 @@ class RNRD_Markdown {
 			exit;
 		}
 
+		// Extensible gate — integration filters (e.g. TranslatePress non-default
+		// language) can return false to suppress markdown for this request.
+		if ( ! (bool) apply_filters( 'rankready_should_serve_markdown', true ) ) {
+			status_header( 404 );
+			header( 'Content-Type: text/plain; charset=utf-8' );
+			echo '# 404 Not Found';
+			exit;
+		}
+
 		// 1) Front page surface at `/index.md`. serve_homepage_markdown() exits.
 		if ( self::home_surfaces_enabled() && 'index' === trim( (string) $md_path, '/' ) ) {
 			self::serve_homepage_markdown( false );
@@ -501,21 +502,15 @@ class RNRD_Markdown {
 			exit;
 		}
 
-		// v1.1.17 — Switch to translated post if WPML / Polylang / TranslatePress
-		// resolves a translation for the active locale. Falls through to the
-		// original $post when no translation plugin is active.
-		$post   = self::translate_post( $post );
-		$locale = self::resolved_locale( $post );
+		// v1.1.17 — Switch to translated post if WPML / Polylang resolves a
+		// translation for the active locale. Falls through to the original
+		// $post when no translation plugin is active.
+		$post = self::translate_post( $post );
 
 		// Log with the resolved post so CPT, title, and ID are captured.
 		RNRD_Crawler_Log::log( 'markdown', $post );
 
-		$cache_key = 'rnrd_md_' . $post->ID . '_' . $locale . '_' . strtotime( $post->post_modified );
-		$markdown  = get_transient( $cache_key );
-		if ( false === $markdown ) {
-			$markdown = self::post_to_markdown( $post );
-			set_transient( $cache_key, $markdown, 5 * MINUTE_IN_SECONDS );
-		}
+		$markdown = self::post_to_markdown( $post );
 		self::serve_markdown( $markdown, get_permalink( $post ) );
 	}
 
@@ -609,6 +604,11 @@ class RNRD_Markdown {
 
 		// text/markdown is preferred (or tied, or forced by AI bot UA). Serve it.
 
+		// Extensible gate — see rankready_should_serve_markdown filter.
+		if ( ! (bool) apply_filters( 'rankready_should_serve_markdown', true ) ) {
+			return;
+		}
+
 		// is_front_page() → is_home() → is_singular(). Front must win on a
 		// latest-posts home where both front and home are true.
 		if ( self::home_surfaces_enabled() && is_front_page() ) {
@@ -644,18 +644,19 @@ class RNRD_Markdown {
 
 		// v1.1.17 — Switch to translated post if a translation plugin resolves
 		// one for the active locale or for the visitor's Accept-Language.
-		$post   = self::translate_post( $post );
-		$locale = self::resolved_locale( $post );
+		$post = self::translate_post( $post );
 
 		// Log Accept-header markdown hit with the resolved post (CPT + title captured).
 		RNRD_Crawler_Log::log( 'markdown', $post );
 
-		$cache_key = 'rnrd_md_' . $post->ID . '_' . $locale . '_' . strtotime( $post->post_modified );
-		$markdown  = get_transient( $cache_key );
-		if ( false === $markdown ) {
-			$markdown = self::post_to_markdown( $post );
-			set_transient( $cache_key, $markdown, 5 * MINUTE_IN_SECONDS );
+		$markdown = self::post_to_markdown( $post );
+
+		// If markdown is empty, do not serve it — let WordPress serve the
+		// normal HTML page so AI crawlers don't see an empty/404 markdown.
+		if ( empty( trim( $markdown ) ) ) {
+			return;
 		}
+
 		// v1.0.33 — Shared URL (canonical post URL, NOT `.md`): force no-store
 		// so Cloudflare APO can't poison the cache with markdown for HTML clients.
 		self::serve_markdown( $markdown, get_permalink( $post ), true );
@@ -704,6 +705,10 @@ class RNRD_Markdown {
 	 * Mirrors the gates in handle_request() so llms.txt never advertises dead .md links.
 	 */
 	public static function post_has_servable_md_url( WP_Post $post ): bool {
+		if ( ! (bool) apply_filters( 'rankready_should_serve_markdown', true ) ) {
+			return false;
+		}
+
 		$enabled_types = (array) get_option( RNRD_OPT_MD_POST_TYPES, array( 'post', 'page' ) );
 		if ( ! in_array( $post->post_type, $enabled_types, true ) ) {
 			return false;
@@ -951,16 +956,9 @@ class RNRD_Markdown {
 	private static function serve_homepage_markdown( bool $shared_url = true ): void {
 		$post = self::get_front_page_post();
 		if ( $post instanceof WP_Post ) {
-			$post   = self::translate_post( $post );
-			$locale = self::resolved_locale( $post );
+			$post = self::translate_post( $post );
 			RNRD_Crawler_Log::log( 'markdown', $post );
-
-			$cache_key = 'rnrd_md_' . $post->ID . '_' . $locale . '_' . strtotime( $post->post_modified );
-			$markdown  = get_transient( $cache_key );
-			if ( false === $markdown ) {
-				$markdown = self::post_to_markdown( $post );
-				set_transient( $cache_key, $markdown, 5 * MINUTE_IN_SECONDS );
-			}
+			$markdown = self::post_to_markdown( $post );
 		} else {
 			RNRD_Crawler_Log::log( 'home_md' );
 			$markdown = self::build_homepage_overview_markdown();
@@ -1098,6 +1096,10 @@ class RNRD_Markdown {
 			return;
 		}
 
+		if ( ! (bool) apply_filters( 'rankready_should_serve_markdown', true ) ) {
+			return;
+		}
+
 		// Front page: always advertise /index.md (not gated on Pages post type).
 		if ( self::home_surfaces_enabled() && is_front_page() ) {
 			self::echo_homepage_md_link_tags();
@@ -1151,6 +1153,9 @@ class RNRD_Markdown {
 	 */
 	public static function add_ai_hint_div(): void {
 		if ( 'on' !== get_option( RNRD_OPT_MD_ENABLE, 'off' ) ) {
+			return;
+		}
+		if ( ! (bool) apply_filters( 'rankready_should_serve_markdown', true ) ) {
 			return;
 		}
 		// v1.2.0-beta.3 — sub-toggle, default on. Users who prefer no hidden
@@ -1275,6 +1280,10 @@ class RNRD_Markdown {
 			return;
 		}
 
+		if ( ! (bool) apply_filters( 'rankready_should_serve_markdown', true ) ) {
+			return;
+		}
+
 		if ( self::home_surfaces_enabled() && is_front_page() ) {
 			self::send_homepage_md_link_headers();
 			return;
@@ -1327,187 +1336,55 @@ class RNRD_Markdown {
 		header( 'Link: <' . esc_url( home_url( '/llms.txt' ) ) . '>; rel="describedby"; type="text/plain"', false );
 	}
 
-	// ── Multilingual resolution (WPML / Polylang / TranslatePress / Weglot) ──
-	//
-	// Treats post translation as a four-step waterfall so any one plugin is
-	// enough. None of these hooks fire when no translation plugin is active,
-	// so the helper is a no-op on monolingual sites.
+	// ── Multilingual resolution ──────────────────────────────────────────────
+	// Delegated to RNRD_Integrations via filters. These thin wrappers keep
+	// the public API intact so existing callers don't break.
 
 	/**
-	 * Best-effort swap of $post to its translated counterpart for the active
-	 * locale (or the visitor's Accept-Language when no plugin language is set).
-	 *
-	 * Order: explicit lang query var → WPML → Polylang → original post.
-	 * Returns the original post if no translation plugin resolves anything.
+	 * Best-effort swap of $post to its translated counterpart.
 	 *
 	 * @param WP_Post $post Original post resolved from the URL.
-	 * @return WP_Post Translated post or the original if no translation exists.
+	 * @return WP_Post Translated post or the original.
 	 */
 	public static function translate_post( WP_Post $post ): WP_Post {
 		$lang = self::detect_request_language();
-
-		// WPML — `wpml_object_id` returns translated post ID for the given lang.
-		if ( has_filter( 'wpml_object_id' ) ) {
-			$translated_id = apply_filters( 'wpml_object_id', $post->ID, $post->post_type, false, $lang ?: null );
-			if ( $translated_id && (int) $translated_id !== $post->ID ) {
-				$translated = get_post( (int) $translated_id );
-				if ( $translated instanceof WP_Post && 'publish' === $translated->post_status ) {
-					return $translated;
-				}
-			}
-		}
-
-		// Polylang — `pll_get_post` returns translated post ID for given slug.
-		if ( $lang && function_exists( 'pll_get_post' ) ) {
-			$translated_id = pll_get_post( $post->ID, $lang );
-			if ( $translated_id && (int) $translated_id !== $post->ID ) {
-				$translated = get_post( (int) $translated_id );
-				if ( $translated instanceof WP_Post && 'publish' === $translated->post_status ) {
-					return $translated;
-				}
-			}
-		}
-
-		return $post;
+		return apply_filters( 'rankready_translate_post', $post, $lang );
 	}
 
 	/**
-	 * Resolve the locale string used by translate_post(). Returned value is
-	 * embedded in the markdown transient cache key so per-language responses
-	 * never collide.
+	 * Resolve the locale string for a post.
+	 *
+	 * Returns the WPML/Polylang/TranslatePress language code for the post,
+	 * or the WP locale as a last-resort fingerprint.
+	 *
+	 * @since 1.1.17
+	 * @param WP_Post $post The post.
+	 * @return string Locale/language code.
 	 */
 	public static function resolved_locale( WP_Post $post ): string {
-		// WPML stores post language as a taxonomy term.
-		if ( function_exists( 'apply_filters' ) && has_filter( 'wpml_post_language_details' ) ) {
-			$details = apply_filters( 'wpml_post_language_details', null, $post->ID );
-			if ( is_array( $details ) && ! empty( $details['language_code'] ) ) {
-				return sanitize_key( (string) $details['language_code'] );
-			}
+		$locale = (string) apply_filters( 'rankready_resolved_locale', '', $post );
+		if ( '' !== $locale ) {
+			return $locale;
 		}
 
-		// Polylang per-post language.
-		if ( function_exists( 'pll_get_post_language' ) ) {
-			$pll = pll_get_post_language( $post->ID );
-			if ( ! empty( $pll ) ) {
-				return sanitize_key( (string) $pll );
-			}
-		}
-
-		// WP locale as last-resort fingerprint (monolingual sites still get
-		// a stable suffix; the transient name stays bounded).
 		return sanitize_key( (string) get_locale() );
 	}
 
 	/**
-	 * Pick the visitor's request language. Priority:
-	 *   1. ?lang= query var
-	 *   2. WPML current language filter
-	 *   3. Polylang current language function
-	 *   4. Accept-Language header (parsed for highest q-value)
+	 * Pick the visitor's request language.
 	 */
 	private static function detect_request_language(): string {
-		// 1. Explicit query var.
-		if ( ! empty( $_GET['lang'] ) ) { // phpcs:ignore WordPress.Security.NonceVerification.Recommended
-			return sanitize_key( wp_unslash( (string) $_GET['lang'] ) ); // phpcs:ignore WordPress.Security.NonceVerification.Recommended
-		}
-
-		// 2. WPML active language.
-		if ( has_filter( 'wpml_current_language' ) ) {
-			$wpml_lang = apply_filters( 'wpml_current_language', null );
-			if ( ! empty( $wpml_lang ) ) {
-				return sanitize_key( (string) $wpml_lang );
-			}
-		}
-
-		// 3. Polylang active language.
-		if ( function_exists( 'pll_current_language' ) ) {
-			$pll_lang = pll_current_language();
-			if ( ! empty( $pll_lang ) ) {
-				return sanitize_key( (string) $pll_lang );
-			}
-		}
-
-		// 4. Accept-Language header (best q-value).
-		if ( ! empty( $_SERVER['HTTP_ACCEPT_LANGUAGE'] ) ) {
-			$header = sanitize_text_field( wp_unslash( (string) $_SERVER['HTTP_ACCEPT_LANGUAGE'] ) );
-			$best   = '';
-			$best_q = 0.0;
-			foreach ( explode( ',', $header ) as $segment ) {
-				$segment = trim( $segment );
-				if ( '' === $segment ) {
-					continue;
-				}
-				$parts = explode( ';', $segment );
-				$tag   = strtolower( trim( $parts[0] ) );
-				if ( '' === $tag || '*' === $tag ) {
-					continue;
-				}
-				$q = 1.0;
-				foreach ( array_slice( $parts, 1 ) as $param ) {
-					$param = trim( $param );
-					if ( 0 === strncasecmp( $param, 'q=', 2 ) ) {
-						$q = (float) substr( $param, 2 );
-						break;
-					}
-				}
-				if ( $q > $best_q ) {
-					$best_q = $q;
-					// Trim region: en-US → en (matches WPML/Polylang language codes
-					// which are 2-letter by default).
-					$best = strtok( $tag, '-' );
-				}
-			}
-			if ( '' !== $best ) {
-				return sanitize_key( $best );
-			}
-		}
-
-		return '';
+		return (string) apply_filters( 'rankready_detect_language', '' );
 	}
 
 	/**
-	 * Return [ language_code => translated_md_url ] pairs for hreflang
-	 * emission. Empty array when no translation plugin is active.
+	 * Return [ language_code => translated_md_url ] pairs for hreflang.
 	 *
 	 * @param WP_Post $post Source post.
 	 * @return array<string,string>
 	 */
 	public static function get_translation_md_urls( WP_Post $post ): array {
-		$out = array();
-
-		// WPML — `wpml_active_languages` returns all enabled languages with URLs.
-		if ( has_filter( 'wpml_active_languages' ) ) {
-			$langs = apply_filters( 'wpml_active_languages', null, array( 'skip_missing' => 1 ) );
-			if ( is_array( $langs ) ) {
-				foreach ( $langs as $code => $info ) {
-					$translated_id = apply_filters( 'wpml_object_id', $post->ID, $post->post_type, false, $code );
-					if ( $translated_id ) {
-						$translated = get_post( (int) $translated_id );
-						if ( $translated instanceof WP_Post && 'publish' === $translated->post_status ) {
-							$out[ sanitize_key( (string) $code ) ] = self::get_md_url( $translated );
-						}
-					}
-				}
-			}
-		}
-
-		// Polylang — `pll_the_languages` raw map.
-		if ( empty( $out ) && function_exists( 'pll_languages_list' ) && function_exists( 'pll_get_post' ) ) {
-			$langs = pll_languages_list();
-			if ( is_array( $langs ) ) {
-				foreach ( $langs as $code ) {
-					$translated_id = pll_get_post( $post->ID, $code );
-					if ( $translated_id ) {
-						$translated = get_post( (int) $translated_id );
-						if ( $translated instanceof WP_Post && 'publish' === $translated->post_status ) {
-							$out[ sanitize_key( (string) $code ) ] = self::get_md_url( $translated );
-						}
-					}
-				}
-			}
-		}
-
-		return $out;
+		return (array) apply_filters( 'rankready_translation_md_urls', array(), $post );
 	}
 
 	// ── AI bot User-Agent detection ──────────────────────────────────────────
@@ -1644,6 +1521,12 @@ class RNRD_Markdown {
 		// X-Robots-Tag noindex (de-facto since 2007, stops `.md` duplicates
 		// indexing), CORS (W3C), nosniff.
 		header( 'X-Markdown-Tokens: ' . max( 1, (int) ceil( mb_strlen( $markdown, 'UTF-8' ) / 4 ) ) );
+
+		// Discard any stacked output buffers (e.g. TranslatePress) so they
+		// don't process our plain-text markdown as HTML and corrupt it.
+		while ( ob_get_level() > 0 ) {
+			ob_end_clean();
+		}
 
 		echo $markdown; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped
 		exit;
@@ -2119,375 +2002,6 @@ class RNRD_Markdown {
 		// Generate and cache the markdown.
 		$markdown = self::post_to_clean_markdown( $post );
 		self::save_post_markdown( $post_id, $markdown );
-	}
-
-	/**
-	 * Page builder content filters — registered once via init().
-	 *
-	 * These filters supply the rendered HTML for page builders that don't
-	 * store their output in post_content. Hooked to `rankready_post_raw_content`.
-	 *
-	 * @since 1.3.2-beta1
-	 */
-	public static function register_page_builder_filters(): void {
-		// Page builder filters (10–19): each checks if the builder is active
-		// before doing any work, renders content + strips its own wrappers.
-		add_filter( 'rankready_post_raw_content', array( self::class, 'filter_elementor_content' ), 10, 2 );
-		add_filter( 'rankready_post_raw_content', array( self::class, 'filter_beaver_builder_content' ), 11, 2 );
-		add_filter( 'rankready_post_raw_content', array( self::class, 'filter_divi_content' ), 12, 2 );
-		add_filter( 'rankready_post_raw_content', array( self::class, 'filter_oxygen_content' ), 13, 2 );
-		add_filter( 'rankready_post_raw_content', array( self::class, 'filter_bricks_content' ), 14, 2 );
-		add_filter( 'rankready_post_raw_content', array( self::class, 'filter_wpbakery_content' ), 15, 2 );
-		add_filter( 'rankready_post_raw_content', array( self::class, 'filter_muffin_builder_content' ), 16, 2 );
-
-		// Shortcode fallback (90): executes remaining shortcodes for posts
-		// NOT handled by a page builder. Runs after all builder filters so
-		// builder-managed posts (which run their own do_shortcode) are
-		// untouched, but classic-editor shortcodes still render.
-		add_filter( 'rankready_post_raw_content', array( self::class, 'filter_run_shortcodes' ), 90, 2 );
-
-		// WooCommerce cart/checkout stripping (99): runs LAST so it cleans
-		// up regardless of which builder or shortcode produced the HTML.
-		add_filter( 'rankready_post_raw_content', array( self::class, 'filter_strip_woocommerce_blocks' ), 99, 2 );
-	}
-
-	// ── Page builder content filters ─────────────────────────────────────────
-	// Each filter: (1) checks if the builder plugin is active, (2) checks if
-	// the post uses that builder, (3) renders + strips builder wrappers.
-	// Returning early when the builder isn't active avoids pointless meta reads.
-
-	/**
-	 * Elementor: render the Elementor-built content and strip wrappers.
-	 *
-	 * @since 1.3.2-beta1
-	 */
-	public static function filter_elementor_content( string $html, WP_Post $post ): string {
-		if ( ! class_exists( '\\Elementor\\Plugin' ) ) {
-			return $html;
-		}
-
-		// Check if this post was built with Elementor.
-		$elementor_data = get_post_meta( $post->ID, '_elementor_data', true );
-		if ( empty( $elementor_data ) ) {
-			return $html;
-		}
-
-		// Try Elementor's frontend rendering.
-		$elementor = \Elementor\Plugin::instance();
-		if ( isset( $elementor->frontend ) && method_exists( $elementor->frontend, 'get_builder_content' ) ) {
-			$rendered = $elementor->frontend->get_builder_content( $post->ID, true );
-			if ( ! empty( $rendered ) ) {
-				return self::strip_elementor_wrappers( $rendered );
-			}
-		}
-
-		return $html;
-	}
-
-	/**
-	 * Strip Elementor wrapper markup from HTML.
-	 */
-	private static function strip_elementor_wrappers( string $html ): string {
-		$html = preg_replace( '/<div[^>]*class="[^"]*(?:elementor-|e-con|e-child)[^"]*"[^>]*>/si', '', $html );
-		$html = preg_replace( '/<section[^>]*class="[^"]*elementor-[^"]*"[^>]*>/si', '', $html );
-		return $html;
-	}
-
-	/**
-	 * Beaver Builder: render the BB-built content and strip wrappers.
-	 *
-	 * @since 1.3.2-beta1
-	 */
-	public static function filter_beaver_builder_content( string $html, WP_Post $post ): string {
-		if ( ! class_exists( 'FLBuilderModel' ) ) {
-			return $html;
-		}
-
-		// Check if this post uses Beaver Builder.
-		$bb_enabled = get_post_meta( $post->ID, '_fl_builder_enabled', true );
-		if ( empty( $bb_enabled ) ) {
-			return $html;
-		}
-
-		if ( method_exists( 'FLBuilder', 'render_content_by_id' ) ) {
-			ob_start();
-			FLBuilder::render_content_by_id( $post->ID );
-			$rendered = ob_get_clean();
-			if ( ! empty( $rendered ) ) {
-				return self::strip_beaver_wrappers( $rendered );
-			}
-		}
-
-		return $html;
-	}
-
-	/**
-	 * Strip Beaver Builder wrapper markup from HTML.
-	 */
-	private static function strip_beaver_wrappers( string $html ): string {
-		return preg_replace( '/<div[^>]*class="[^"]*fl-[^"]*"[^>]*>/si', '', $html );
-	}
-
-	/**
-	 * Divi: render the Divi-built content and strip wrappers.
-	 *
-	 * @since 1.3.2-beta1
-	 */
-	public static function filter_divi_content( string $html, WP_Post $post ): string {
-		if ( ! defined( 'ET_BUILDER_PLUGIN_DIR' ) && ! defined( 'ET_BUILDER_THEME' ) ) {
-			return $html;
-		}
-
-		// Divi stores builder usage in postmeta.
-		$divi_enabled = get_post_meta( $post->ID, '_et_pb_use_builder', true );
-		if ( 'on' !== $divi_enabled ) {
-			return $html;
-		}
-
-		// Divi Theme Builder can store content separately.
-		if ( function_exists( 'et_builder_render_layout' ) ) {
-			$rendered = et_builder_render_layout( $post->post_content );
-			if ( ! empty( $rendered ) ) {
-				return self::strip_divi_wrappers( $rendered );
-			}
-		}
-
-		return $html;
-	}
-
-	/**
-	 * Strip Divi wrapper markup from HTML.
-	 */
-	private static function strip_divi_wrappers( string $html ): string {
-		return preg_replace( '/<div[^>]*class="[^"]*(?:et_pb_|et_builder_)[^"]*"[^>]*>/si', '', $html );
-	}
-
-	/**
-	 * Oxygen Builder: render content and strip wrappers.
-	 *
-	 * @since 1.3.2-beta1
-	 */
-	public static function filter_oxygen_content( string $html, WP_Post $post ): string {
-		if ( ! defined( 'CT_VERSION' ) ) {
-			return $html;
-		}
-
-		// Oxygen stores shortcodes in ct_builder_shortcodes.
-		$oxygen_shortcodes = get_post_meta( $post->ID, 'ct_builder_shortcodes', true );
-		if ( empty( $oxygen_shortcodes ) ) {
-			return $html;
-		}
-
-		$rendered = do_shortcode( $oxygen_shortcodes );
-		if ( ! empty( $rendered ) ) {
-			return self::strip_oxygen_wrappers( $rendered );
-		}
-
-		return $html;
-	}
-
-	/**
-	 * Strip Oxygen Builder wrapper markup from HTML.
-	 */
-	private static function strip_oxygen_wrappers( string $html ): string {
-		return preg_replace( '/<div[^>]*class="[^"]*(?:ct-section|ct-inner-content|oxy-)[^"]*"[^>]*>/si', '', $html );
-	}
-
-	/**
-	 * Bricks Builder: render content and strip wrappers.
-	 *
-	 * @since 1.3.2-beta1
-	 */
-	public static function filter_bricks_content( string $html, WP_Post $post ): string {
-		if ( ! defined( 'BRICKS_VERSION' ) ) {
-			return $html;
-		}
-
-		// Bricks stores data in _bricks_page_content_2.
-		$bricks_data = get_post_meta( $post->ID, '_bricks_page_content_2', true );
-		if ( empty( $bricks_data ) ) {
-			return $html;
-		}
-
-		if ( class_exists( '\\Bricks\\Frontend' ) && method_exists( '\\Bricks\\Frontend', 'render_data' ) ) {
-			ob_start();
-			\Bricks\Frontend::render_data( $bricks_data );
-			$rendered = ob_get_clean();
-			if ( ! empty( $rendered ) ) {
-				return self::strip_bricks_wrappers( $rendered );
-			}
-		}
-
-		return $html;
-	}
-
-	/**
-	 * Strip Bricks Builder wrapper markup from HTML.
-	 */
-	private static function strip_bricks_wrappers( string $html ): string {
-		return preg_replace( '/<div[^>]*class="[^"]*(?:brxe-|bricks-)[^"]*"[^>]*>/si', '', $html );
-	}
-
-	/**
-	 * WPBakery: render content and strip wrappers.
-	 *
-	 * @since 1.3.2-beta1
-	 */
-	public static function filter_wpbakery_content( string $html, WP_Post $post ): string {
-		if ( ! defined( 'WPB_VC_VERSION' ) ) {
-			return $html;
-		}
-
-		// WPBakery uses _wpb_vc_js_status to track builder usage.
-		$wpb_status = get_post_meta( $post->ID, '_wpb_vc_js_status', true );
-		if ( 'true' !== $wpb_status ) {
-			return $html;
-		}
-
-		if ( function_exists( 'wpb_js_remove_wpautop' ) ) {
-			$rendered = wpb_js_remove_wpautop( $post->post_content, true );
-			if ( ! empty( $rendered ) ) {
-				return self::strip_wpbakery_wrappers( $rendered );
-			}
-		}
-
-		return $html;
-	}
-
-	/**
-	 * Strip WPBakery wrapper markup from HTML.
-	 */
-	private static function strip_wpbakery_wrappers( string $html ): string {
-		return preg_replace( '/<div[^>]*class="[^"]*(?:vc_|wpb_)[^"]*"[^>]*>/si', '', $html );
-	}
-
-	/**
-	 * BeTheme Muffin Builder: render content and strip wrappers.
-	 *
-	 * @since 1.3.2-beta1
-	 */
-	public static function filter_muffin_builder_content( string $html, WP_Post $post ): string {
-		if ( ! defined( 'MFN_THEME_VERSION' ) ) {
-			return $html;
-		}
-
-		// Check if the post has Muffin Builder data.
-		$mfn_items = get_post_meta( $post->ID, 'mfn-page-items', true );
-		if ( empty( $mfn_items ) ) {
-			return $html;
-		}
-
-		if ( class_exists( 'Mfn_Builder_Front' ) ) {
-			$mfn_builder = new \Mfn_Builder_Front( $post->ID );
-			ob_start();
-			$mfn_builder->show();
-			$rendered = ob_get_clean();
-			if ( ! empty( $rendered ) ) {
-				return self::strip_muffin_wrappers( $rendered );
-			}
-		}
-
-		return $html;
-	}
-
-	/**
-	 * Strip BeTheme Muffin Builder wrapper markup from HTML.
-	 */
-	private static function strip_muffin_wrappers( string $html ): string {
-		$html = preg_replace( '/<div[^>]*class="[^"]*(?:mcb-|mfn-)[^"]*"[^>]*>/si', '', $html );
-		$html = preg_replace( '/<section[^>]*class="[^"]*(?:mcb-|mfn-)[^"]*"[^>]*>/si', '', $html );
-		return $html;
-	}
-
-	/**
-	 * Shortcode fallback: execute remaining shortcodes for non-builder posts.
-	 *
-	 * Runs at priority 90 — after all page builder filters (which handle
-	 * their own shortcode execution) but before WooCommerce cleanup at 99.
-	 * If a builder filter already produced rendered HTML, do_shortcode on
-	 * that output is harmless (no shortcodes left to expand).
-	 *
-	 * @since 1.3.2-beta1
-	 * @param string  $html Current HTML content.
-	 * @param WP_Post $post The post.
-	 * @return string HTML with shortcodes expanded (or stripped).
-	 */
-	public static function filter_run_shortcodes( string $html, WP_Post $post ): string {
-		if ( empty( $html ) ) {
-			return $html;
-		}
-
-		return do_shortcode( $html );
-	}
-
-	/**
-	 * Strip WooCommerce cart, checkout, and account blocks/shortcode output.
-	 *
-	 * WooCommerce renders interactive cart/checkout/account HTML into
-	 * post_content of its special pages. This content is meaningless in
-	 * a markdown context (form fields, nonces, AJAX placeholders) and
-	 * produces noisy, broken markdown. Strip it entirely.
-	 *
-	 * @since 1.3.2-beta1
-	 * @param string  $html Current HTML content.
-	 * @param WP_Post $post The post.
-	 * @return string HTML with WooCommerce transactional blocks removed.
-	 */
-	public static function filter_strip_woocommerce_blocks( string $html, WP_Post $post ): string {
-		if ( ! class_exists( 'WooCommerce' ) ) {
-			return $html;
-		}
-
-		if ( empty( $html ) ) {
-			return $html;
-		}
-
-		// Quick bail: nothing WooCommerce-related in the HTML.
-		if ( false === stripos( $html, 'woocommerce' ) && false === stripos( $html, 'wc-block' ) ) {
-			return $html;
-		}
-
-		// ── WooCommerce Block elements (Gutenberg blocks) ────────────────
-		$wc_block_classes = array(
-			'wp-block-woocommerce-cart',
-			'wp-block-woocommerce-checkout',
-			'wp-block-woocommerce-customer-account',
-			'wp-block-woocommerce-mini-cart',
-		);
-
-		foreach ( $wc_block_classes as $class ) {
-			$html = preg_replace(
-				'/<div[^>]*class="[^"]*' . preg_quote( $class, '/' ) . '[^"]*"[^>]*>.*?<\/div>/si',
-				'',
-				$html
-			);
-		}
-
-		// ── WooCommerce classic shortcode output ─────────────────────────
-		$raw = (string) $post->post_content;
-		$is_wc_transactional = (
-			false !== strpos( $raw, 'woocommerce_cart' )
-			|| false !== strpos( $raw, 'woocommerce_checkout' )
-			|| false !== strpos( $raw, 'woocommerce_my_account' )
-			|| false !== strpos( $raw, 'wp:woocommerce/cart' )
-			|| false !== strpos( $raw, 'wp:woocommerce/checkout' )
-			|| false !== strpos( $raw, 'wp:woocommerce/customer-account' )
-		);
-
-		if ( $is_wc_transactional ) {
-			$html = preg_replace(
-				'/<div[^>]*class="[^"]*\bwoocommerce\b[^"]*"[^>]*>.*?<\/div>/si',
-				'',
-				$html
-			);
-			$html = preg_replace(
-				'/<div[^>]*class="[^"]*woocommerce-notices-wrapper[^"]*"[^>]*>.*?<\/div>/si',
-				'',
-				$html
-			);
-		}
-
-		return $html;
 	}
 
 	// ── Markdown generator ───────────────────────────────────────────────────

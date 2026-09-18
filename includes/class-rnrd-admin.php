@@ -1608,7 +1608,8 @@ class RNRD_Admin {
 				<p class="rnrd-aside-card__version">v<?php echo esc_html( RNRD_VERSION ); ?></p>
 				<ul class="rnrd-aside-changes">
 					<li><strong><?php esc_html_e( 'Cached markdown.', 'rankready-ai-llm-seo' ); ?></strong> <?php esc_html_e( 'Post markdown is now generated on save and stored in post meta — requests are served instantly without on-the-fly conversion.', 'rankready-ai-llm-seo' ); ?></li>
-					<li><strong><?php esc_html_e( 'Page builder support.', 'rankready-ai-llm-seo' ); ?></strong> <?php esc_html_e( 'Elementor, Divi, WPBakery, Beaver Builder, Bricks, Oxygen, and BeTheme Muffin Builder content is now rendered and cleaned for AI surfaces.', 'rankready-ai-llm-seo' ); ?></li>
+					<li><strong><?php esc_html_e( 'Page builder support.', 'rankready-ai-llm-seo' ); ?></strong> <?php esc_html_e( 'Elementor, Divi, WPBakery, Beaver Builder, Bricks, Oxygen, Avada Fusion Builder, and BeTheme Muffin Builder content is now rendered and cleaned for AI surfaces.', 'rankready-ai-llm-seo' ); ?></li>
+					<li><strong><?php esc_html_e( 'Multilingual support.', 'rankready-ai-llm-seo' ); ?></strong> <?php esc_html_e( 'WPML and Polylang translations each get their own cached markdown. TranslatePress non-default languages gracefully disable markdown so crawlers never see untranslated content.', 'rankready-ai-llm-seo' ); ?></li>
 				</ul>
 			</div>
 			<?php endif; ?>

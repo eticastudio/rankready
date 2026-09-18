@@ -4,7 +4,7 @@ Tags: seo, schema, ai seo, aeo, llms.txt
 Requires at least: 6.9
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 1.3.2-beta2
+Stable tag: 1.3.2-beta3
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -328,17 +328,25 @@ Yes. RankReady is open source under GPL-2.0-or-later. The complete source ships 
 
 == Changelog ==
 
-= 1.3.2-beta2, 2026-09-17 =
-
-* New: AI Summary and AI FAQ generation now use the same page-builder-aware markdown content, so posts built with Elementor, Divi, WPBakery, and other builders produce accurate summaries and FAQs.
-
-= 1.3.2-beta1, 2026-09-17 =
+= 1.3.2-beta3, 2026-09-18 =
 
 * New: Markdown caching — post markdown is now generated on save and served instantly from cache, instead of being rebuilt on every request.
-* New: Page builder support — Elementor, Beaver Builder, Divi, Oxygen Builder, Bricks Builder, WPBakery, and BeTheme Muffin Builder content is now automatically rendered for AI surfaces, even when builders don't store output in post_content.
+* New: AI Summary and AI FAQ generation now use the same page-builder-aware markdown pipeline, so builder-made posts produce accurate summaries and FAQs.
 * New: `rankready_post_raw_content` filter — developers can hook into the content pipeline to supply custom-rendered HTML before markdown conversion.
 * New: WooCommerce transactional pages (Cart, Checkout, My Account) are automatically stripped from markdown output, keeping AI surfaces clean and content-only.
+* New: RankReady's own AI Summary, FAQ, and Author Box shortcodes/blocks/widgets are now stripped from the markdown cache to avoid self-referencing.
 * Improved: Markdown cache is automatically cleared when a post is unpublished or excluded from AI surfaces.
+* Improved: Multilingual compatibility — WPML and Polylang translations each get their own cached markdown (separate posts). TranslatePress non-default languages gracefully disable markdown endpoints, content negotiation, and AI discovery hints so crawlers never see empty or untranslated content.
+* Improved: Content negotiation now returns the normal HTML page instead of empty markdown when a post has no meaningful content.
+* Improved: Output buffers (e.g. TranslatePress) are discarded before serving markdown to prevent HTML post-processing from corrupting plain-text output.
+* New: Elementor support — renders Elementor-built content with forced frontend mode to prevent editor UI leaking into markdown.
+* New: Beaver Builder support — renders BB layouts with published data and strips builder overlays.
+* New: Divi Builder support — processes Divi shortcode-based layouts through Divi's own render pipeline.
+* New: Oxygen Builder support — renders Oxygen shortcode layouts and strips builder wrapper markup.
+* New: Bricks Builder support — renders Bricks element data and strips builder panel markup.
+* New: WPBakery (Visual Composer) support — renders WPBakery shortcodes and strips editor controls.
+* New: Avada Fusion Builder support — renders Avada shortcode-based layouts and strips builder wrapper markup.
+* New: BeTheme Muffin Builder support — forces clean frontend output by overriding the Visual Builder state during save, preventing drag handles and edit buttons from polluting markdown.
 
 = 1.3.1, 2026-09-01 =
 

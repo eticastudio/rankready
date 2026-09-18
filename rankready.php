@@ -3,7 +3,7 @@
  * Plugin Name:       RankReady – AI SEO, Schema, llms.txt, AEO and GEO for ChatGPT, Gemini and Perplexity
  * Plugin URI:        https://hostmy.blog/plugins/rankready/
  * Description:       Make your WordPress content readable by ChatGPT, Perplexity, Claude, Gemini, and Google AI Overviews. AI summaries, FAQ schema, llms.txt, Markdown endpoints, agent discovery headers, WebMCP, and crawler controls — in one plugin.
- * Version:           1.3.2-beta2
+ * Version:           1.3.2-beta3
  * Requires at least: 6.9
  * Requires PHP:      7.4
  * Author:            HostMyBlog
@@ -91,7 +91,7 @@ if ( defined( 'RNRD_VERSION' ) ) {
 
 // ── Constants (guarded to prevent conflicts) ─────────────────────────────────
 if ( ! defined( 'RNRD_VERSION' ) ) {
-	define( 'RNRD_VERSION',  '1.3.2-beta2' );
+	define( 'RNRD_VERSION',  '1.3.2-beta3' );
 	define( 'RNRD_FILE',     __FILE__ );
 	define( 'RNRD_DIR',      plugin_dir_path( __FILE__ ) );
 	define( 'RNRD_URL',      plugin_dir_url( __FILE__ ) );
@@ -960,6 +960,7 @@ add_action( 'plugins_loaded', function (): void {
 	RNRD_Crawler_Access::init();
 	RNRD_Robots::init();
 	RNRD_Llms_Txt::init();
+	RNRD_Integrations::init();     // Page builder + multilingual + WooCommerce integration filters.
 	RNRD_Markdown::init();
 	RNRD_OKF::init();              // Open Knowledge Format (OKF) bundle at /okf/.
 	RNRD_Faq::init();
