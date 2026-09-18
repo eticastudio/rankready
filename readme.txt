@@ -332,21 +332,22 @@ Yes. RankReady is open source under GPL-2.0-or-later. The complete source ships 
 
 * New: Markdown caching — post markdown is now generated on save and served instantly from cache, instead of being rebuilt on every request.
 * New: AI Summary and AI FAQ generation now use the same page-builder-aware markdown pipeline, so builder-made posts produce accurate summaries and FAQs.
-* New: `rankready_post_raw_content` filter — developers can hook into the content pipeline to supply custom-rendered HTML before markdown conversion.
+* New: `rankready_post_content` filter — developers can hook into the content pipeline to supply custom-rendered HTML before markdown conversion.
 * New: WooCommerce transactional pages (Cart, Checkout, My Account) are automatically stripped from markdown output, keeping AI surfaces clean and content-only.
 * New: RankReady's own AI Summary, FAQ, and Author Box shortcodes/blocks/widgets are now stripped from the markdown cache to avoid self-referencing.
 * Improved: Markdown cache is automatically cleared when a post is unpublished or excluded from AI surfaces.
 * Improved: Multilingual compatibility — WPML and Polylang translations each get their own cached markdown (separate posts). TranslatePress non-default languages gracefully disable markdown endpoints, content negotiation, and AI discovery hints so crawlers never see empty or untranslated content.
 * Improved: Content negotiation now returns the normal HTML page instead of empty markdown when a post has no meaningful content.
 * Improved: Output buffers (e.g. TranslatePress) are discarded before serving markdown to prevent HTML post-processing from corrupting plain-text output.
-* New: Elementor support — renders Elementor-built content with forced frontend mode to prevent editor UI leaking into markdown.
-* New: Beaver Builder support — renders BB layouts with published data and strips builder overlays.
-* New: Divi Builder support — processes Divi shortcode-based layouts through Divi's own render pipeline.
-* New: Oxygen Builder support — renders Oxygen shortcode layouts and strips builder wrapper markup.
-* New: Bricks Builder support — renders Bricks element data and strips builder panel markup.
-* New: WPBakery (Visual Composer) support — renders WPBakery shortcodes and strips editor controls.
-* New: Avada Fusion Builder support — renders Avada shortcode-based layouts and strips builder wrapper markup.
-* New: BeTheme Muffin Builder support — forces clean frontend output by overriding the Visual Builder state during save, preventing drag handles and edit buttons from polluting markdown.
+* New: Page builder support — markdown endpoints, AI Summary, and AI FAQ generation now use the page builder's own frontend output instead of raw `post_content`. Supported builders: Elementor, Beaver Builder, Divi, Oxygen, Bricks, WPBakery (Visual Composer), Avada Fusion Builder, and BeTheme Muffin Builder.
+* New: `rankready_should_serve_markdown` filter — allows third-party code to suppress markdown serving per-request (used internally for TranslatePress non-default languages).
+* New: `rankready_translate_post`, `rankready_translation_md_urls`, `rankready_detect_language`, and `rankready_resolved_locale` filters — all multilingual and page builder logic now lives in RNRD_Integrations and is fully extensible via filters.
+* Fixed: Markdown cache now compares against `post_modified` to detect stale content, and all cached timestamps are flushed on plugin update so converter improvements regenerate lazily.
+* Fixed: Concurrent crawler requests no longer create duplicate `_rnrd_post_markdown` rows — a short transient lock prevents parallel generation, and a one-time migration de-duplicates any rows created by earlier betas.
+* Fixed: Shortcodes are no longer executed under WP-Cron or WP-Import, preventing crashes from plugins that register frontend-only shortcodes (Elementor, EDD, bbPress, JetEngine, MailPoet).
+* Fixed: Markdown cache is now cleared when all AI surfaces are disabled or when a post's type is no longer supported, so edits are never served from an outdated snapshot.
+* Fixed: The `wp_after_insert_post` hook (the most reliable for reading final post state) is no longer blocked by earlier hooks in the same request.
+* Fixed: A per-request generation cap prevents a single cold-cache request (e.g. `/llms-full.txt`) from generating hundreds of posts and writing unbounded DB rows.
 
 = 1.3.1, 2026-09-01 =
 

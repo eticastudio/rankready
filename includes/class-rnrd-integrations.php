@@ -9,7 +9,7 @@
  *
  * Filters consumed:
  *   rankready_should_serve_markdown  — Can markdown be served for this request?
- *   rankready_post_raw_content       — Supply / transform raw HTML before MD conversion.
+ *   rankready_post_content            — Supply / transform raw HTML before MD conversion.
  *   rankready_translate_post         — Swap a post for its translated counterpart.
  *   rankready_translation_md_urls    — Provide per-language .md hreflang URLs.
  *   rankready_detect_language        — Resolve the visitor's request language.
@@ -27,25 +27,25 @@ class RNRD_Integrations {
 		// ── Markdown suppression (TranslatePress non-default) ────────────
 		add_filter( 'rankready_should_serve_markdown', array( self::class, 'suppress_translatepress_non_default' ) );
 
-		// ── Page builder content filters (rankready_post_raw_content) ────
+		// ── Page builder content filters (rankready_post_content) ─────────
 		// 10–19: builders render content + strip wrappers.
-		add_filter( 'rankready_post_raw_content', array( self::class, 'filter_elementor_content' ), 10, 2 );
-		add_filter( 'rankready_post_raw_content', array( self::class, 'filter_beaver_builder_content' ), 11, 2 );
-		add_filter( 'rankready_post_raw_content', array( self::class, 'filter_divi_content' ), 12, 2 );
-		add_filter( 'rankready_post_raw_content', array( self::class, 'filter_oxygen_content' ), 13, 2 );
-		add_filter( 'rankready_post_raw_content', array( self::class, 'filter_bricks_content' ), 14, 2 );
-		add_filter( 'rankready_post_raw_content', array( self::class, 'filter_wpbakery_content' ), 15, 2 );
-		add_filter( 'rankready_post_raw_content', array( self::class, 'filter_avada_content' ), 16, 2 );
-		add_filter( 'rankready_post_raw_content', array( self::class, 'filter_muffin_builder_content' ), 17, 2 );
+		add_filter( 'rankready_post_content', array( self::class, 'filter_elementor_content' ), 10, 2 );
+		add_filter( 'rankready_post_content', array( self::class, 'filter_beaver_builder_content' ), 11, 2 );
+		add_filter( 'rankready_post_content', array( self::class, 'filter_divi_content' ), 12, 2 );
+		add_filter( 'rankready_post_content', array( self::class, 'filter_oxygen_content' ), 13, 2 );
+		add_filter( 'rankready_post_content', array( self::class, 'filter_bricks_content' ), 14, 2 );
+		add_filter( 'rankready_post_content', array( self::class, 'filter_wpbakery_content' ), 15, 2 );
+		add_filter( 'rankready_post_content', array( self::class, 'filter_avada_content' ), 16, 2 );
+		add_filter( 'rankready_post_content', array( self::class, 'filter_muffin_builder_content' ), 17, 2 );
 
 		// 90: shortcode fallback after all builder filters.
-		add_filter( 'rankready_post_raw_content', array( self::class, 'filter_run_shortcodes' ), 90, 2 );
+		add_filter( 'rankready_post_content', array( self::class, 'filter_run_shortcodes' ), 90, 2 );
 
 		// 95: strip RankReady's own AI Summary/FAQ/Author Box output.
-		add_filter( 'rankready_post_raw_content', array( self::class, 'filter_strip_rankready_output' ), 95, 2 );
+		add_filter( 'rankready_post_content', array( self::class, 'filter_strip_rankready_output' ), 95, 2 );
 
 		// 99: WooCommerce cart/checkout stripping — runs last.
-		add_filter( 'rankready_post_raw_content', array( self::class, 'filter_strip_woocommerce_blocks' ), 99, 2 );
+		add_filter( 'rankready_post_content', array( self::class, 'filter_strip_woocommerce_blocks' ), 99, 2 );
 
 		// ── Multilingual: post translation (WPML, Polylang) ─────────────
 		add_filter( 'rankready_translate_post', array( self::class, 'translate_post_wpml' ), 10, 2 );
@@ -81,27 +81,24 @@ class RNRD_Integrations {
 	 * @return bool
 	 */
 	public static function suppress_translatepress_non_default( bool $should_serve ): bool {
-		if ( ! $should_serve ) {
-			return false;
-		}
-
-		if ( ! defined( 'TRP_PLUGIN_VERSION' ) ) {
-			return true;
+		if ( ! $should_serve || ! defined( 'TRP_PLUGIN_VERSION' ) ) {
+			return $should_serve;
 		}
 
 		global $TRP_LANGUAGE;
 		if ( empty( $TRP_LANGUAGE ) ) {
-			return true;
+			return $should_serve;
 		}
 
 		$settings = (array) get_option( 'trp_settings', array() );
 		$default  = (string) ( $settings['default-language'] ?? '' );
 
-		if ( empty( $default ) || $TRP_LANGUAGE === $default ) {
-			return true;
+		// Non-default TranslatePress language → suppress markdown.
+		if ( ! empty( $default ) && $TRP_LANGUAGE !== $default ) {
+			return false;
 		}
 
-		return false;
+		return $should_serve;
 	}
 
 	// ═════════════════════════════════════════════════════════════════════════
@@ -389,10 +386,21 @@ class RNRD_Integrations {
 	 *
 	 * Runs at priority 90 — after all page builder filters (which handle
 	 * their own shortcode execution) but before WooCommerce cleanup at 99.
+	 *
+	 * IMPORTANT: Under WP-Cron and WP-Import, shortcodes must NOT execute.
+	 * Many plugins register shortcodes that call frontend-only APIs, load
+	 * assets, or fire side effects (Elementor, EDD, bbPress, JetEngine,
+	 * MailPoet). Executing them in a cron/import context can crash or
+	 * corrupt data. This guard was originally in v1.1.5 and v1.2.0-beta.4;
+	 * moving it here (in the pipeline) ensures it survives future refactors.
 	 */
 	public static function filter_run_shortcodes( string $html, WP_Post $post ): string {
 		if ( empty( $html ) ) {
 			return $html;
+		}
+
+		if ( wp_doing_cron() || ( defined( 'WP_IMPORTING' ) && WP_IMPORTING ) ) {
+			return strip_shortcodes( $html );
 		}
 
 		return do_shortcode( $html );

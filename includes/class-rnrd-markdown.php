@@ -1654,7 +1654,7 @@ class RNRD_Markdown {
 	// Moved from RNRD_Llms_Txt in v1.3.2 — single source of truth for the
 	// HTML→Markdown conversion. Strips ALL page builder wrappers and converts
 	// semantic HTML to clean markdown. Page builder content is resolved via
-	// the `rankready_post_raw_content` filter (Elementor, BB, Divi, Oxygen,
+	// the `rankready_post_content` filter (Elementor, BB, Divi, Oxygen,
 	// Bricks, WPBakery, BeTheme Muffin Builder). WooCommerce transactional
 	// blocks (cart, checkout, account) are stripped automatically.
 	// ═══════════════════════════════════════════════════════════════════════════
@@ -1666,27 +1666,34 @@ class RNRD_Markdown {
 	 * page builder wrapper divs/sections/spans. Preserves only semantic
 	 * content: headings, paragraphs, lists, links, images, blockquotes, code.
 	 *
-	 * @param WP_Post $post The post to convert.
+	 * @param WP_Post $post       The post to convert.
+	 * @param bool    $run_filter Whether to run the `rankready_post_content`
+	 *                            filter (page builders, shortcodes, WooCommerce
+	 *                            stripping, etc.). Pass false for a lightweight
+	 *                            post_content-only conversion.
 	 * @return string Clean markdown body.
 	 */
-	public static function post_to_clean_markdown( $post ): string {
-		/**
-		 * Filter the raw HTML content before markdown conversion.
-		 *
-		 * Page builders that don't store rendered output in post_content can
-		 * use this filter to supply their rendered HTML. Each page builder
-		 * filter also strips its own wrapper markup, so the converter below
-		 * only needs to handle generic/semantic elements.
-		 *
-		 * Shortcodes are executed by a dedicated filter at priority 90 —
-		 * after all page builder filters (which run their own do_shortcode
-		 * internally when needed) but before the WooCommerce cleanup at 99.
-		 *
-		 * @since 1.3.2-beta1
-		 * @param string  $html The raw HTML (post_content by default).
-		 * @param WP_Post $post The post being converted.
-		 */
-		$html = (string) apply_filters( 'rankready_post_raw_content', $post->post_content, $post );
+	public static function post_to_clean_markdown( $post, bool $run_filter = true ): string {
+		if ( $run_filter ) {
+			/**
+			 * Filter the raw HTML content before markdown conversion.
+			 *
+			 * Page builders that don't store rendered output in post_content
+			 * can use this filter to supply their rendered HTML. Each builder
+			 * filter also strips its own wrapper markup.
+			 *
+			 * Shortcodes are executed by a dedicated filter at priority 90 —
+			 * after all builder filters (which run their own do_shortcode
+			 * internally when needed) but before WooCommerce cleanup at 99.
+			 *
+			 * @since 1.3.2-beta1
+			 * @param string  $html The raw HTML (post_content by default).
+			 * @param WP_Post $post The post being converted.
+			 */
+			$html = (string) apply_filters( 'rankready_post_content', $post->post_content, $post );
+		} else {
+			$html = $post->post_content;
+		}
 
 		if ( empty( $html ) ) {
 			return '';
@@ -1834,23 +1841,62 @@ class RNRD_Markdown {
 	 *
 	 * This is the primary entry point for consumers that need the clean
 	 * markdown body of a post. It checks post meta first and only runs
-	 * the HTML→Markdown conversion when the cache is missing.
+	 * the HTML→Markdown conversion when the cache is missing or stale.
+	 *
+	 * Cache is considered valid when the cached timestamp is > 0 AND
+	 * was written after the post's last modification date.
+	 *
+	 * When generation is not possible (cap reached or another request
+	 * holds the lock), we return stale cache if available, or fall back
+	 * to a lightweight post_content-only markdown (no page builder
+	 * filters) to avoid returning empty.
 	 *
 	 * @since 1.3.2-beta1
 	 * @param WP_Post $post The post to get markdown for.
 	 * @return string Clean markdown body (may be empty for posts with no content).
 	 */
 	public static function get_post_markdown( WP_Post $post ): string {
-		$cached_ts = (int) get_post_meta( $post->ID, RNRD_META_POST_MARKDOWN_TS, true );
+		$markdown      = (string) get_post_meta( $post->ID, RNRD_META_POST_MARKDOWN, true );
+		$cached_ts     = (int) get_post_meta( $post->ID, RNRD_META_POST_MARKDOWN_TS, true );
+		$post_modified = (int) get_post_modified_time( 'U', true, $post );
 
-		if ( $cached_ts > 0 ) {
-			// Markdown has been generated before — return the cached version.
-			return (string) get_post_meta( $post->ID, RNRD_META_POST_MARKDOWN, true );
+		// Cache hit — fresh and valid.
+		if ( ! empty( $markdown ) && $cached_ts > 0 && $cached_ts >= $post_modified ) {
+			return $markdown;
 		}
 
-		// No cached markdown — generate, cache, and return.
+		// Cap: prevent a single request from generating hundreds of posts.
+		if ( self::$generation_count >= self::GENERATION_CAP ) {
+			if ( ! empty( $markdown ) ) {
+				return $markdown;
+			}
+			// Lightweight fallback — post_content only, no builder filters.
+			if ( ! empty( $post->post_content ) ) {
+				return self::post_to_clean_markdown( $post, false );
+			}
+			return '';
+		}
+
+		// Short lock to prevent concurrent requests from duplicating rows.
+		$lock_key = 'rnrd_md_gen_' . $post->ID;
+		if ( false === get_transient( $lock_key ) ) {
+			set_transient( $lock_key, 1, 30 );
+		} else {
+			// Another request is already generating.
+			if ( ! empty( $markdown ) ) {
+				return $markdown;
+			}
+			if ( ! empty( $post->post_content ) ) {
+				return self::post_to_clean_markdown( $post, false );
+			}
+			return '';
+		}
+
 		$markdown = self::post_to_clean_markdown( $post );
 		self::save_post_markdown( $post->ID, $markdown );
+		self::$generation_count++;
+
+		delete_transient( $lock_key );
 
 		return $markdown;
 	}
@@ -1951,11 +1997,13 @@ class RNRD_Markdown {
 
 		// Guard: multiple hooks (wp_after_insert_post, save_post,
 		// transition_post_status) may fire in the same request. Only
-		// process each post once.
+		// process each post once. Flag is set AFTER generation (not
+		// before) so the most-reliable hook (wp_after_insert_post)
+		// is never blocked by an earlier hook that ran before meta
+		// and terms were fully saved.
 		if ( isset( self::$processed_post_ids[ $post_id ] ) ) {
 			return;
 		}
-		self::$processed_post_ids[ $post_id ] = true;
 
 		// Check if at least one AI surface feature is enabled.
 		$md_on   = 'on' === get_option( RNRD_OPT_MD_ENABLE, 'off' );
@@ -1963,6 +2011,10 @@ class RNRD_Markdown {
 		$okf_on  = class_exists( 'RNRD_OKF' ) && 'on' === get_option( RNRD_OPT_OKF_ENABLE, 'off' );
 
 		if ( ! $md_on && ! $llms_on && ! $okf_on ) {
+			// All AI surfaces off — clear stale cache so edits aren't
+			// served from an outdated snapshot once a surface is re-enabled.
+			delete_post_meta( $post_id, RNRD_META_POST_MARKDOWN );
+			delete_post_meta( $post_id, RNRD_META_POST_MARKDOWN_TS );
 			return;
 		}
 
@@ -1988,6 +2040,9 @@ class RNRD_Markdown {
 		}
 
 		if ( ! $supported ) {
+			// Post type not covered by any active surface — clear stale cache.
+			delete_post_meta( $post_id, RNRD_META_POST_MARKDOWN );
+			delete_post_meta( $post_id, RNRD_META_POST_MARKDOWN_TS );
 			return;
 		}
 
@@ -1999,9 +2054,12 @@ class RNRD_Markdown {
 			return;
 		}
 
-		// Generate and cache the markdown.
+		// Generate and cache the markdown. Set the guard AFTER so a
+		// second wp_update_post() in the same request (ACF, Yoast,
+		// translation plugins) can still re-generate if needed.
 		$markdown = self::post_to_clean_markdown( $post );
 		self::save_post_markdown( $post_id, $markdown );
+		self::$processed_post_ids[ $post_id ] = true;
 	}
 
 	// ── Markdown generator ───────────────────────────────────────────────────

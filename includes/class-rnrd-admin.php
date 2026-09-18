@@ -1607,9 +1607,9 @@ class RNRD_Admin {
 				</div>
 				<p class="rnrd-aside-card__version">v<?php echo esc_html( RNRD_VERSION ); ?></p>
 				<ul class="rnrd-aside-changes">
-					<li><strong><?php esc_html_e( 'Cached markdown.', 'rankready-ai-llm-seo' ); ?></strong> <?php esc_html_e( 'Post markdown is now generated on save and stored in post meta — requests are served instantly without on-the-fly conversion.', 'rankready-ai-llm-seo' ); ?></li>
-					<li><strong><?php esc_html_e( 'Page builder support.', 'rankready-ai-llm-seo' ); ?></strong> <?php esc_html_e( 'Elementor, Divi, WPBakery, Beaver Builder, Bricks, Oxygen, Avada Fusion Builder, and BeTheme Muffin Builder content is now rendered and cleaned for AI surfaces.', 'rankready-ai-llm-seo' ); ?></li>
-					<li><strong><?php esc_html_e( 'Multilingual support.', 'rankready-ai-llm-seo' ); ?></strong> <?php esc_html_e( 'WPML and Polylang translations each get their own cached markdown. TranslatePress non-default languages gracefully disable markdown so crawlers never see untranslated content.', 'rankready-ai-llm-seo' ); ?></li>
+					<li><strong><?php esc_html_e( 'Cached markdown.', 'rankready-ai-llm-seo' ); ?></strong> <?php esc_html_e( 'Post markdown is now generated on save, version-stamped, and served instantly from cache. Stale caches auto-regenerate on edits or plugin updates.', 'rankready-ai-llm-seo' ); ?></li>
+					<li><strong><?php esc_html_e( 'Page builder support.', 'rankready-ai-llm-seo' ); ?></strong> <?php esc_html_e( 'Markdown endpoints, AI Summary, and AI FAQ now use page builder frontend output. Supported: Elementor, Divi, WPBakery, Beaver Builder, Bricks, Oxygen, Avada, BeTheme.', 'rankready-ai-llm-seo' ); ?></li>
+					<li><strong><?php esc_html_e( 'Reliability fixes.', 'rankready-ai-llm-seo' ); ?></strong> <?php esc_html_e( 'Concurrent crawler races, cron shortcode crashes, stale caches, and unbounded cold-cache generation are all resolved.', 'rankready-ai-llm-seo' ); ?></li>
 				</ul>
 			</div>
 			<?php endif; ?>

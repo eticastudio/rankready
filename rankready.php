@@ -707,6 +707,44 @@ add_action( 'plugins_loaded', function (): void {
 			}
 		}
 
+		// v1.3.2 — De-duplicate _rnrd_post_markdown meta rows created by
+		// concurrent requests (Blocker 1). wp_postmeta has no unique index on
+		// (post_id, meta_key), so parallel GETs that both missed the cache
+		// each INSERT. This one-shot migration keeps only the newest row per
+		// post and deletes the rest. Safe to re-run; a no-op when no dupes.
+		if ( ! get_option( 'rnrd_md_dedup_migrated_v132' ) ) {
+			global $wpdb;
+			// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching
+			$wpdb->query(
+				"DELETE pm FROM {$wpdb->postmeta} pm
+				 INNER JOIN (
+				   SELECT post_id, meta_key, MAX(meta_id) AS keep_id
+				   FROM {$wpdb->postmeta}
+				   WHERE meta_key IN ('_rnrd_post_markdown', '_rnrd_post_markdown_ts')
+				   GROUP BY post_id, meta_key
+				   HAVING COUNT(*) > 1
+				 ) dup ON pm.post_id = dup.post_id AND pm.meta_key = dup.meta_key AND pm.meta_id != dup.keep_id"
+			);
+			// Also remove any leftover _rnrd_post_markdown_ver rows from earlier betas.
+			// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching
+			$wpdb->query(
+				"DELETE FROM {$wpdb->postmeta} WHERE meta_key = '_rnrd_post_markdown_ver'"
+			);
+			update_option( 'rnrd_md_dedup_migrated_v132', 1, false );
+		}
+
+		// Flush markdown cache timestamps on every version bump so the
+		// converter improvements in the new release regenerate lazily.
+		// Deleting only the timestamp is cheap and keeps the body as a
+		// stale fallback until the fresh version is generated.
+		{
+			global $wpdb;
+			// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching
+			$wpdb->query(
+				"DELETE FROM {$wpdb->postmeta} WHERE meta_key = '_rnrd_post_markdown_ts'"
+			);
+		}
+
 		// Re-persist cache exclusions on upgrade. Activation does not fire on
 		// WordPress.org auto-updates, and this must run BEFORE the version
 		// marker is bumped — an older admin_init silent-update path was
