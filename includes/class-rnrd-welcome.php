@@ -20,7 +20,18 @@ class RNRD_Welcome {
 	private const MENU_SLUG     = 'rankready-welcome';
 	private const SETTINGS_SLUG = 'rankready-ai-llm-seo';
 	private const FLAG_OPTION   = 'rnrd_welcome_completed';
+	/**
+	 * Set the first time the wizard is shown automatically. Until 1.4.0 the
+	 * main page bounced to the wizard on EVERY visit before completion or Skip,
+	 * so someone who left the wizard through the sidebar could not reach a
+	 * single settings tab. It now takes over the page once, as documented.
+	 */
+	private const PROMPTED_OPTION = 'rnrd_welcome_prompted';
+
 	private const REDIRECT_KEY  = 'rnrd_welcome_redirect';
+
+	/** Hook suffix of the wizard screen, set in register_page(). */
+	private static string $hook_suffix = '';
 
 	/**
 	 * HostMyBlog subscribe endpoint for the RankReady tips list. Contacted ONLY
@@ -42,6 +53,7 @@ class RNRD_Welcome {
 		add_action( 'admin_init',  array( self::class, 'maybe_redirect' ) );
 		add_action( 'admin_init',  array( self::class, 'maybe_handle_submit' ) );
 		add_action( 'admin_init',  array( self::class, 'maybe_migrate_tips_flag' ) );
+		add_action( 'admin_enqueue_scripts', array( self::class, 'enqueue_assets' ) );
 	}
 
 	/**
@@ -49,6 +61,11 @@ class RNRD_Welcome {
 	 * see the opt-in. Tracking is now per logged-in admin via user_meta.
 	 */
 	public static function maybe_migrate_tips_flag(): void {
+		// admin_init fires for every logged-in role; only an admin should
+		// trigger this one-shot option write, same as the handlers beside it.
+		if ( ! current_user_can( 'manage_options' ) ) {
+			return;
+		}
 		if ( false === get_option( 'rnrd_tips_optin_sent', false ) ) {
 			return;
 		}
@@ -126,6 +143,7 @@ class RNRD_Welcome {
 			if ( 'settings' === $activation_target ) {
 				wp_safe_redirect( admin_url( 'admin.php?page=' . self::SETTINGS_SLUG ) );
 			} else {
+				update_option( self::PROMPTED_OPTION, time(), false );
 				wp_safe_redirect( admin_url( 'admin.php?page=' . self::MENU_SLUG ) );
 			}
 			exit;
@@ -143,6 +161,13 @@ class RNRD_Welcome {
 			exit;
 		}
 
+		// Opening the wizard by hand (menu, bookmark) counts as being shown it.
+		// Without this, a user who reaches the wizard that way and follows its
+		// own "AI Content" link is bounced straight back by trigger 2 below.
+		if ( self::MENU_SLUG === $page && ! get_option( self::PROMPTED_OPTION ) ) {
+			update_option( self::PROMPTED_OPTION, time(), false );
+		}
+
 		// Already onboarded — no further automatic redirects.
 		if ( get_option( self::FLAG_OPTION ) ) {
 			return;
@@ -152,7 +177,10 @@ class RNRD_Welcome {
 		//    having onboarded — send them through the wizard once. Only when
 		//    they land on the main RankReady page (never the wizard page itself,
 		//    never any unrelated admin screen, never during the update process).
-		if ( self::SETTINGS_SLUG === $page ) {
+		//    Once means once: after that the wizard stays one click away in the
+		//    dashboard, and the settings are reachable without finishing it.
+		if ( self::SETTINGS_SLUG === $page && ! get_option( self::PROMPTED_OPTION ) ) {
+			update_option( self::PROMPTED_OPTION, time(), false );
 			wp_safe_redirect( admin_url( 'admin.php?page=' . self::MENU_SLUG ) );
 			exit;
 		}
@@ -196,13 +224,34 @@ class RNRD_Welcome {
 
 	public static function register_page(): void {
 		// Hidden admin page under options.php — not shown in the sidebar
-		add_submenu_page(
+		self::$hook_suffix = (string) add_submenu_page(
 			'options.php',
 			__( 'RankReady Setup', 'rankready-ai-llm-seo' ),
 			__( 'RankReady Setup', 'rankready-ai-llm-seo' ),
 			'manage_options',
 			self::MENU_SLUG,
 			array( self::class, 'render_page' )
+		);
+	}
+
+	/**
+	 * Wizard stylesheet and script, on the wizard screen only.
+	 *
+	 * @param string $hook Current admin page hook suffix.
+	 */
+	public static function enqueue_assets( string $hook ): void {
+		if ( '' === self::$hook_suffix || $hook !== self::$hook_suffix ) {
+			return;
+		}
+		wp_enqueue_style( 'rnrd-onboarding', RNRD_URL . 'assets/onboarding.css', array(), RNRD_VERSION );
+		wp_enqueue_script( 'rnrd-onboarding', RNRD_URL . 'assets/onboarding.js', array(), RNRD_VERSION, true );
+		wp_localize_script(
+			'rnrd-onboarding',
+			'rnrdOnboard',
+			array(
+				'home'     => home_url( '/' ),
+				'siteName' => get_bloginfo( 'name' ),
+			)
 		);
 	}
 
@@ -249,9 +298,13 @@ class RNRD_Welcome {
 		if ( '' !== $terms )   update_option( RNRD_OPT_BRAND_TERMS, $terms );
 
 		// Tips opt-in — only fires when the user ticked the box. Explicit consent only.
-		self::maybe_subscribe_tips();
+		$tips = self::maybe_subscribe_tips();
 
-		wp_safe_redirect( admin_url( 'admin.php?page=' . self::MENU_SLUG . '&step=2' ) );
+		$next = admin_url( 'admin.php?page=' . self::MENU_SLUG . '&step=2' );
+		if ( 'fail' === $tips ) {
+			$next = add_query_arg( 'tips', 'fail', $next );
+		}
+		wp_safe_redirect( $next );
 		exit;
 	}
 
@@ -300,7 +353,7 @@ class RNRD_Welcome {
 					array(
 						'option'  => RNRD_OPT_LLMS_FULL_ENABLE,
 						'label'   => __( 'LLMs-full.txt (extended index)', 'rankready-ai-llm-seo' ),
-						'hint'    => __( 'Deeper site corpus at /llms-full.txt — requires LLMs.txt; enable when you want the full index', 'rankready-ai-llm-seo' ),
+						'hint'    => __( 'The fuller site corpus at /llms-full.txt. Needs LLMs.txt on. Turn it on when you want the full index', 'rankready-ai-llm-seo' ),
 						'default' => false,
 						'nested'  => true,
 						'depends' => RNRD_OPT_LLMS_ENABLE,
@@ -315,7 +368,7 @@ class RNRD_Welcome {
 					array(
 						'option'  => RNRD_OPT_MCP_ENABLE,
 						'label'   => __( 'WebMCP', 'rankready-ai-llm-seo' ),
-						'hint'    => __( 'Expose /.well-known/mcp.json for Claude, Cursor, and VS Code — opt in when you are ready', 'rankready-ai-llm-seo' ),
+						'hint'    => __( 'Publishes /.well-known/mcp.json for Claude, Cursor and VS Code. Opt in when you are ready', 'rankready-ai-llm-seo' ),
 						'default' => false,
 						'opt_in'  => true,
 					),
@@ -339,7 +392,7 @@ class RNRD_Welcome {
 					array(
 						'option'  => RNRD_OPT_SCHEMA_ARTICLE,
 						'label'   => __( 'Article schema', 'rankready-ai-llm-seo' ),
-						'hint'    => __( 'Structured Article markup for AI citation', 'rankready-ai-llm-seo' ),
+						'hint'    => __( 'Structured Article markup AI crawlers can parse', 'rankready-ai-llm-seo' ),
 						'default' => true,
 					),
 					array(
@@ -397,12 +450,20 @@ class RNRD_Welcome {
 
 	private static function apply_feature_toggles_from_post(): void {
 		// phpcs:disable WordPress.Security.NonceVerification.Missing -- Nonce verified in maybe_handle_submit() before dispatch.
-		$posted = isset( $_POST['rnrd_feat'] ) && is_array( $_POST['rnrd_feat'] )
-			? wp_unslash( $_POST['rnrd_feat'] )
-			: array();
+		/*
+		 * Only presence matters here: a checkbox is either in the POST or not.
+		 *
+		 * So rather than unslash the whole array and index it by keys that came
+		 * from the request, the known option list is walked and each key is
+		 * looked up individually. Nothing from $_POST is ever used as a key, a
+		 * value, or an option name, which is what the earlier version got wrong:
+		 * it sanitised the values while still trusting the keys.
+		 */
+		// phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- presence only; no key or value from this array is ever used, see above.
+		$raw = ( isset( $_POST['rnrd_feat'] ) && is_array( $_POST['rnrd_feat'] ) ) ? wp_unslash( $_POST['rnrd_feat'] ) : array();
 
 		foreach ( self::get_feature_option_keys() as $option ) {
-			$on = ! empty( $posted[ $option ] );
+			$on = ! empty( $raw[ $option ] );
 			update_option( $option, $on ? 'on' : 'off' );
 		}
 
@@ -464,20 +525,42 @@ class RNRD_Welcome {
 	 * @return list<string>
 	 */
 	private static function get_completion_items(): array {
-		$items   = array( __( 'Brand Identity saved', 'rankready-ai-llm-seo' ) );
+		$items     = array();
 		$wc_active = post_type_exists( 'product' );
 
+		// Issue #17: this used to be added unconditionally, so a fresh install
+		// with every brand field left blank still ticked "Brand Identity saved".
+		// Only claim it if the admin actually entered at least one of the three.
+		$brand_name  = (string) get_option( 'rnrd_llms_site_name', '' );
+		$brand_sum   = (string) get_option( 'rnrd_llms_summary', '' );
+		$brand_about = (string) get_option( 'rnrd_llms_about', '' );
+		if ( '' !== trim( $brand_name ) || '' !== trim( $brand_sum ) || '' !== trim( $brand_about ) ) {
+			$items[] = __( 'Brand Identity saved', 'rankready-ai-llm-seo' );
+		}
+
 		if ( self::is_option_on( RNRD_OPT_LLMS_ENABLE, false ) ) {
-			$items[] = __( '/llms.txt site index live', 'rankready-ai-llm-seo' );
+			$items[] = __( '/llms.txt site index turned on', 'rankready-ai-llm-seo' );
 		}
 		if ( self::is_option_on( RNRD_OPT_LLMS_FULL_ENABLE, false ) ) {
-			$items[] = __( '/llms-full.txt extended index live', 'rankready-ai-llm-seo' );
+			$items[] = __( '/llms-full.txt extended index turned on', 'rankready-ai-llm-seo' );
 		}
 		if ( self::is_option_on( RNRD_OPT_MD_ENABLE, false ) ) {
-			$items[] = __( 'Per-post /post-slug.md endpoints live', 'rankready-ai-llm-seo' );
+			$items[] = __( 'Per-post /post-slug.md endpoints turned on', 'rankready-ai-llm-seo' );
 		}
 		if ( self::is_option_on( RNRD_OPT_ROBOTS_ENABLE, false ) ) {
-			$items[] = __( 'robots.txt allowing 30+ AI crawlers', 'rankready-ai-llm-seo' );
+			// Counted from the canonical list, never hardcoded. The literal it
+			// replaced said "30+" against an actual 29, and readme.txt and the
+			// pricing page both already said 29 — three numbers, one list.
+			$crawler_count = class_exists( 'RNRD_Crawler_Access' )
+				? count( RNRD_Crawler_Access::get_llm_crawlers() )
+				: 0;
+			$items[] = $crawler_count > 0
+				? sprintf(
+					/* translators: %d: number of AI crawler user-agents named in robots.txt */
+					__( 'robots.txt naming %d AI crawlers', 'rankready-ai-llm-seo' ),
+					$crawler_count
+				)
+				: __( 'robots.txt AI crawler rules', 'rankready-ai-llm-seo' );
 		}
 		if ( self::is_option_on( RNRD_OPT_CONTENT_SIGNALS_ENABLE, false ) ) {
 			$items[] = __( 'Content Signals in robots.txt', 'rankready-ai-llm-seo' );
@@ -519,15 +602,15 @@ class RNRD_Welcome {
 	 * per-user meta so re-running the wizard never re-subscribes that admin.
 	 * See readme.txt "External services".
 	 */
-	private static function maybe_subscribe_tips(): void {
+	private static function maybe_subscribe_tips(): string {
 		// phpcs:disable WordPress.Security.NonceVerification.Missing -- Nonce verified in maybe_handle_submit() before dispatch.
 		if ( empty( $_POST['rnrd_onboard_tips_optin'] ) ) {
-			return;
+			return '';
 		}
 		$email = sanitize_email( wp_unslash( $_POST['rnrd_onboard_email'] ?? '' ) );
 		$fname = sanitize_text_field( wp_unslash( $_POST['rnrd_onboard_first_name'] ?? '' ) );
 		// phpcs:enable WordPress.Security.NonceVerification.Missing
-		self::subscribe_email( $email, $fname, 'RankReady Plugin Onboarding' );
+		return self::subscribe_email( $email, $fname, 'RankReady Plugin Onboarding' ) ? 'ok' : 'fail';
 	}
 
 	/**
@@ -659,7 +742,7 @@ class RNRD_Welcome {
 
 	public static function render_page(): void {
 		if ( ! current_user_can( 'manage_options' ) ) {
-			wp_die( esc_html__( 'Insufficient permissions.', 'rankready-ai-llm-seo' ) );
+			wp_die( esc_html__( 'You do not have permission to view this page.', 'rankready-ai-llm-seo' ) );
 		}
 
 		// phpcs:ignore WordPress.Security.NonceVerification.Recommended
@@ -697,13 +780,12 @@ class RNRD_Welcome {
 		$pct = (int) round( ( $step / $total ) * 100 );
 		?>
 		<div class="rnrd-onboard">
-		<?php self::render_styles(); ?>
 
 		<!-- Logo + step counter -->
 		<div class="rnrd-onboard__brand">
 			<span class="rnrd-onboard__dot" aria-hidden="true"></span>
 			<span>RankReady</span>
-			<span class="rnrd-onboard__step-count">
+			<span class="rnrd-onboard__step-count" id="rnrd-onboard-stepcount">
 				<?php
 				/* translators: 1: current step number, 2: total steps */
 				printf( esc_html__( 'Step %1$d of %2$d', 'rankready-ai-llm-seo' ), absint( $step ), absint( $total ) );
@@ -711,8 +793,25 @@ class RNRD_Welcome {
 			</span>
 		</div>
 
+		<?php
+		/*
+		 * The progressbar role carried a value and no name, so a screen reader
+		 * announced "33 percent" with nothing saying what was a third done.
+		 * The visible "Step 1 of 3" beside it is the name, and it is already
+		 * written; aria-labelledby points at it rather than duplicating the
+		 * string into a second translatable. aria-valuetext makes the
+		 * announcement the step count instead of a percentage nobody counted
+		 * in, since the steps are what the reader is moving through.
+		 */
+		$step_label = sprintf(
+			/* translators: 1: current step number, 2: total steps */
+			__( 'Step %1$d of %2$d', 'rankready-ai-llm-seo' ),
+			absint( $step ),
+			absint( $total )
+		);
+		?>
 		<!-- Progress bar -->
-		<div class="rnrd-onboard__progress-track" role="progressbar" aria-valuenow="<?php echo esc_attr( $pct ); ?>" aria-valuemin="0" aria-valuemax="100">
+		<div class="rnrd-onboard__progress-track" role="progressbar" aria-labelledby="rnrd-onboard-stepcount" aria-valuetext="<?php echo esc_attr( $step_label ); ?>" aria-valuenow="<?php echo esc_attr( $pct ); ?>" aria-valuemin="0" aria-valuemax="100">
 			<div class="rnrd-onboard__progress-fill" style="width:<?php echo esc_attr( $pct ); ?>%"></div>
 		</div>
 
@@ -744,7 +843,7 @@ class RNRD_Welcome {
 			<?php esc_html_e( 'Welcome to RankReady', 'rankready-ai-llm-seo' ); ?>
 		</h1>
 		<p class="rnrd-onboard__lede">
-			<?php esc_html_e( 'Make your site readable by ChatGPT, Claude, Perplexity, and Google AI in about 2 minutes. Start with brand identity — these four fields feed every AI surface RankReady controls. The panel on the right shows exactly where each one is used.', 'rankready-ai-llm-seo' ); ?>
+			<?php esc_html_e( 'Make your site readable by ChatGPT, Claude, Perplexity and Google AI. Start with your brand: these four fields feed every AI surface RankReady controls. The panel alongside shows where each one is used and previews your /llms.txt as you type.', 'rankready-ai-llm-seo' ); ?>
 		</p>
 
 		<div class="rnrd-onboard__split">
@@ -757,7 +856,7 @@ class RNRD_Welcome {
 						<?php esc_html_e( 'Site / brand name', 'rankready-ai-llm-seo' ); ?>
 					</label>
 					<p class="rnrd-onboard__hint">
-						<?php esc_html_e( 'The canonical brand name. ChatGPT quotes it, Claude cites it, Google AI Overviews uses it as the entity name. Leave blank to fall back to the WordPress site title.', 'rankready-ai-llm-seo' ); ?>
+						<?php esc_html_e( 'The canonical brand name. Used as the Organization entity name in schema, llms.txt and every generated summary. Leave blank to fall back to the WordPress site title.', 'rankready-ai-llm-seo' ); ?>
 					</p>
 					<input
 						type="text"
@@ -775,7 +874,7 @@ class RNRD_Welcome {
 						<?php esc_html_e( 'One-line summary', 'rankready-ai-llm-seo' ); ?>
 					</label>
 					<p class="rnrd-onboard__hint">
-						<?php esc_html_e( 'A single sentence an AI engine can quote. Shows up under the brand name in /llms.txt and gets repeated verbatim in AI summaries. Max 160 characters.', 'rankready-ai-llm-seo' ); ?>
+						<?php esc_html_e( 'A single sentence that describes the brand. Shows up under the brand name in /llms.txt and in every summary RankReady generates. Max 160 characters.', 'rankready-ai-llm-seo' ); ?>
 					</p>
 					<textarea
 						id="rnrd_llms_summary"
@@ -792,7 +891,7 @@ class RNRD_Welcome {
 						<?php esc_html_e( 'About (optional)', 'rankready-ai-llm-seo' ); ?>
 					</label>
 					<p class="rnrd-onboard__hint">
-						<?php esc_html_e( 'Detailed context for AI engines to recommend the site confidently — audience, differentiators, proof. Markdown supported. ≤ 500 characters.', 'rankready-ai-llm-seo' ); ?>
+						<?php esc_html_e( 'Detailed context that goes into your llms.txt, so an AI crawler reads who the site is for: audience, differentiators, proof. Markdown supported. Max 500 characters.', 'rankready-ai-llm-seo' ); ?>
 					</p>
 					<textarea
 						id="rnrd_llms_about"
@@ -809,7 +908,7 @@ class RNRD_Welcome {
 						<?php esc_html_e( 'Canonical brand terms', 'rankready-ai-llm-seo' ); ?>
 					</label>
 					<p class="rnrd-onboard__hint">
-						<?php esc_html_e( 'One canonical name per line — exact capitalisation and spacing. Include product names, frequent misspellings, abbreviations. AI engines unify every variant into a single recognised entity.', 'rankready-ai-llm-seo' ); ?>
+						<?php esc_html_e( 'One canonical name per line, exact capitalisation and spacing. Include product names, frequent misspellings, abbreviations. RankReady then writes the canonical form everywhere it publishes your name, so a crawler sees one spelling instead of five.', 'rankready-ai-llm-seo' ); ?>
 					</p>
 					<textarea
 						id="rnrd_brand_terms"
@@ -863,14 +962,14 @@ class RNRD_Welcome {
 						/>
 					</div>
 					<p class="rnrd-onboard__hint rnrd-onboard__optin-hint">
-						<?php esc_html_e( 'Practical AI SEO tips and tricks, plus RankReady product updates — straight to your inbox. No spam, unsubscribe anytime.', 'rankready-ai-llm-seo' ); ?>
+						<?php esc_html_e( 'Practical AI SEO tips plus RankReady product updates, straight to your inbox. No spam, unsubscribe anytime.', 'rankready-ai-llm-seo' ); ?>
 					</p>
 				</div>
 				<?php endif; ?>
 
 				<div class="rnrd-onboard__actions">
 					<button type="submit" class="rnrd-onboard__btn rnrd-onboard__btn--primary">
-						<?php esc_html_e( 'Continue →', 'rankready-ai-llm-seo' ); ?>
+						<?php esc_html_e( 'Save and continue', 'rankready-ai-llm-seo' ); ?>
 					</button>
 					<a class="rnrd-onboard__skip" href="<?php echo esc_url( wp_nonce_url( admin_url( 'admin.php?page=rankready-ai-llm-seo&rnrd_onboard_skip=1' ), 'rnrd_onboard_skip' ) ); ?>">
 						<?php esc_html_e( 'Skip for now', 'rankready-ai-llm-seo' ); ?>
@@ -878,11 +977,11 @@ class RNRD_Welcome {
 				</div>
 			</form>
 
-			<aside class="rnrd-onboard__sidebar" aria-label="<?php esc_attr_e( 'Where these fields appear', 'rankready-ai-llm-seo' ); ?>">
+			<aside class="rnrd-onboard__sidebar" aria-label="<?php esc_attr_e( 'Where this goes', 'rankready-ai-llm-seo' ); ?>">
 				<div class="rnrd-onboard__sidebar-inner">
 					<h2 class="rnrd-onboard__sidebar-title"><?php esc_html_e( 'Where this goes', 'rankready-ai-llm-seo' ); ?></h2>
 					<p class="rnrd-onboard__sidebar-lede">
-						<?php esc_html_e( 'These exact fields are read by every AI surface RankReady controls. One place to write, six places to be cited.', 'rankready-ai-llm-seo' ); ?>
+						<?php esc_html_e( 'These exact fields are read by every AI surface RankReady controls. One place to write, seven places it shows up.', 'rankready-ai-llm-seo' ); ?>
 					</p>
 
 					<ul class="rnrd-onboard__sidebar-list">
@@ -900,11 +999,11 @@ class RNRD_Welcome {
 						</li>
 						<li>
 							<?php esc_html_e( 'AI Summary prompt', 'rankready-ai-llm-seo' ); ?>
-							<span><?php esc_html_e( 'Brand name is forced into every per-post summary so ChatGPT cites you by name, not "this site".', 'rankready-ai-llm-seo' ); ?></span>
+							<span><?php esc_html_e( 'Brand name is written into every per-post summary, so the text names you rather than "this site".', 'rankready-ai-llm-seo' ); ?></span>
 						</li>
 						<li>
 							<?php esc_html_e( 'FAQ generation prompt', 'rankready-ai-llm-seo' ); ?>
-							<span><?php esc_html_e( 'Brand context anchors every FAQ answer — deduped against per-FAQ legacy fields.', 'rankready-ai-llm-seo' ); ?></span>
+							<span><?php esc_html_e( 'Brand context anchors every FAQ answer, without duplicating FAQs you already wrote by hand.', 'rankready-ai-llm-seo' ); ?></span>
 						</li>
 						<li>
 							<code>/.well-known/mcp.json</code>
@@ -915,6 +1014,22 @@ class RNRD_Welcome {
 							<span><?php esc_html_e( 'Sent when an agent requests text/markdown for /. Uses brand name + one-liner as the header.', 'rankready-ai-llm-seo' ); ?></span>
 						</li>
 					</ul>
+
+					<div class="rnrd-onboard__preview" aria-live="polite">
+						<p class="rnrd-onboard__preview-title">
+							<?php esc_html_e( 'Your /llms.txt, as you type', 'rankready-ai-llm-seo' ); ?>
+						</p>
+						<pre class="rnrd-onboard__preview-code"><code id="rnrd-llms-preview"></code></pre>
+						<p class="rnrd-onboard__preview-note">
+							<?php
+							printf(
+								/* translators: %s is the site's llms.txt URL. */
+								esc_html__( 'This is the top of the file agents fetch at %s. Your published pages are listed below it.', 'rankready-ai-llm-seo' ),
+								'<code>' . esc_html( home_url( '/llms.txt' ) ) . '</code>'
+							);
+							?>
+						</p>
+					</div>
 				</div>
 			</aside>
 		</div>
@@ -931,8 +1046,43 @@ class RNRD_Welcome {
 		<h1 class="rnrd-onboard__title">
 			<?php esc_html_e( 'Choose your AI surfaces', 'rankready-ai-llm-seo' ); ?>
 		</h1>
+		<?php
+		// phpcs:ignore WordPress.Security.NonceVerification.Recommended -- Display-only flag, no state change.
+		if ( isset( $_GET['tips'] ) && 'fail' === sanitize_key( wp_unslash( $_GET['tips'] ) ) ) :
+			?>
+			<div class="rnrd-onboard__notice" role="status">
+				<?php esc_html_e( 'Your email was not added to the tips list. Your settings are saved. You can try again from the dashboard whenever you like.', 'rankready-ai-llm-seo' ); ?>
+			</div>
+			<?php
+		endif;
+		/*
+		 * The opt-in names are DERIVED from get_feature_groups(), not typed in.
+		 * This sentence used to hardcode "LLMs-full.txt and WebMCP", which was
+		 * true on the day it was written and would have silently become a lie
+		 * the first time an `opt_in` flag moved. Same defect class as the
+		 * "six places" count on step 1.
+		 */
+		$opt_in_labels = array();
+		foreach ( self::get_feature_groups() as $group ) {
+			foreach ( $group['items'] as $item ) {
+				if ( ! empty( $item['opt_in'] ) ) {
+					$opt_in_labels[] = (string) $item['label'];
+				}
+			}
+		}
+		?>
 		<p class="rnrd-onboard__lede">
-			<?php esc_html_e( 'Turn on the endpoints and signals you want live today. Recommended enables the core set — LLMs-full.txt and WebMCP stay off until you opt in.', 'rankready-ai-llm-seo' ); ?>
+			<?php
+			if ( $opt_in_labels ) {
+				printf(
+					/* translators: %s: comma-separated list of the features that stay off until opted into. */
+					esc_html__( 'Turn on the endpoints and signals you want live today. Recommended enables the core set; %s stay off until you opt in.', 'rankready-ai-llm-seo' ),
+					esc_html( wp_sprintf_l( '%l', $opt_in_labels ) )
+				);
+			} else {
+				esc_html_e( 'Turn on the endpoints and signals you want live today. Recommended enables the core set.', 'rankready-ai-llm-seo' );
+			}
+			?>
 		</p>
 
 		<form method="post" action="" class="rnrd-onboard__form" id="rnrd-onboard-features">
@@ -1003,68 +1153,51 @@ class RNRD_Welcome {
 				</section>
 			<?php endforeach; ?>
 
+			<?php
+			/*
+			 * This note names the screen that unblocks generation and used to
+			 * name it as plain text, so the one prerequisite the wizard does not
+			 * collect was also the one thing it gave no way to reach. Linking it
+			 * costs nothing and removes a hunt.
+			 */
+			?>
 			<p class="rnrd-onboard__feat-note">
-				<?php esc_html_e( 'AI Summary and AI FAQ Generator need an API provider — set those up anytime under AI Content in RankReady.', 'rankready-ai-llm-seo' ); ?>
+				<?php
+				printf(
+					/* translators: %s: link to the AI Content settings screen */
+					esc_html__( 'AI Summary and AI FAQ Generator need an API provider. Set that up any time under %s.', 'rankready-ai-llm-seo' ),
+					'<a href="' . esc_url( admin_url( 'admin.php?page=' . self::SETTINGS_SLUG . '&tab=content&sub=summary' ) ) . '">' . esc_html__( 'AI Content', 'rankready-ai-llm-seo' ) . '</a>'
+				);
+				?>
 			</p>
 
 			<div class="rnrd-onboard__actions">
 				<button type="submit" class="rnrd-onboard__btn rnrd-onboard__btn--primary">
-					<?php esc_html_e( 'Apply & finish →', 'rankready-ai-llm-seo' ); ?>
+					<?php esc_html_e( 'Apply & finish', 'rankready-ai-llm-seo' ); ?>
 				</button>
-				<a class="rnrd-onboard__skip" href="<?php echo esc_url( admin_url( 'admin.php?page=' . self::MENU_SLUG . '&step=1' ) ); ?>">
-					<?php esc_html_e( '← Back to Brand Identity', 'rankready-ai-llm-seo' ); ?>
+				<a class="rnrd-onboard__skip rnrd-onboard__skip--back" href="<?php echo esc_url( admin_url( 'admin.php?page=' . self::MENU_SLUG . '&step=1' ) ); ?>">
+					<?php esc_html_e( 'Back to Brand Identity', 'rankready-ai-llm-seo' ); ?>
+				</a>
+				<?php
+				/*
+				 * Step 2 had no way out. "Apply & finish" commits eleven toggles
+				 * and "Back to Brand Identity" only retreats one screen, so
+				 * somebody who got here and did not want to decide yet had to go
+				 * back to step 1 and skip from there, two steps, to escape a
+				 * wizard that otherwise keeps intercepting because
+				 * rnrd_welcome_completed is never set. An escape hatch belongs on
+				 * every screen of a linear flow, not only the first. It reuses
+				 * step 1's nonced handler, which is step-agnostic, so this adds
+				 * no new plumbing. The actions row is flex with wrap, so the
+				 * third item wraps rather than crowding at 375px.
+				 */
+				?>
+				<a class="rnrd-onboard__skip" href="<?php echo esc_url( wp_nonce_url( admin_url( 'admin.php?page=rankready-ai-llm-seo&rnrd_onboard_skip=1' ), 'rnrd_onboard_skip' ) ); ?>">
+					<?php esc_html_e( 'Skip for now', 'rankready-ai-llm-seo' ); ?>
 				</a>
 			</div>
 		</form>
 
-		<script>
-		(function(){
-			var form = document.getElementById('rnrd-onboard-features');
-			if (!form) return;
-			var checks = form.querySelectorAll('.rnrd-onboard__feat-check');
-
-			function syncDepends(){
-				checks.forEach(function(el){
-					var parentKey = el.getAttribute('data-rnrd-feat-parent');
-					if (!parentKey) return;
-					var parent = form.querySelector('[name="rnrd_feat[' + parentKey + ']"]');
-					var row = el.closest('[data-rnrd-feat-depends]');
-					var enabled = parent && parent.checked;
-					el.disabled = !enabled;
-					if (!enabled) el.checked = false;
-					if (row) row.classList.toggle('rnrd-onboard__feat-row--disabled', !enabled);
-				});
-			}
-
-			function applyPreset(preset){
-				if (preset === 'all-off') {
-					checks.forEach(function(el){ el.checked = false; });
-					syncDepends();
-					return;
-				}
-				if (preset === 'all-on') {
-					checks.forEach(function(el){ el.checked = true; });
-					syncDepends();
-					return;
-				}
-				// recommended — idempotent snapshot: default-on items checked, opt-in items forced off
-				checks.forEach(function(el){
-					var optIn = el.getAttribute('data-rnrd-feat-optin') === '1';
-					var defaultOn = el.getAttribute('data-rnrd-feat-default') === '1';
-					el.checked = !optIn && defaultOn;
-				});
-				syncDepends();
-			}
-
-			checks.forEach(function(el){ el.addEventListener('change', syncDepends); });
-			form.querySelectorAll('[data-rnrd-feat-preset]').forEach(function(btn){
-				btn.addEventListener('click', function(){
-					applyPreset(btn.getAttribute('data-rnrd-feat-preset'));
-				});
-			});
-			syncDepends();
-		})();
-		</script>
 		<?php
 		self::render_footer();
 	}
@@ -1086,855 +1219,194 @@ class RNRD_Welcome {
 				<circle class="rnrd-onboard__ring-track"  cx="28" cy="28" r="24"></circle>
 				<circle class="rnrd-onboard__ring-stroke" cx="28" cy="28" r="24"></circle>
 			</svg>
-			<span class="rnrd-onboard__ring-tick">✓</span>
+			<span class="rnrd-onboard__ring-tick" aria-hidden="true"></span>
 		</div>
 
 		<h1 class="rnrd-onboard__title">
 			<?php
 			/* translators: %s: site name */
-			echo esc_html( sprintf( __( 'Congratulations! %s is set up', 'rankready-ai-llm-seo' ), $site_name ) );
+			echo esc_html( sprintf( __( 'RankReady is set up on %s', 'rankready-ai-llm-seo' ), $site_name ) );
 			?>
 		</h1>
 		<p class="rnrd-onboard__lede">
 			<?php
-			if ( count( $completion ) > 1 ) {
-				esc_html_e( 'Here is what is live based on your choices. You can change any setting anytime in RankReady.', 'rankready-ai-llm-seo' );
+			/*
+			 * Issue #17 was fixed in get_completion_items() but not here. The
+			 * test was "more than one item", so a run that turned nothing on at
+			 * all fell through to a sentence asserting the brand identity had
+			 * been saved, on a screen whose own list had just declined to tick
+			 * it: the list told the truth and the line above it did not. The
+			 * one-item case landed in the same branch and was wrong just as
+			 * often, because that single item is frequently not the brand
+			 * fields. One item is still something you turned on, so it belongs
+			 * with the many-item line; nothing turned on gets its own sentence
+			 * that says that plainly and points at the screen that fixes it.
+			 */
+			if ( $completion ) {
+				esc_html_e( 'Here is what you turned on. You can change any setting anytime in RankReady.', 'rankready-ai-llm-seo' );
 			} else {
-				esc_html_e( 'Brand identity is saved. Turn on AI surfaces anytime from the RankReady dashboard.', 'rankready-ai-llm-seo' );
+				esc_html_e( 'Nothing is switched on yet. Turn on AI surfaces any time from the RankReady dashboard.', 'rankready-ai-llm-seo' );
 			}
 			?>
 		</p>
 
+		<?php
+		/*
+		 * get_completion_items() is honest: it only ticks what is actually on,
+		 * so somebody who skipped step 2 outright and left the brand fields
+		 * blank gets an empty array. The list was rendered unconditionally, and
+		 * an empty <ul> still carries its own 28px bottom margin, so that case
+		 * drew a silent void between the subhead and the buttons. Nothing to
+		 * tick is a real state, and the right thing to show for it is the
+		 * subhead alone, which already says what to do next.
+		 */
+		if ( $completion ) :
+			?>
 		<ul class="rnrd-onboard__ticks">
 			<?php
 			foreach ( $completion as $i => $label ) :
-				$delay_ms = 1800 + ( (int) $i * 140 );
+				/*
+				 * 70ms, not 140ms. get_completion_items() can return eleven
+				 * rows, and at 140ms the eleventh tick landed 3.2 seconds after
+				 * load: three seconds of a mostly empty confirmation screen at
+				 * the highest-intent moment in the product, and a blank list in
+				 * any screenshot taken before then.
+				 *
+				 * 500ms, not 1800ms. The 1800 was chosen to let the ring finish
+				 * first (it fills in 1500ms, its own tick lands at 1700ms), on
+				 * the theory that an earlier cascade would collide with it. It
+				 * does not: the ring sits at the top of the card and the list
+				 * sits below the subhead, so nothing overlaps. What the delay
+				 * actually bought was a measured 1.8 seconds where the list
+				 * container already reserves its full height and every row in
+				 * it is invisible, which renders as a blank band in the middle
+				 * of the confirmation screen. Starting at 500ms fills that band
+				 * while the ring is still filling, which reads as one thing
+				 * completing rather than two things waiting their turn, and the
+				 * last of eleven rows still lands inside 1.3s.
+				 */
+				$delay_ms = 500 + ( (int) $i * 70 );
 				?>
 				<li style="animation-delay:<?php echo esc_attr( (string) $delay_ms ); ?>ms">
-					<span class="rnrd-onboard__tick">✓</span>
+					<span class="rnrd-onboard__tick" aria-hidden="true"></span>
 					<?php echo esc_html( $label ); ?>
 				</li>
 			<?php endforeach; ?>
 		</ul>
+			<?php
+		endif;
+		?>
 
+		<?php
+		/*
+		 * The primary action on a finish screen should be whatever is still
+		 * standing between the user and the first real result, and until an API
+		 * provider has a key nothing generates at all. This screen used to end
+		 * on "Go to Dashboard" in every case, which is a destination rather than
+		 * an action and drops somebody who cannot yet generate onto a hub that
+		 * will not tell them why. So when no key is set the primary button goes
+		 * straight to AI Content and says what it is for, and "Go to Dashboard"
+		 * moves to the secondary slot beside the /llms.txt link. When a key IS
+		 * set there is nothing to unblock and the original button stands.
+		 *
+		 * Same conditional shape as the /llms.txt link below: read the real
+		 * state, then offer the useful next step rather than a fixed one.
+		 */
+		$rnrd_llm_ready = ! class_exists( 'RNRD_LLM' ) || RNRD_LLM::active_provider_ready();
+		?>
 		<div class="rnrd-onboard__actions rnrd-onboard__actions--centered">
-			<a href="<?php echo esc_url( admin_url( 'admin.php?page=rankready-ai-llm-seo' ) ); ?>" class="rnrd-onboard__btn rnrd-onboard__btn--primary">
-				<?php esc_html_e( 'Go to Dashboard →', 'rankready-ai-llm-seo' ); ?>
-			</a>
+			<?php if ( $rnrd_llm_ready ) : ?>
+				<a href="<?php echo esc_url( admin_url( 'admin.php?page=rankready-ai-llm-seo' ) ); ?>" class="rnrd-onboard__btn rnrd-onboard__btn--primary">
+					<?php esc_html_e( 'Go to Dashboard', 'rankready-ai-llm-seo' ); ?>
+				</a>
+			<?php else : ?>
+				<a href="<?php echo esc_url( admin_url( 'admin.php?page=' . self::SETTINGS_SLUG . '&tab=content&sub=summary' ) ); ?>" class="rnrd-onboard__btn rnrd-onboard__btn--primary">
+					<?php esc_html_e( 'Connect an AI provider', 'rankready-ai-llm-seo' ); ?>
+				</a>
+				<a href="<?php echo esc_url( admin_url( 'admin.php?page=rankready-ai-llm-seo' ) ); ?>" class="rnrd-onboard__skip">
+					<?php esc_html_e( 'Go to Dashboard', 'rankready-ai-llm-seo' ); ?>
+				</a>
+			<?php endif; ?>
+			<?php
+			/*
+			 * Only link the endpoint when it is actually switched on.
+			 * RNRD_OPT_LLMS_ENABLE defaults to 'off' and step 2 lets somebody
+			 * turn it off outright, so an unconditional link handed a fresh user
+			 * a 404 as the last thing the setup wizard did. When it is off the
+			 * slot points at the switch instead, which is the useful next step
+			 * rather than an empty footer.
+			 */
+			if ( 'on' === get_option( RNRD_OPT_LLMS_ENABLE, 'off' ) ) :
+				?>
+				<a href="<?php echo esc_url( home_url( '/llms.txt' ) ); ?>" class="rnrd-onboard__skip" target="_blank" rel="noopener">
+					<?php esc_html_e( 'View your /llms.txt', 'rankready-ai-llm-seo' ); ?>
+					<span class="screen-reader-text"><?php esc_html_e( '(opens in a new tab)', 'rankready-ai-llm-seo' ); ?></span>
+				</a>
+			<?php else : ?>
+				<a href="<?php echo esc_url( admin_url( 'admin.php?page=rankready-ai-llm-seo&tab=crawlers&sub=llms' ) ); ?>" class="rnrd-onboard__skip">
+					<?php esc_html_e( 'Turn on /llms.txt', 'rankready-ai-llm-seo' ); ?>
+				</a>
+			<?php endif; ?>
 		</div>
+
+		<?php
+		/*
+		 * These items report what was SAVED, which is all this screen can
+		 * honestly know. Whether each endpoint actually serves depends on the
+		 * host: nginx commonly 403s /.well-known/, some stacks need a permalink
+		 * flush, a CDN can cache the old response. Diagnostics is the screen
+		 * that really fetches them, so send the user there rather than letting
+		 * a saved option masquerade as a working endpoint.
+		 *
+		 * Guarded on the same list as everything else on this screen: "each
+		 * one" has no referent when nothing was turned on, and sending someone
+		 * to Diagnostics to verify an empty set is a dead end.
+		 */
+		if ( $completion ) :
+			?>
+		<p class="rnrd-onboard__lede rnrd-onboard__lede--foot">
+			<?php
+			printf(
+				/* translators: %s: link to the Diagnostics screen */
+				esc_html__( 'To confirm each one is serving on your host, run %s.', 'rankready-ai-llm-seo' ),
+				'<a href="' . esc_url( admin_url( 'admin.php?page=rankready-ai-llm-seo&tab=settings&sub=advanced' ) ) . '">' . esc_html__( 'Diagnostics', 'rankready-ai-llm-seo' ) . '</a>'
+			);
+			?>
+		</p>
+			<?php
+		endif;
+		?>
+		<?php
+		/*
+		 * Craft rule 7: every customer-facing pass states the Pro tie-in,
+		 * unprompted and honestly. This screen is the highest-intent moment in
+		 * the product and had no tie-in at all, so a person who had just
+		 * finished setup was never told the paid tier exists.
+		 *
+		 * The gate named here is the real one and nothing more. Generating a
+		 * summary or an FAQ by hand is unlimited in Free and always will be
+		 * (rule 5); what Pro adds is doing it without being asked, across an
+		 * archive. No outcome is promised, no number is invented, and it is
+		 * hidden from someone who already paid.
+		 */
+		if ( ! apply_filters( 'rnrd_is_pro', false ) ) :
+			?>
+			<aside class="rnrd-onboard__proline">
+				<p class="rnrd-onboard__proline-text">
+					<?php esc_html_e( 'Generating summaries and FAQs by hand is unlimited in Free. Pro does it for you: bulk across the whole archive, and automatically on publish.', 'rankready-ai-llm-seo' ); ?>
+				</p>
+				<a class="rnrd-onboard__proline-link" href="<?php echo esc_url( admin_url( 'admin.php?page=rankready-pro-upgrade' ) ); ?>">
+					<?php esc_html_e( 'See Pro, $49 once', 'rankready-ai-llm-seo' ); ?>
+				</a>
+			</aside>
+			<?php
+		endif;
+		?>
+
 		</div><!-- /.rnrd-onboard__done -->
 
 		<?php
 		self::render_footer();
 	}
 
-	// ── Styles ────────────────────────────────────────────────────────────────
-
-	/**
-	 * Inline styles scoped to the onboarding wizard.
-	 * Kept inline (not a separate stylesheet) so the wizard works even if the
-	 * admin CSS fails to load, and to avoid an extra HTTP round-trip on a
-	 * screen the user sees once.
-	 *
-	 * WP.org Rule #3 exemption: wp_kses_post() is used on all echoed HTML;
-	 * this <style> block is server-generated, not user-editable, and is the
-	 * accepted pattern for admin-only wizard screens (see WC, GF, etc.).
-	 */
-	private static function render_styles(): void {
-		?>
-		<style>
-		/* ── Onboarding wizard layout ──────────────────────────────────── */
-		.rnrd-onboard {
-			max-width: 1080px;
-			margin: 48px auto 80px;
-			padding: 0 24px;
-			font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-			color: var(--rnrd-text-primary, #0F1411);
-		}
-
-		/* Brand row */
-		.rnrd-onboard__brand {
-			display: flex;
-			align-items: center;
-			gap: 8px;
-			margin-bottom: 20px;
-			font-size: 12px;
-			font-weight: 600;
-			color: var(--rnrd-text-tertiary, #6B716D);
-			letter-spacing: 0.06em;
-			text-transform: uppercase;
-		}
-		.rnrd-onboard__dot {
-			width: 8px;
-			height: 8px;
-			border-radius: 50%;
-			background: var(--rnrd-mint-500, #59F7C2);
-			flex-shrink: 0;
-		}
-		.rnrd-onboard__step-count {
-			margin-left: auto;
-			font-weight: 400;
-			letter-spacing: 0;
-			text-transform: none;
-		}
-
-		/* Progress bar */
-		.rnrd-onboard__progress-track {
-			height: 6px;
-			background: var(--rnrd-bg-surface-2, #F4F5F0);
-			border-radius: 99px;
-			overflow: hidden;
-			margin-bottom: 32px;
-		}
-		.rnrd-onboard__progress-fill {
-			height: 100%;
-			background: var(--rnrd-mint-500, #59F7C2);
-			border-radius: 99px;
-			transition: width 0.4s cubic-bezier(0.4, 0, 0.2, 1);
-		}
-
-		/* Card */
-		.rnrd-onboard__card {
-			background: var(--rnrd-bg-surface, #FFFFFF);
-			border: 1px solid var(--rnrd-border-subtle, #ECEDE7);
-			border-radius: 16px;
-			padding: 36px 40px 32px;
-			box-shadow: 0 2px 8px rgba(15, 20, 17, 0.06);
-		}
-
-		/* v1.1.8 — Kill EVERY WP-admin form-table style leak inside the wizard.
-		 * The wizard renders under /wp-admin/ so common.css cascades. We apply
-		 * a single border/box-shadow/outline reset on the UNFOCUSED defaults,
-		 * then let the more-specific `.rnrd-onboard__input:focus` rules below
-		 * paint the mint focus ring. Order matters: this block has to come
-		 * BEFORE the focus rules so source-order tiebreaker doesn't
-		 * overwrite the mint glow. */
-		.rnrd-onboard,
-		.rnrd-onboard * {
-			box-sizing: border-box;
-		}
-		.rnrd-onboard input[type="text"],
-		.rnrd-onboard input[type="email"],
-		.rnrd-onboard textarea {
-			-webkit-appearance: none !important;
-			        appearance: none !important;
-			background-image: none !important;
-			box-shadow: none;
-			border: 1px solid var(--rnrd-border-default, #D9DAD5);
-		}
-		/* v1.1.10 — WP-admin button + anchor base override. Covers both
-		 * <button>-style submits (step 1 Make site AI-ready) AND <a>-style
-		 * primary CTAs (step 2 Go to Dashboard, which inherits WP-admin's
-		 * blue focus outline by default). Mouse-click focus = no halo,
-		 * keyboard-tab focus = mint ring via .rnrd-onboard__btn--primary rule. */
-		.rnrd-onboard button:focus:not(:focus-visible),
-		.rnrd-onboard a:focus:not(:focus-visible),
-		.rnrd-onboard__btn:focus:not(:focus-visible) {
-			outline: none !important;
-			box-shadow: none !important;
-		}
-		.rnrd-onboard a.rnrd-onboard__btn:focus,
-		.rnrd-onboard a.rnrd-onboard__btn:focus-visible {
-			outline: none !important;
-		}
-
-		/* Typography */
-		.rnrd-onboard__title {
-			font-size: 24px;
-			font-weight: 700;
-			line-height: 1.2;
-			letter-spacing: -0.015em;
-			margin: 0 0 12px;
-			color: var(--rnrd-text-primary, #0F1411);
-		}
-		.rnrd-onboard__lede {
-			font-size: 14px;
-			line-height: 1.6;
-			color: var(--rnrd-text-secondary, #3D423F);
-			margin: 0 0 28px;
-		}
-
-		/* v1.1.6 — 2-column split for Step 1: form on the left, sticky
-		 * "Where this goes" sidebar on the right. Stacks on narrow screens. */
-		.rnrd-onboard__split {
-			display: grid;
-			grid-template-columns: minmax(0, 1fr) 320px;
-			gap: 28px;
-			align-items: start;
-		}
-		@media (max-width: 900px) {
-			.rnrd-onboard__split {
-				grid-template-columns: 1fr;
-			}
-		}
-		.rnrd-onboard__form {
-			min-width: 0;
-		}
-		.rnrd-onboard__sidebar {
-			min-width: 0;
-			position: sticky;
-			top: 64px;
-		}
-		.rnrd-onboard__sidebar-inner {
-			padding: 22px 24px;
-			background: var(--rnrd-mint-50, #ECFDF6);
-			border: 1px solid var(--rnrd-mint-200, #B8F2DC);
-			border-radius: 14px;
-		}
-		.rnrd-onboard__sidebar-title {
-			font-size: 13px;
-			font-weight: 700;
-			letter-spacing: 0.08em;
-			text-transform: uppercase;
-			color: var(--rnrd-mint-800, #064E3B);
-			margin: 0 0 8px;
-		}
-		.rnrd-onboard__sidebar-lede {
-			font-size: 12px;
-			line-height: 1.55;
-			color: var(--rnrd-text-secondary, #3D423F);
-			margin: 0 0 14px;
-		}
-		.rnrd-onboard__sidebar-list {
-			list-style: none;
-			margin: 0;
-			padding: 0;
-			display: flex;
-			flex-direction: column;
-			gap: 10px;
-		}
-		.rnrd-onboard__sidebar-list li {
-			font-size: 12px;
-			color: var(--rnrd-text-primary, #0F1411);
-			line-height: 1.5;
-			padding-left: 14px;
-			position: relative;
-			font-weight: 600;
-		}
-		.rnrd-onboard__sidebar-list li::before {
-			content: "";
-			position: absolute;
-			left: 0;
-			top: 7px;
-			width: 5px;
-			height: 5px;
-			border-radius: 50%;
-			background: var(--rnrd-mint-500, #59F7C2);
-		}
-		.rnrd-onboard__sidebar-list li code {
-			font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
-			background: transparent;
-			padding: 0;
-			color: var(--rnrd-mint-800, #064E3B);
-			font-size: 12px;
-		}
-		.rnrd-onboard__sidebar-list li span {
-			display: block;
-			margin-top: 2px;
-			font-weight: 400;
-			color: var(--rnrd-text-tertiary, #6B716D);
-		}
-
-		/* v1.1.7 — One spacing/typography token across every field.
-		 * Hard-overrides WP-admin's input:focus blue ring via !important
-		 * (we're in /wp-admin so WP core CSS specificity always loads).
-		 *
-		 * v1.1.20 — Bumped field gap (24 → 28) and hint-to-input gap
-		 * (10 → 12) so the bigger 46px input + 10px-radius chrome reads
-		 * with the same breathing room as the textareas below. */
-		.rnrd-onboard__field {
-			margin: 0 0 28px;
-		}
-		.rnrd-onboard__field:last-of-type {
-			margin-bottom: 0;
-		}
-		.rnrd-onboard__label {
-			display: block;
-			font-size: 14px;
-			font-weight: 600;
-			line-height: 1.4;
-			color: var(--rnrd-text-primary, #0F1411);
-			margin: 0 0 6px;
-			letter-spacing: -0.005em;
-		}
-		.rnrd-onboard__hint {
-			font-size: 12px;
-			line-height: 1.55;
-			color: var(--rnrd-text-tertiary, #6B716D);
-			margin: 0 0 12px;
-			max-width: 640px;
-		}
-
-		/* Inputs — strip WP-admin styles, lock to RankReady design tokens.
-		 * v1.1.20 — Bumped padding (12px 14px) and radius (10px) so the
-		 * single-line input matches the textarea's visible curve. Aditya's
-		 * screenshot showed the text input looking squarer than the textarea
-		 * below it; both classes now share identical chrome, the only
-		 * difference is height (input is a single line, textarea has
-		 * min-height). */
-		.rnrd-onboard__input,
-		.rnrd-onboard__textarea {
-			display: block;
-			width: 100%;
-			max-width: 100%;
-			padding: 12px 14px;
-			font-size: 14px;
-			font-family: inherit;
-			line-height: 1.5;
-			color: var(--rnrd-text-primary, #0F1411);
-			background: var(--rnrd-bg-surface, #fff);
-			background-image: none;
-			border: 1px solid var(--rnrd-border-default, #D9DAD5);
-			border-radius: 10px;
-			box-shadow: none;
-			box-sizing: border-box;
-			margin: 0;
-			-webkit-appearance: none;
-			        appearance: none;
-			transition: border-color 0.15s ease, box-shadow 0.15s ease;
-		}
-		/* Single-line input — fixed height locks it to the same visual weight
-		 * as the textarea, just shorter. Without this the input shrunk to
-		 * line-height + padding and looked thinner than the textarea below. */
-		.rnrd-onboard__input {
-			height: 46px;
-		}
-		.rnrd-onboard__textarea {
-			min-height: 96px;
-			resize: vertical;
-		}
-		.rnrd-onboard__textarea--short {
-			min-height: 72px;
-		}
-		/* Hover — subtle indication of interactivity, mint-tinted */
-		.rnrd-onboard__input:hover,
-		.rnrd-onboard__textarea:hover {
-			border-color: var(--rnrd-border-strong, #B0B3AB);
-		}
-		/* Focus — kill WP-admin's blue ring with !important. Mint glow only. */
-		.rnrd-onboard__input:focus,
-		.rnrd-onboard__textarea:focus,
-		.rnrd-onboard__input:focus-visible,
-		.rnrd-onboard__textarea:focus-visible {
-			border-color: var(--rnrd-mint-500, #59F7C2) !important;
-			box-shadow: 0 0 0 3px rgba(89, 247, 194, 0.22) !important;
-			outline: none !important;
-		}
-		/* Placeholder — consistent muted ink */
-		.rnrd-onboard__input::placeholder,
-		.rnrd-onboard__textarea::placeholder {
-			color: var(--rnrd-text-muted, #A8ACA3);
-			opacity: 1;
-		}
-		/* Selection — mint-tinted (matches brand) */
-		.rnrd-onboard__input::selection,
-		.rnrd-onboard__textarea::selection {
-			background: var(--rnrd-mint-200, #B8F2DC);
-			color: var(--rnrd-text-primary, #0F1411);
-		}
-
-		/* Buttons */
-		.rnrd-onboard__actions {
-			display: flex;
-			align-items: center;
-			gap: 16px;
-			margin-top: 28px;
-			flex-wrap: wrap;
-		}
-		.rnrd-onboard__actions--centered {
-			justify-content: center;
-		}
-		/* v1.1.5 — The "Go to Dashboard" final-step button stretches to the
-		 * width of the card content so it doesn't float small in the centre. */
-		.rnrd-onboard__actions--centered .rnrd-onboard__btn--primary {
-			width: 100%;
-			max-width: 360px;
-			justify-content: center;
-			padding-top: 14px;
-			padding-bottom: 14px;
-		}
-		.rnrd-onboard__btn {
-			display: inline-flex;
-			align-items: center;
-			justify-content: center;
-			padding: 12px 24px;
-			font-size: 14px;
-			font-weight: 600;
-			font-family: inherit;
-			border-radius: 8px;
-			border: none;
-			cursor: pointer;
-			text-decoration: none;
-			transition: background 0.15s ease, transform 0.1s ease;
-			line-height: 1.4;
-			box-sizing: border-box;
-		}
-		.rnrd-onboard__btn--primary {
-			background: var(--rnrd-mint-500, #59F7C2);
-			color: var(--rnrd-text-on-mint, #0A3D2B);
-			border: 1px solid var(--rnrd-mint-500, #59F7C2);
-		}
-		.rnrd-onboard__btn--primary:hover {
-			background: var(--rnrd-mint-400, #7CF9CE);
-			color: var(--rnrd-text-on-mint, #0A3D2B);
-			border-color: var(--rnrd-mint-400, #7CF9CE);
-		}
-		.rnrd-onboard__btn--primary:focus-visible {
-			outline: none !important;
-			box-shadow: 0 0 0 3px rgba(89, 247, 194, 0.40) !important;
-		}
-		.rnrd-onboard__btn--primary:active {
-			transform: scale(0.97);
-		}
-		.rnrd-onboard__skip {
-			font-size: 13px;
-			color: var(--rnrd-text-tertiary, #6B716D);
-			text-decoration: none;
-		}
-		.rnrd-onboard__skip:hover {
-			color: var(--rnrd-text-primary, #0F1411);
-			text-decoration: underline;
-		}
-		.rnrd-onboard__back {
-			display: inline-block;
-			margin-top: 16px;
-			font-size: 12px;
-			color: var(--rnrd-text-tertiary, #6B716D);
-			text-decoration: none;
-		}
-		.rnrd-onboard__back:hover {
-			color: var(--rnrd-text-primary, #0F1411);
-			text-decoration: underline;
-		}
-
-		/* Checklist (step 2) */
-		.rnrd-onboard__checklist {
-			list-style: none;
-			margin: 0 0 24px;
-			padding: 0;
-			display: flex;
-			flex-direction: column;
-			gap: 12px;
-		}
-		.rnrd-onboard__check-item {
-			display: flex;
-			align-items: flex-start;
-			gap: 10px;
-			font-size: 13px;
-			color: var(--rnrd-text-secondary, #3D423F);
-			line-height: 1.5;
-		}
-		.rnrd-onboard__check-icon {
-			flex-shrink: 0;
-			width: 20px;
-			height: 20px;
-			border-radius: 50%;
-			background: var(--rnrd-mint-50, #ECFDF6);
-			color: var(--rnrd-mint-700, #047857);
-			font-size: 11px;
-			font-weight: 700;
-			display: inline-flex;
-			align-items: center;
-			justify-content: center;
-			margin-top: 1px;
-		}
-		.rnrd-onboard__check-item strong {
-			color: var(--rnrd-text-primary, #0F1411);
-		}
-
-		/* Step 2 — feature toggles */
-		.rnrd-onboard__feat-bulk {
-			display: flex;
-			align-items: center;
-			gap: 8px;
-			margin: 0 0 20px;
-			font-size: 13px;
-		}
-		.rnrd-onboard__feat-bulk-btn {
-			background: none;
-			border: 0;
-			padding: 0;
-			font: inherit;
-			color: var(--rnrd-mint-800, #064E3B);
-			cursor: pointer;
-			text-decoration: underline;
-			text-underline-offset: 2px;
-		}
-		.rnrd-onboard__feat-bulk-btn:hover {
-			color: var(--rnrd-text-primary, #0F1411);
-		}
-		.rnrd-onboard__feat-bulk-sep {
-			color: var(--rnrd-text-tertiary, #6B716D);
-		}
-		.rnrd-onboard__feat-group {
-			margin-bottom: 24px;
-		}
-		.rnrd-onboard__feat-group-title {
-			font-size: 12px;
-			font-weight: 700;
-			letter-spacing: 0.08em;
-			text-transform: uppercase;
-			color: var(--rnrd-text-tertiary, #6B716D);
-			margin: 0 0 10px;
-		}
-		.rnrd-onboard__feat-list {
-			list-style: none;
-			margin: 0;
-			padding: 0;
-			display: flex;
-			flex-direction: column;
-			gap: 0;
-			border: 1px solid var(--rnrd-border-subtle, #ECEDE7);
-			border-radius: 12px;
-			overflow: hidden;
-		}
-		.rnrd-onboard__feat-row {
-			border-bottom: 1px solid var(--rnrd-border-subtle, #ECEDE7);
-		}
-		.rnrd-onboard__feat-row:last-child {
-			border-bottom: 0;
-		}
-		.rnrd-onboard__feat-row--nested {
-			padding-left: 32px;
-		}
-		.rnrd-onboard__feat-row--disabled {
-			opacity: 0.45;
-		}
-		.rnrd-onboard__feat-label {
-			display: flex;
-			align-items: flex-start;
-			gap: 12px;
-			padding: 8px 16px;
-			cursor: pointer;
-			margin: 0;
-		}
-		.rnrd-onboard__feat-label input[type=checkbox],
-		.rnrd-onboard__feat-label input[type=radio] {
-			margin: 0.25rem 0.25rem 0 0;
-		}
-		.rnrd-onboard__feat-check {
-			flex-shrink: 0;
-			width: 18px;
-			height: 18px;
-			margin: 2px 0 0;
-			accent-color: var(--rnrd-mint-600, #10B981);
-		}
-		.rnrd-onboard__feat-copy {
-			display: flex;
-			flex-direction: column;
-			gap: 2px;
-			min-width: 0;
-		}
-		.rnrd-onboard__feat-copy strong {
-			font-size: 14px;
-			font-weight: 600;
-			color: var(--rnrd-text-primary, #0F1411);
-			line-height: 1.35;
-		}
-		.rnrd-onboard__feat-hint {
-			font-size: 12px;
-			line-height: 1.5;
-			color: var(--rnrd-text-secondary, #3D423F);
-			font-weight: 400;
-		}
-		.rnrd-onboard__feat-note {
-			font-size: 12px;
-			line-height: 1.55;
-			color: var(--rnrd-text-tertiary, #6B716D);
-			margin: 0 0 24px;
-		}
-
-		/* v1.1.0 — Plan list (step 2) — clean bulleted preview of what step 2 will turn on */
-		.rnrd-onboard__plan {
-			list-style: none;
-			margin: 0 0 28px;
-			padding: 18px 20px;
-			background: var(--rnrd-bg-surface-2, #F4F5F0);
-			border-radius: 12px;
-			display: flex;
-			flex-direction: column;
-			gap: 8px;
-		}
-		.rnrd-onboard__plan li {
-			font-size: 13px;
-			color: var(--rnrd-text-secondary, #3D423F);
-			line-height: 1.5;
-			padding-left: 20px;
-			position: relative;
-		}
-		.rnrd-onboard__plan li::before {
-			content: "";
-			position: absolute;
-			left: 4px;
-			top: 8px;
-			width: 6px;
-			height: 6px;
-			border-radius: 50%;
-			background: var(--rnrd-mint-500, #59F7C2);
-		}
-
-		/* v1.1.0 — Tick list (step 3) — animated reveal, "tick tick tick" feel */
-		.rnrd-onboard__ticks {
-			list-style: none;
-			margin: 0 0 28px;
-			padding: 0;
-			display: flex;
-			flex-direction: column;
-			gap: 10px;
-		}
-		.rnrd-onboard__ticks li {
-			display: flex;
-			align-items: center;
-			gap: 12px;
-			font-size: 14px;
-			color: var(--rnrd-text-primary, #0F1411);
-			line-height: 1.5;
-			min-height: 28px; /* same row height for every tick — no jagged baseline */
-			opacity: 0;
-			transform: translateY(4px);
-			animation: rnrd-onboard-tick-in 0.32s cubic-bezier(0.2, 0, 0, 1) forwards;
-		}
-		/* v1.1.2 — Ticks start after the spinner ring fills (1700ms baseline). */
-		.rnrd-onboard__ticks li:nth-child(1) { animation-delay: 1800ms; }
-		.rnrd-onboard__ticks li:nth-child(2) { animation-delay: 1940ms; }
-		.rnrd-onboard__ticks li:nth-child(3) { animation-delay: 2080ms; }
-		.rnrd-onboard__ticks li:nth-child(4) { animation-delay: 2220ms; }
-		.rnrd-onboard__ticks li:nth-child(5) { animation-delay: 2360ms; }
-		.rnrd-onboard__ticks li:nth-child(6) { animation-delay: 2500ms; }
-		.rnrd-onboard__ticks li:nth-child(7) { animation-delay: 2640ms; }
-		@keyframes rnrd-onboard-tick-in {
-			to { opacity: 1; transform: translateY(0); }
-		}
-		/* v1.1.5 — Tick is a SOLID mint circle with a WHITE check.
-		 * Hard-set every property that WP admin's checkbox stylesheet could
-		 * leak into (border, box-shadow, background-image, appearance) so the
-		 * circle never picks up the native WP-checkbox look. Same size for
-		 * every tick — width === height === 24px exactly. */
-		.rnrd-onboard__tick {
-			flex-shrink: 0;
-			width: 24px;
-			height: 24px;
-			min-width: 24px;
-			min-height: 24px;
-			max-width: 24px;
-			max-height: 24px;
-			border: 0;
-			border-radius: 50%;
-			background: var(--rnrd-mint-500, #10B981);
-			background-image: none;
-			color: #ffffff;
-			font-size: 14px;
-			font-weight: 700;
-			line-height: 1;
-			display: inline-flex;
-			align-items: center;
-			justify-content: center;
-			margin: 0;
-			padding: 0;
-			box-shadow: none;
-			-webkit-appearance: none;
-			        appearance: none;
-			text-align: center;
-			font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
-		}
-
-		/* Step 3 — centered completion layout */
-		.rnrd-onboard__done {
-			max-width: 480px;
-			margin: 0 auto;
-			text-align: center;
-		}
-		.rnrd-onboard__done .rnrd-onboard__progress-ring {
-			margin-left: auto;
-			margin-right: auto;
-		}
-		.rnrd-onboard__done .rnrd-onboard__title,
-		.rnrd-onboard__done .rnrd-onboard__lede {
-			text-align: center;
-		}
-		.rnrd-onboard__done .rnrd-onboard__ticks {
-			display: inline-flex;
-			flex-direction: column;
-			align-items: flex-start;
-			text-align: left;
-			margin-left: auto;
-			margin-right: auto;
-		}
-		.rnrd-onboard__done .rnrd-onboard__actions {
-			justify-content: center;
-		}
-
-		/* v1.1.2 — Rotating progress ring → green tick (step 3 hero).
-		 * 1500ms: ring sweeps clockwise from empty → full (CSS stroke-dashoffset)
-		 * 1500ms→1700ms: ring fades out
-		 * 1700ms→2000ms: green tick scales in
-		 * Pure CSS, no JS. Respects prefers-reduced-motion below. */
-		.rnrd-onboard__progress-ring {
-			position: relative;
-			width: 72px;
-			height: 72px;
-			margin: 0 0 24px;
-		}
-		.rnrd-onboard__ring-svg {
-			width: 100%;
-			height: 100%;
-			transform: rotate(-90deg);
-		}
-		.rnrd-onboard__ring-track {
-			fill: none;
-			stroke: var(--rnrd-mint-50, #ECFDF6);
-			stroke-width: 4;
-		}
-		.rnrd-onboard__ring-stroke {
-			fill: none;
-			stroke: var(--rnrd-mint-500, #59F7C2);
-			stroke-width: 4;
-			stroke-linecap: round;
-			stroke-dasharray: 151;   /* 2π × 24 ≈ 150.8 */
-			stroke-dashoffset: 151;
-			animation: rnrd-ring-fill 1500ms cubic-bezier(0.4, 0, 0.2, 1) forwards,
-			           rnrd-ring-fade 300ms ease 1500ms forwards;
-		}
-		@keyframes rnrd-ring-fill {
-			to { stroke-dashoffset: 0; }
-		}
-		@keyframes rnrd-ring-fade {
-			to { opacity: 0; }
-		}
-		.rnrd-onboard__ring-tick {
-			position: absolute;
-			inset: 0;
-			display: flex;
-			align-items: center;
-			justify-content: center;
-			width: 100%;
-			height: 100%;
-			font-size: 32px;
-			font-weight: 700;
-			color: var(--rnrd-mint-600, #059669);
-			background: var(--rnrd-mint-50, #ECFDF6);
-			border-radius: 50%;
-			opacity: 0;
-			transform: scale(0.4);
-			animation: rnrd-ring-tick-in 320ms cubic-bezier(0.2, 0, 0, 1) 1700ms forwards;
-		}
-		@keyframes rnrd-ring-tick-in {
-			to { opacity: 1; transform: scale(1); }
-		}
-		@media (prefers-reduced-motion: reduce) {
-			.rnrd-onboard__ring-stroke,
-			.rnrd-onboard__ring-tick,
-			.rnrd-onboard__ticks li {
-				animation-duration: 0.001ms !important;
-				animation-delay: 0ms !important;
-			}
-			.rnrd-onboard__ring-stroke { stroke-dashoffset: 0; opacity: 0; }
-			.rnrd-onboard__ring-tick   { opacity: 1; transform: scale(1); }
-			.rnrd-onboard__ticks li    { opacity: 1; transform: none; }
-		}
-
-		/* Done icon — legacy (preserved for any pre-1.1.2 deep-link to ?step=3
-		   that the router may still redirect; kept for layout-safety). */
-		.rnrd-onboard__done-icon {
-			width: 56px;
-			height: 56px;
-			border-radius: 50%;
-			background: var(--rnrd-mint-50, #ECFDF6);
-			color: var(--rnrd-mint-600, #059669);
-			font-size: 24px;
-			font-weight: 700;
-			display: flex;
-			align-items: center;
-			justify-content: center;
-			margin: 0 0 24px;
-		}
-
-		/* ── Tips opt-in — mint-tinted, on-brand friendly card ─────────── */
-		.rnrd-onboard__optin-field {
-			margin-top: 4px;
-			padding: 18px 20px;
-			border: 1px solid var(--rnrd-mint-200, #B8F2DC);
-			border-radius: 12px;
-			background: var(--rnrd-mint-50, #ECFDF6);
-		}
-		.rnrd-onboard__optin {
-			display: flex;
-			align-items: flex-start;   /* top-align so multi-line labels don't float the box */
-			gap: 12px;
-			cursor: pointer;
-			font-weight: 600;
-			font-size: 14px;
-			line-height: 1.45;
-			color: var(--rnrd-text-primary, #0F1411);
-			-webkit-user-select: none;
-			        user-select: none;
-		}
-		/* Custom mint checkbox — hard-set every property WP admin's checkbox
-		 * stylesheet could leak into (appearance, border, background-image,
-		 * box-shadow, size), same defence as the step-2 tick. */
-		.rnrd-onboard__optin-check {
-			-webkit-appearance: none !important;
-			        appearance: none !important;
-			width: 20px !important;
-			height: 20px !important;
-			min-width: 20px;
-			max-width: 20px;
-			flex-shrink: 0;
-			margin: 1px 0 0 !important;   /* optical-center against the first label line */
-			padding: 0 !important;
-			border: 1.5px solid var(--rnrd-border-strong, #B0B3AB) !important;
-			border-radius: 6px !important;
-			background: var(--rnrd-bg-surface, #fff) !important;
-			background-image: none !important;
-			box-shadow: none !important;
-			cursor: pointer;
-			position: relative;
-			transition: border-color 0.15s ease, background 0.15s ease;
-		}
-		.rnrd-onboard__optin-check:hover {
-			border-color: var(--rnrd-mint-500, #59F7C2) !important;
-		}
-		.rnrd-onboard__optin-check:checked {
-			background: var(--rnrd-mint-500, #59F7C2) !important;
-			border-color: var(--rnrd-mint-500, #59F7C2) !important;
-		}
-		.rnrd-onboard__optin-check:checked::after {
-			content: "";
-			position: absolute;
-			left: 6px;
-			top: 2px;
-			width: 5px;
-			height: 10px;
-			border: solid var(--rnrd-text-on-mint, #0A3D2B);
-			border-width: 0 2px 2px 0;
-			transform: rotate(45deg);
-		}
-		/* Kill WP admin's native blue dashicon check (forms.css :checked::before)
-		 * so ONLY our custom ::after check renders — prevents the "double checkbox". */
-		.rnrd-onboard__optin-check::before {
-			content: none !important;
-			display: none !important;
-			background: none !important;
-		}
-		.rnrd-onboard__optin-check:focus,
-		.rnrd-onboard__optin-check:focus-visible {
-			outline: none !important;
-			box-shadow: 0 0 0 3px rgba(89, 247, 194, 0.30) !important;
-		}
-		.rnrd-onboard__optin-fields {
-			display: flex;
-			flex-direction: column;
-			gap: 10px;
-			margin-top: 14px;
-		}
-		.rnrd-onboard__optin-input {
-			background: var(--rnrd-bg-surface, #fff);
-		}
-		.rnrd-onboard__optin-hint {
-			margin-top: 10px !important;
-			margin-bottom: 0 !important;
-		}
-		</style>
-		<?php
-	}
 }

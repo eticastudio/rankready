@@ -67,6 +67,15 @@ class RNRD_LLM_OpenAI {
 		$decoded = json_decode( $raw, true );
 		$content = isset( $decoded['choices'][0]['message']['content'] ) ? trim( (string) $decoded['choices'][0]['message']['content'] ) : '';
 
+		// Cut off at the token cap, not finished. See RNRD_LLM::is_truncated_reason().
+		// Checked before the empty test: a reasoning model can spend the whole cap
+		// thinking and return no content with finish_reason=length, and "truncated"
+		// is the actionable answer, "empty" is not.
+		$finish = isset( $decoded['choices'][0]['finish_reason'] ) ? (string) $decoded['choices'][0]['finish_reason'] : '';
+		if ( RNRD_LLM::is_truncated_reason( $finish ) ) {
+			return RNRD_LLM::truncated_response( $provider, $model, $finish );
+		}
+
 		if ( '' === $content ) {
 			return RNRD_LLM::error_response( $provider, 'OpenAI returned empty content.', $model );
 		}

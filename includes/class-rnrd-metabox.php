@@ -118,7 +118,12 @@ class RNRD_Metabox {
 		$ids = array( 'rnrd_summary_meta', 'rnrd_faq_meta', 'rnrd_visibility_meta' );
 		foreach ( self::get_post_types() as $pt ) {
 			foreach ( $ids as $id ) {
-				add_filter( "postbox_classes_{$pt}_{$id}", array( self::class, 'postbox_classes' ) );
+				add_filter(
+					"postbox_classes_{$pt}_{$id}",
+					static function ( $classes ) use ( $id ) {
+						return self::postbox_classes( (array) $classes, $id );
+					}
+				);
 			}
 		}
 	}
@@ -127,11 +132,50 @@ class RNRD_Metabox {
 	 * @param string[] $classes
 	 * @return string[]
 	 */
-	public static function postbox_classes( array $classes ): array {
+	public static function postbox_classes( array $classes, string $box_id = '' ): array {
 		$classes[] = 'rnrd-postbox';
-		if ( self::is_block_editor_screen() ) {
-			$classes[] = 'closed';
+
+		/*
+		 * A failed automatic run has to be seen. Inside a panel that starts
+		 * collapsed, "Auto-generation failed: ..." would be as invisible as no
+		 * message at all, so the panel that owns the error opens itself. Only
+		 * that panel, and only while the error is still recorded (10 minutes).
+		 */
+		$kind = 'rnrd_summary_meta' === $box_id ? 'summary' : ( 'rnrd_faq_meta' === $box_id ? 'faq' : '' );
+		if ( '' !== $kind ) {
+			$current = get_post();
+			if ( $current && '' !== RNRD_Generator::autogen_error( $kind, (int) $current->ID ) ) {
+				return array_values( array_diff( $classes, array( 'closed' ) ) );
+			}
 		}
+
+		/*
+		 * "Start collapsed" has to mean the FIRST time and no other time.
+		 * This appended `closed` on every render, and core had already put
+		 * the user's own choice into $classes by the time the filter ran, so
+		 * anyone who opened one of these panels found it shut again on the
+		 * next page load, for as long as they owned the site. A panel that
+		 * will not stay open is worse than one that starts open, because the
+		 * user thinks they did something wrong.
+		 *
+		 * Core records the choice in the closedpostboxes_<screen> user option
+		 * and writes it the moment a box is toggled, so "never toggled
+		 * anything on this screen" is exactly the case where that option is
+		 * not an array. That is the only case that gets the default, and from
+		 * then on core's own value stands untouched, including the user
+		 * deliberately closing it.
+		 */
+		if ( ! self::is_block_editor_screen() ) {
+			return $classes;
+		}
+
+		$screen = function_exists( 'get_current_screen' ) ? get_current_screen() : null;
+		if ( $screen && is_array( get_user_option( 'closedpostboxes_' . $screen->id ) ) ) {
+			return $classes;
+		}
+
+		$classes[] = 'closed';
+
 		return $classes;
 	}
 
@@ -210,7 +254,7 @@ class RNRD_Metabox {
 					<span class="rnrd-mb__field-label"><?php esc_html_e( 'HTML', 'rankready-ai-llm-seo' ); ?></span>
 					<p class="rnrd-mb__meta-v">
 						<?php echo esc_html( $html_placement ); ?>
-						<a href="<?php echo esc_url( $display_url ); ?>" target="_blank" rel="noopener noreferrer"><?php esc_html_e( 'Change →', 'rankready-ai-llm-seo' ); ?></a>
+						<a href="<?php echo esc_url( $display_url ); ?>" target="_blank" rel="noopener noreferrer" class="rnrd-arrow-link"><?php esc_html_e( 'Change', 'rankready-ai-llm-seo' ); ?></a>
 					</p>
 				</div>
 				<div class="rnrd-mb__meta-row">
@@ -222,12 +266,12 @@ class RNRD_Metabox {
 					<?php if ( ! $has_key ) : ?>
 						<p class="rnrd-mb__meta-v">
 							<?php esc_html_e( 'AI setup needed. Add a provider and API key to generate.', 'rankready-ai-llm-seo' ); ?>
-							<a href="<?php echo esc_url( $model_url ); ?>" target="_blank" rel="noopener noreferrer"><?php esc_html_e( 'Open Settings →', 'rankready-ai-llm-seo' ); ?></a>
+							<a href="<?php echo esc_url( $model_url ); ?>" target="_blank" rel="noopener noreferrer" class="rnrd-arrow-link"><?php esc_html_e( 'Open Settings', 'rankready-ai-llm-seo' ); ?></a>
 						</p>
 					<?php else : ?>
 						<p class="rnrd-mb__meta-v">
 							<?php echo esc_html( self::model_short_label() ); ?>
-							<a href="<?php echo esc_url( $model_url ); ?>" target="_blank" rel="noopener noreferrer"><?php esc_html_e( 'Change →', 'rankready-ai-llm-seo' ); ?></a>
+							<a href="<?php echo esc_url( $model_url ); ?>" target="_blank" rel="noopener noreferrer" class="rnrd-arrow-link"><?php esc_html_e( 'Change', 'rankready-ai-llm-seo' ); ?></a>
 						</p>
 					<?php endif; ?>
 				</div>
@@ -332,7 +376,7 @@ class RNRD_Metabox {
 				data-type-enabled="1"
 				data-has-content="<?php echo $has_summary ? '1' : '0'; ?>"
 			>
-				<p class="rnrd-mb__desc"><?php esc_html_e( 'Key Takeaways — the lines ChatGPT and Perplexity quote directly.', 'rankready-ai-llm-seo' ); ?></p>
+				<p class="rnrd-mb__desc"><?php esc_html_e( 'Key Takeaways, the short standalone facts an assistant can read without the article around them.', 'rankready-ai-llm-seo' ); ?></p>
 
 				<details class="rnrd-mb__reveal"<?php echo $has_summary ? '' : ' hidden'; ?>>
 					<summary><?php esc_html_e( 'Show summary', 'rankready-ai-llm-seo' ); ?></summary>
@@ -344,6 +388,13 @@ class RNRD_Metabox {
 						</ul>
 					</div>
 				</details>
+
+				<p class="rnrd-mb__hint rnrd-mb__autogen" data-rnrd-autogen role="status"<?php echo RNRD_Generator::autogen_pending( 'summary', (int) $post->ID ) ? '' : ' hidden'; ?>>
+					<?php esc_html_e( 'Auto-generation queued. The summary will update shortly, no need to generate it again.', 'rankready-ai-llm-seo' ); ?>
+				</p>
+
+				<?php $rnrd_autogen_err = RNRD_Generator::autogen_error( 'summary', (int) $post->ID ); ?>
+				<p class="rnrd-mb__autogen-error" data-rnrd-autogen-error role="alert"<?php echo '' !== $rnrd_autogen_err ? '' : ' hidden'; ?>><?php echo esc_html( $rnrd_autogen_err ); ?></p>
 
 				<?php self::render_gen_actions( $can_generate, $gen_label ); ?>
 
@@ -386,6 +437,9 @@ class RNRD_Metabox {
 		$can_generate  = $has_key && (int) $post->ID > 0;
 		$faq_place     = class_exists( 'RNRD_Faq' ) ? RNRD_Faq::get_auto_display() : 'off';
 		$gen_label     = $has_faq ? __( 'Regenerate FAQ', 'rankready-ai-llm-seo' ) : __( 'Generate FAQ', 'rankready-ai-llm-seo' );
+		$faq_off       = (bool) get_post_meta( $post->ID, RNRD_META_FAQ_DISABLE, true );
+
+		wp_nonce_field( 'rnrd_faq_meta', 'rnrd_faq_nonce' );
 		?>
 		<div class="rnrd-mb">
 			<?php if ( (int) $post->ID < 1 ) : ?>
@@ -401,7 +455,7 @@ class RNRD_Metabox {
 				data-type-enabled="1"
 				data-has-content="<?php echo $has_faq ? '1' : '0'; ?>"
 			>
-				<p class="rnrd-mb__desc"><?php esc_html_e( 'Discover real user questions and answer them with AI — quotable Q&A that can boost your citation rate.', 'rankready-ai-llm-seo' ); ?></p>
+				<p class="rnrd-mb__desc"><?php esc_html_e( 'Discover real user questions and answer them with AI — quotable Q&A, published as FAQPage schema and served in your Markdown and llms.txt.', 'rankready-ai-llm-seo' ); ?></p>
 
 				<details class="rnrd-mb__reveal"<?php echo $has_faq ? '' : ' hidden'; ?>>
 					<summary><?php esc_html_e( 'Show FAQ', 'rankready-ai-llm-seo' ); ?></summary>
@@ -426,11 +480,25 @@ class RNRD_Metabox {
 					</div>
 				</details>
 
+				<p class="rnrd-mb__hint rnrd-mb__autogen" data-rnrd-autogen role="status"<?php echo RNRD_Generator::autogen_pending( 'faq', (int) $post->ID ) ? '' : ' hidden'; ?>>
+					<?php esc_html_e( 'Auto-generation queued. The FAQ will update shortly, no need to generate it again.', 'rankready-ai-llm-seo' ); ?>
+				</p>
+
+				<?php $rnrd_autogen_err = RNRD_Generator::autogen_error( 'faq', (int) $post->ID ); ?>
+				<p class="rnrd-mb__autogen-error" data-rnrd-autogen-error role="alert"<?php echo '' !== $rnrd_autogen_err ? '' : ' hidden'; ?>><?php echo esc_html( $rnrd_autogen_err ); ?></p>
+
 				<?php self::render_gen_actions( $can_generate, $gen_label ); ?>
 
 				<p class="rnrd-mb__error" hidden></p>
 
 				<?php self::render_generated_status( 'faq', $has_faq, $faq_generated ); ?>
+			</div>
+
+			<div class="rnrd-mb__field rnrd-mb__opt">
+				<label>
+					<input type="checkbox" name="rnrd_disable_faq" value="1" <?php checked( $faq_off ); ?> />
+					<?php esc_html_e( 'Hide FAQ on this post', 'rankready-ai-llm-seo' ); ?>
+				</label>
 			</div>
 
 			<?php
@@ -507,14 +575,26 @@ class RNRD_Metabox {
 			&& wp_verify_nonce( sanitize_text_field( wp_unslash( $_POST['rnrd_summary_nonce'] ) ), 'rnrd_summary_meta' );
 		$vis_ok     = isset( $_POST['rnrd_visibility_nonce'] )
 			&& wp_verify_nonce( sanitize_text_field( wp_unslash( $_POST['rnrd_visibility_nonce'] ) ), 'rnrd_visibility_meta' );
+		$faq_ok     = isset( $_POST['rnrd_faq_nonce'] )
+			&& wp_verify_nonce( sanitize_text_field( wp_unslash( $_POST['rnrd_faq_nonce'] ) ), 'rnrd_faq_meta' );
 
-		if ( ! $summary_ok && ! $vis_ok ) {
+		if ( ! $summary_ok && ! $vis_ok && ! $faq_ok ) {
 			return;
 		}
 
 		if ( $summary_ok && self::is_summary_autogen_enabled() ) {
 			$disabled = isset( $_POST['rnrd_disable_summary'] ) ? '1' : '';
 			update_post_meta( $post_id, RNRD_META_DISABLE, $disabled );
+		}
+
+		// Deliberately NOT gated on Pro or on auto-generate, unlike the summary
+		// twin above. RNRD_META_FAQ_DISABLE suppresses the frontend FAQ block
+		// and the FAQ schema, both Free behaviour, and it had four readers and
+		// no writer at all: the post-list column even has a "FAQ: off" branch
+		// that could never render.
+		if ( $faq_ok ) {
+			$faq_disabled = isset( $_POST['rnrd_disable_faq'] ) ? '1' : '';
+			update_post_meta( $post_id, RNRD_META_FAQ_DISABLE, $faq_disabled );
 		}
 
 		if ( $vis_ok ) {

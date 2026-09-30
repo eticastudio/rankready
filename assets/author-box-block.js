@@ -105,7 +105,7 @@
 			} ),
 			el( SelectControl, {
 				label: t( 'fontFamily', 'Font Family' ),
-				help: t( 'fontFamilyHelp', 'Pulls from your theme.json fonts (Kadence, or any block theme). Leave blank to inherit.' ),
+				help: t( 'fontFamilyHelp', 'Pulls from your theme.json fonts (Kadence, or any block theme). Leave blank to inherit from theme.' ),
 				value: attrs[ prefix + 'FontFamily' ] || '',
 				options: fontOptions,
 				onChange: function ( v ) { var p = {}; p[ prefix + 'FontFamily' ] = v; setAttrs( p ); },
@@ -113,7 +113,7 @@
 			} ),
 			el( SelectControl, {
 				label: t( 'fontWeight', 'Font Weight' ),
-				help: t( 'fontWeightHelp', 'Leave blank to inherit from the theme.' ),
+				help: t( 'fontWeightHelp', 'Leave blank to inherit.' ),
 				value: attrs[ prefix + 'FontWeight' ] || '',
 				options: fontWeightOptions(),
 				onChange: function ( v ) { var p = {}; p[ prefix + 'FontWeight' ] = v; setAttrs( p ); },
@@ -132,10 +132,10 @@
 	}
 
 	registerBlockType( 'rankready/author-box', {
-		title:       'Author Box — RankReady',
+		title:       t( 'authorBlockTitle', 'Author Box — RankReady' ),
 		icon:        'businessperson',
 		category:    'rankready',
-		description: 'EEAT-optimized author box with Person JSON-LD schema (sameAs, knowsAbout, credentials, memberOf, awards). Pulls from user profile fields added by RankReady.',
+		description: t( 'authorBlockDescription', 'Author box with Person JSON-LD schema (name, job title, employer, bio, headshot). Pulls from user profile fields added by RankReady. Profile links, topics, credentials, memberships and awards are added by RankReady Pro.' ),
 		keywords:    [ 'author', 'box', 'bio', 'rankready', 'eeat', 'e-e-a-t', 'person', 'schema', 'ai seo', 'llm', 'geo' ],
 		supports:    { html: false, align: [ 'wide', 'full' ] },
 

@@ -137,7 +137,7 @@ class RNRD_Block {
 				'label'         => (string) get_option( RNRD_OPT_LABEL, __( 'Key Takeaways', 'rankready-ai-llm-seo' ) ),
 				'showLabel'     => (bool) get_option( RNRD_OPT_SHOW_LABEL, '1' ),
 				'headingTag'    => (string) get_option( RNRD_OPT_HEADING_TAG, 'h4' ),
-				'authorHeading' => (string) get_option( RNRD_OPT_AUTHOR_HEADING, 'About the Author' ),
+				'authorHeading' => RNRD_Author_Box::heading_text(),
 				'authorTag'     => (string) get_option( RNRD_OPT_AUTHOR_HEADING_TAG, 'h3' ),
 			),
 			'users' => $users_data,
@@ -186,7 +186,30 @@ class RNRD_Block {
 	 * @return array<string, string>
 	 */
 	private static function editor_js_i18n(): array {
-		return array(
+		/*
+		 * Auto-generate-on-publish is a PRO engine: RNRD_Pro_Autogen is the only
+		 * thing that hooks RNRD_Generator::schedule_generation to
+		 * wp_after_insert_post (class-rnrd-generator.php:31 says so, and the only
+		 * add_action in Free is the temporary re-hook in class-rnrd-rest.php:1004,
+		 * guarded by whether it was hooked in the first place). Free shipped
+		 * "Summary auto-generates on publish/update." to every user anyway, so a
+		 * Free user published and waited for a summary that was never coming, and
+		 * the sentence that should have sold Pro instead described Free wrongly.
+		 * Both strings now depend on whether Pro is actually licensed.
+		 */
+		$is_pro = function_exists( 'rnrd_is_pro' ) && rnrd_is_pro();
+
+		/*
+		 * The FAQ progress string named two fixed vendors ("DataForSEO + OpenAI").
+		 * OpenAI is one of four providers, and FAQ generation is not DataForSEO
+		 * gated at all (class-rnrd-rest.php says so explicitly). Name the provider
+		 * the site is actually configured to use.
+		 */
+		$provider = class_exists( 'RNRD_LLM' )
+			? RNRD_LLM::get_provider_label( RNRD_LLM::get_active_provider() )
+			: __( 'your AI provider', 'rankready-ai-llm-seo' );
+
+		$strings = array(
 		/* translators: %d: seconds until regeneration is allowed */
 		'regenIn'                       => __( 'Regenerate available in %ds.', 'rankready-ai-llm-seo' ),
 		'generate'                      => __( 'Generate', 'rankready-ai-llm-seo' ),
@@ -194,10 +217,18 @@ class RNRD_Block {
 		'generating'                    => __( 'Generating…', 'rankready-ai-llm-seo' ),
 		'regenerating'                  => __( 'Regenerating…', 'rankready-ai-llm-seo' ),
 		'generationFailed'              => __( 'Generation failed.', 'rankready-ai-llm-seo' ),
-		'apiKeyMissing'                 => __( 'API key missing — Settings → RankReady.', 'rankready-ai-llm-seo' ),
-		'addApiKey'                     => __( 'Add API key in Settings → RankReady.', 'rankready-ai-llm-seo' ),
-		'summaryAutoGenerate'           => __( 'Summary auto-generates on publish/update.', 'rankready-ai-llm-seo' ),
-		'summaryAfterPublish'           => __( 'Summary will appear here after you publish this post.', 'rankready-ai-llm-seo' ),
+		'apiKeyMissing'                 => __( 'No API key yet. Add one under RankReady → Settings → API Keys.', 'rankready-ai-llm-seo' ),
+		'addApiKey'                     => __( 'Add an API key under RankReady → Settings → API Keys.', 'rankready-ai-llm-seo' ),
+		'summaryAutoGenerate'           => $is_pro
+			? __( 'Summary auto-generates on publish/update.', 'rankready-ai-llm-seo' )
+			: __( 'Click Generate in the RankReady panel to write the summary. RankReady Pro generates it automatically on publish.', 'rankready-ai-llm-seo' ),
+		'summaryAfterPublish'           => $is_pro
+			? __( 'Summary will appear here after you publish this post.', 'rankready-ai-llm-seo' )
+			: __( 'No summary yet. Use Generate in the RankReady panel, as often as you like. Pro generates it for you on publish.', 'rankready-ai-llm-seo' ),
+		'summaryBlockTitle'             => __( 'AI Summary — RankReady', 'rankready-ai-llm-seo' ),
+		'summaryBlockDescription'       => $is_pro
+			? __( 'Displays AI-generated key takeaways. Auto-generates on publish/update.', 'rankready-ai-llm-seo' )
+			: __( 'Displays AI-generated key takeaways. Generate them from the RankReady panel.', 'rankready-ai-llm-seo' ),
 		'generatingEllipsis'            => __( 'Generating…', 'rankready-ai-llm-seo' ),
 		'generateFaq'                   => __( 'Generate FAQ', 'rankready-ai-llm-seo' ),
 		'regenerateFaq'                 => __( 'Regenerate FAQ', 'rankready-ai-llm-seo' ),
@@ -206,14 +237,24 @@ class RNRD_Block {
 		'justNow'                       => __( 'Just now', 'rankready-ai-llm-seo' ),
 		/* translators: %s: relative or absolute time */
 		'lastGenerated'                 => __( 'Last generated: %s', 'rankready-ai-llm-seo' ),
-		'generatingFaqLong'             => __( 'Generating FAQ from DataForSEO + OpenAI…', 'rankready-ai-llm-seo' ),
+		/* translators: %s: the configured AI provider, e.g. "OpenAI" or "Claude (Anthropic)". */
+		'generatingFaqLong'             => sprintf( __( 'Generating FAQ with %s…', 'rankready-ai-llm-seo' ), $provider ),
+		/* translators: %s: the configured AI provider, e.g. "OpenAI" or "Claude (Anthropic)". */
+		'generateFaqWith'               => sprintf( __( 'Generate with %s', 'rankready-ai-llm-seo' ), $provider ),
 		'clickGenerateFaq'              => __( 'Click "Generate FAQ" in the sidebar to create FAQ items for this post.', 'rankready-ai-llm-seo' ),
+		'faqBlockTitle'                 => __( 'FAQ — RankReady', 'rankready-ai-llm-seo' ),
+		'faqBlockDescription'           => __( 'Display AI-generated FAQ with brand entity injection. Generate from the RankReady panel.', 'rankready-ai-llm-seo' ),
+		'faqMoveUp'                     => __( 'Move question up', 'rankready-ai-llm-seo' ),
+		'faqMoveDown'                   => __( 'Move question down', 'rankready-ai-llm-seo' ),
+		'faqReorderFailed'              => __( 'Could not save the new order. The previous order has been restored.', 'rankready-ai-llm-seo' ),
 		/* translators: %s: relative or absolute time */
 		'lastReviewed'                  => __( 'Last reviewed: %s', 'rankready-ai-llm-seo' ),
 		'faqTitleDefault'               => __( 'Frequently Asked Questions', 'rankready-ai-llm-seo' ),
 		'loadingAuthor'                 => __( 'Loading author…', 'rankready-ai-llm-seo' ),
 		'authorPreviewNote'             => __( 'Live render (socials, credentials, reviewed-by) appears on the front end.', 'rankready-ai-llm-seo' ),
 		'aboutTheAuthor'                => __( 'About the Author', 'rankready-ai-llm-seo' ),
+		'authorBlockTitle'              => __( 'Author Box — RankReady', 'rankready-ai-llm-seo' ),
+		'authorBlockDescription'        => __( 'Author box with Person JSON-LD schema (name, job title, employer, bio, headshot). Pulls from user profile fields added by RankReady. Profile links, topics, credentials, memberships and awards are added by RankReady Pro.', 'rankready-ai-llm-seo' ),
 		// Shared inspector / typography (summary + FAQ + author box).
 		'themeDefault'                  => __( '— Theme default —', 'rankready-ai-llm-seo' ),
 		'inherit'                       => __( '— Inherit —', 'rankready-ai-llm-seo' ),
@@ -306,6 +347,8 @@ class RNRD_Block {
 		'borderRadiusPx'                => __( 'Border Radius (px)', 'rankready-ai-llm-seo' ),
 		'paddingPx'                     => __( 'Padding (px)', 'rankready-ai-llm-seo' ),
 		'zeroUseDefaultBullet'          => __( '0 = use default', 'rankready-ai-llm-seo' ),
-	);
+		);
+
+		return $strings;
 	}
 }

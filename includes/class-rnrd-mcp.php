@@ -8,7 +8,7 @@
  * can then discover and call these abilities — turning the WordPress site
  * into a first-class agentic tool, not just an HTML source to scrape.
  *
- * Registered abilities (namespace `rankready/`):
+ * Registered abilities (namespace `rankready-ai-llm-seo/`, i.e. self::NS):
  *   - get-site-info       → name, description, URL, brand terms, languages
  *   - get-brand-terms     → canonical brand names array
  *   - search-posts        → keyword search across published content
@@ -40,10 +40,31 @@ class RNRD_MCP {
 
 	private const NS = 'rankready-ai-llm-seo';
 
+	/**
+	 * Ability category slug.
+	 *
+	 * WordPress 6.9 made `category` a required property on every registered
+	 * ability, and validates that the category itself was registered first.
+	 * Without it core rejects the registration outright with a
+	 * _doing_it_wrong(), which is silent on a production site.
+	 */
+	private const CAT = 'rankready';
+
 	public static function init(): void {
 		// RankReady registers its read-only abilities with the WordPress Abilities API
 		// (core in WP 7.0) so the official MCP Adapter can expose them over MCP.
-		add_action( 'abilities_api_init', array( self::class, 'register_abilities' ) );
+		// The core hook is `wp_abilities_api_init` (wp-includes/abilities-api.php).
+		// We were listening on `abilities_api_init`, which core never fires, so
+		// none of the abilities below ever reached the registry and the official
+		// MCP Adapter saw an empty plugin. The unprefixed name is kept as a second
+		// binding only because an early Abilities API draft used it; both are
+		// idempotent via the guard in register_abilities().
+		// Categories must be registered on their own, earlier action, and before
+		// any ability referencing them. Core fires this from the categories
+		// registry constructor, which the abilities registry primes first.
+		add_action( 'wp_abilities_api_categories_init', array( self::class, 'register_ability_category' ) );
+		add_action( 'wp_abilities_api_init', array( self::class, 'register_abilities' ) );
+		add_action( 'abilities_api_init',    array( self::class, 'register_abilities' ) );
 
 		// It ALSO serves its own /.well-known/mcp.json manifest directly, so the endpoint
 		// works standalone (no MCP Adapter required) — this is what the readme advertises,
@@ -52,7 +73,7 @@ class RNRD_MCP {
 		// depends on it stayed.)
 		add_action( 'init', array( self::class, 'add_rewrite_rules' ), 9 );
 		add_filter( 'query_vars', array( self::class, 'register_query_vars' ) );
-		add_action( 'template_redirect', array( self::class, 'handle_request' ), 1 );
+		add_action( 'template_redirect', array( self::class, 'handle_request' ), rnrd_template_redirect_priority( 1 ) );
 	}
 
 	/** Rewrite for /.well-known/mcp.json (only when WebMCP is enabled). */
@@ -100,7 +121,11 @@ class RNRD_MCP {
 		header( 'Access-Control-Expose-Headers: Content-Type' );
 
 		if ( ! self::is_enabled() ) {
-			status_header( 503 );
+			// 404, not 503. 503 means "temporarily unavailable, retry later",
+			// so agents and readiness scanners back off and retry a URI that is
+			// never coming back, and some grade the site as unhealthy for it.
+			// A feature the site owner switched off simply has no resource here.
+			status_header( 404 );
 			echo wp_json_encode( array( 'error' => 'WebMCP is disabled' ) ); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped
 			exit;
 		}
@@ -140,7 +165,12 @@ class RNRD_MCP {
 				continue;
 			}
 			$abilities[] = array(
-				'name'        => 'rankready/' . $name,
+				// self::NS, not a second hardcoded prefix. The manifest advertised
+				// `rankready/<x>` while register_abilities() registers
+				// `rankready-ai-llm-seo/<x>`, so a client that read the manifest and
+				// then called through the MCP Adapter asked for a name that is not
+				// in the registry.
+				'name'        => self::NS . '/' . $name,
 				'description' => isset( $labels[ $name ] ) ? $labels[ $name ] : $name,
 			);
 		}
@@ -179,14 +209,14 @@ class RNRD_MCP {
 	 * the headless REST surface — BUT gated by the master toggle so turning
 	 * MCP off in admin actually shuts off the abilities (audit beta.3 #3).
 	 *
-	 * @return true|WP_Error true when allowed, WP_Error 503 otherwise.
+	 * @return true|WP_Error true when allowed, WP_Error 404 otherwise.
 	 */
 	public static function ability_permission() {
 		if ( ! self::is_enabled() ) {
 			return new WP_Error(
 				'rnrd_mcp_disabled',
 				__( 'WebMCP is disabled on this site.', 'rankready-ai-llm-seo' ),
-				array( 'status' => 503 )
+				array( 'status' => 404 )
 			);
 		}
 		return true;
@@ -240,6 +270,11 @@ class RNRD_MCP {
 		$out = array();
 		foreach ( get_post_types( array( 'public' => true ), 'objects' ) as $slug => $obj ) {
 			if ( in_array( $slug, array( 'post', 'page', 'attachment' ), true ) ) {
+				continue;
+			}
+			// Same content test as the post type pickers (#53), so internal
+			// builder types such as Elementor templates are not offered.
+			if ( class_exists( 'RNRD_Admin' ) && ! RNRD_Admin::is_content_post_type( $obj ) ) {
 				continue;
 			}
 			$out[ $slug ] = $obj->labels->name;
@@ -325,7 +360,51 @@ class RNRD_MCP {
 		);
 	}
 
+	/**
+	 * Register RankReady's ability category.
+	 *
+	 * Guarded on function_exists so an older Abilities API build, or a site
+	 * where the API is absent entirely, is a clean no-op rather than a fatal.
+	 */
+	public static function register_ability_category(): void {
+		if ( ! function_exists( 'wp_register_ability_category' ) ) {
+			return;
+		}
+		if ( function_exists( 'wp_has_ability_category' ) && wp_has_ability_category( self::CAT ) ) {
+			return;
+		}
+		wp_register_ability_category( self::CAT, array(
+			'label'       => __( 'RankReady', 'rankready-ai-llm-seo' ),
+			'description' => __( 'Read-only abilities that let AI agents discover this site\'s published content, brand identity and AI SEO endpoints.', 'rankready-ai-llm-seo' ),
+		) );
+	}
+
+	/**
+	 * Register one ability, attaching the category only when it is safe to.
+	 *
+	 * Core rejects an ability whose `category` names an unregistered category,
+	 * so passing the key blind would turn a missing category into sixteen
+	 * silent failures. One place decides, and every call site inherits it.
+	 *
+	 * @param string               $name Fully namespaced ability name.
+	 * @param array<string, mixed> $args Ability properties.
+	 */
+	private static function add_ability( string $name, array $args ): void {
+		if ( ! function_exists( 'wp_has_ability_category' ) || wp_has_ability_category( self::CAT ) ) {
+			$args['category'] = self::CAT;
+		}
+		wp_register_ability( $name, $args );
+	}
+
 	public static function register_abilities(): void {
+		// Bound to two hooks (see init()); wp_register_ability() emits a
+		// _doing_it_wrong notice on a duplicate name, so run the body once.
+		static $done = false;
+		if ( $done ) {
+			return;
+		}
+		$done = true;
+
 		if ( ! self::is_enabled() ) {
 			return; // Master toggle off — skip Abilities registration entirely.
 		}
@@ -333,11 +412,16 @@ class RNRD_MCP {
 			return; // Abilities API plugin not active — graceful no-op.
 		}
 
-		// v1.2.0-beta.6 — fetch the per-resource exposure state once so each
-		// registration block can gate itself cleanly.
-		$expose = self::exposure_state();
+		/*
+		 * Every ability is registered whenever the master toggle is on. The
+		 * per-resource exposure state is applied where it belongs instead: the
+		 * manifest filters on it (build_manifest) and guard() refuses at
+		 * execute time. A beta-era line here fetched exposure_state() into a
+		 * variable no registration block ever read, with a comment promising a
+		 * gating step that was never written; both are gone.
+		 */
 
-		wp_register_ability( self::NS . '/get-site-info', array(
+		self::add_ability( self::NS . '/get-site-info', array(
 			'label'               => __( 'Get site info', 'rankready-ai-llm-seo' ),
 			'description'         => __( 'Returns site identity: name, description, URL, brand terms, language.', 'rankready-ai-llm-seo' ),
 			'input_schema'        => array( 'type' => 'object', 'properties' => new \stdClass(), 'additionalProperties' => false ),
@@ -355,7 +439,7 @@ class RNRD_MCP {
 			'permission_callback' => array( self::class, 'ability_permission' ),
 		) );
 
-		wp_register_ability( self::NS . '/get-brand-terms', array(
+		self::add_ability( self::NS . '/get-brand-terms', array(
 			'label'               => __( 'Get brand terms', 'rankready-ai-llm-seo' ),
 			'description'         => __( 'Returns canonical brand names for entity consistency.', 'rankready-ai-llm-seo' ),
 			'input_schema'        => array( 'type' => 'object', 'properties' => new \stdClass(), 'additionalProperties' => false ),
@@ -367,7 +451,7 @@ class RNRD_MCP {
 			'permission_callback' => array( self::class, 'ability_permission' ),
 		) );
 
-		wp_register_ability( self::NS . '/search-posts', array(
+		self::add_ability( self::NS . '/search-posts', array(
 			'label'               => __( 'Search posts', 'rankready-ai-llm-seo' ),
 			'description'         => __( 'Keyword search across published posts. Returns title, URL, excerpt, modified date.', 'rankready-ai-llm-seo' ),
 			'input_schema'        => array(
@@ -401,7 +485,7 @@ class RNRD_MCP {
 			'permission_callback' => array( self::class, 'ability_permission' ),
 		) );
 
-		wp_register_ability( self::NS . '/get-post-summary', array(
+		self::add_ability( self::NS . '/get-post-summary', array(
 			'label'               => __( 'Get post AI summary', 'rankready-ai-llm-seo' ),
 			'description'         => __( 'Returns RankReady-generated AI summary (key takeaways) for a post.', 'rankready-ai-llm-seo' ),
 			'input_schema'        => array(
@@ -422,7 +506,7 @@ class RNRD_MCP {
 			'permission_callback' => array( self::class, 'ability_permission' ),
 		) );
 
-		wp_register_ability( self::NS . '/get-post-faq', array(
+		self::add_ability( self::NS . '/get-post-faq', array(
 			'label'               => __( 'Get post FAQ', 'rankready-ai-llm-seo' ),
 			'description'         => __( 'Returns RankReady-generated FAQ question/answer pairs for a post.', 'rankready-ai-llm-seo' ),
 			'input_schema'        => array(
@@ -452,9 +536,9 @@ class RNRD_MCP {
 			'permission_callback' => array( self::class, 'ability_permission' ),
 		) );
 
-		wp_register_ability( self::NS . '/list-recent-posts', array(
+		self::add_ability( self::NS . '/list-recent-posts', array(
 			'label'               => __( 'List recent posts', 'rankready-ai-llm-seo' ),
-			'description'         => __( 'Paginated list of recently modified posts.', 'rankready-ai-llm-seo' ),
+			'description'         => __( 'Paginated list of recently modified posts. Keep calling with offset = next_offset while has_more is true. A page can hold fewer posts than limit, or none, when posts in that window are excluded from AI surfaces.', 'rankready-ai-llm-seo' ),
 			'input_schema'        => array(
 				'type'       => 'object',
 				'properties' => array(
@@ -478,6 +562,8 @@ class RNRD_MCP {
 							),
 						),
 					),
+					'has_more'    => array( 'type' => 'boolean' ),
+					'next_offset' => array( 'type' => 'integer' ),
 				),
 			),
 			'execute_callback'    => array( self::class, 'ability_list_recent_posts' ),
@@ -488,7 +574,7 @@ class RNRD_MCP {
 
 		// 7. get-post — the "view document" primitive. Returns full markdown +
 		//    metadata + summary + FAQ + schema in one call.
-		wp_register_ability( self::NS . '/get-post', array(
+		self::add_ability( self::NS . '/get-post', array(
 			'label'               => __( 'Get post (full content)', 'rankready-ai-llm-seo' ),
 			'description'         => __( 'Returns full post content as clean Markdown plus title, URL, modified date, author, AI summary bullets, FAQ Q&A, and JSON-LD schema. The agent\'s primary content retrieval primitive.', 'rankready-ai-llm-seo' ),
 			'input_schema'        => array(
@@ -523,7 +609,7 @@ class RNRD_MCP {
 
 		// 8. get-post-by-url — resolve a URL (including /post-slug.md or
 		//    /category/x/) → post payload. Lets an agent follow internal links.
-		wp_register_ability( self::NS . '/get-post-by-url', array(
+		self::add_ability( self::NS . '/get-post-by-url', array(
 			'label'               => __( 'Get post by URL', 'rankready-ai-llm-seo' ),
 			'description'         => __( 'Resolve any site URL (incl. .md, category, tag URLs) to a post. Returns the same shape as get-post. Returns 404-like empty payload if the URL does not map to content.', 'rankready-ai-llm-seo' ),
 			'input_schema'        => array(
@@ -540,9 +626,9 @@ class RNRD_MCP {
 		) );
 
 		// 9. list-pages — static pages separately from posts.
-		wp_register_ability( self::NS . '/list-pages', array(
+		self::add_ability( self::NS . '/list-pages', array(
 			'label'               => __( 'List pages', 'rankready-ai-llm-seo' ),
-			'description'         => __( 'List static pages (About, Pricing, Docs, etc.). Hierarchical — returns parent_id so an agent can rebuild the page tree.', 'rankready-ai-llm-seo' ),
+			'description'         => __( 'List static pages (About, Pricing, Docs, etc.). Hierarchical: returns parent_id so an agent can rebuild the page tree. Keep calling with offset = next_offset while has_more is true; a page can hold fewer pages than limit, or none, when some are excluded.', 'rankready-ai-llm-seo' ),
 			'input_schema'        => array(
 				'type'       => 'object',
 				'properties' => array(
@@ -557,7 +643,7 @@ class RNRD_MCP {
 		) );
 
 		// 10. list-content-types — what post types this site exposes.
-		wp_register_ability( self::NS . '/list-content-types', array(
+		self::add_ability( self::NS . '/list-content-types', array(
 			'label'               => __( 'List content types', 'rankready-ai-llm-seo' ),
 			'description'         => __( 'Returns every public post type the site exposes (Posts, Pages, Products, Docs, etc.) so the agent can target queries to the right type.', 'rankready-ai-llm-seo' ),
 			'input_schema'        => array( 'type' => 'object', 'properties' => new \stdClass(), 'additionalProperties' => false ),
@@ -567,7 +653,7 @@ class RNRD_MCP {
 		) );
 
 		// 11. list-categories — taxonomy discovery.
-		wp_register_ability( self::NS . '/list-categories', array(
+		self::add_ability( self::NS . '/list-categories', array(
 			'label'               => __( 'List categories', 'rankready-ai-llm-seo' ),
 			'description'         => __( 'Browse the site\'s topical hierarchy. Returns category name, slug, parent, post count, and archive URL.', 'rankready-ai-llm-seo' ),
 			'input_schema'        => array(
@@ -583,7 +669,7 @@ class RNRD_MCP {
 		) );
 
 		// 12. list-tags — same shape, different taxonomy.
-		wp_register_ability( self::NS . '/list-tags', array(
+		self::add_ability( self::NS . '/list-tags', array(
 			'label'               => __( 'List tags', 'rankready-ai-llm-seo' ),
 			'description'         => __( 'List tags ordered by post count. Returns name, slug, post count, archive URL.', 'rankready-ai-llm-seo' ),
 			'input_schema'        => array(
@@ -599,7 +685,7 @@ class RNRD_MCP {
 		) );
 
 		// 13. get-llms-txt — return the rendered llms.txt inline.
-		wp_register_ability( self::NS . '/get-llms-txt', array(
+		self::add_ability( self::NS . '/get-llms-txt', array(
 			'label'               => __( 'Get llms.txt', 'rankready-ai-llm-seo' ),
 			'description'         => __( 'Returns the rendered /llms.txt content inline so the agent does not have to make a separate HTTP fetch. Same content as the file endpoint.', 'rankready-ai-llm-seo' ),
 			'input_schema'        => array(
@@ -615,9 +701,9 @@ class RNRD_MCP {
 		) );
 
 		// 14. get-author — EEAT Person schema fields for an author.
-		wp_register_ability( self::NS . '/get-author', array(
+		self::add_ability( self::NS . '/get-author', array(
 			'label'               => __( 'Get author (EEAT Person schema)', 'rankready-ai-llm-seo' ),
-			'description'         => __( 'Returns full EEAT Person schema for a WordPress author: name, bio, job title, employer, credentials, education, awards, social profiles. Drives AI trust signals.', 'rankready-ai-llm-seo' ),
+			'description'         => __( 'Returns full EEAT Person schema for a WordPress author: name, bio, job title, employer, credentials, education, awards, social profiles. Published as Schema.org Person data.', 'rankready-ai-llm-seo' ),
 			'input_schema'        => array(
 				'type'       => 'object',
 				'properties' => array(
@@ -632,7 +718,7 @@ class RNRD_MCP {
 		) );
 
 		// 15. get-sitemap — parsed sitemap index for cold crawls.
-		wp_register_ability( self::NS . '/get-sitemap', array(
+		self::add_ability( self::NS . '/get-sitemap', array(
 			'label'               => __( 'Get sitemap', 'rankready-ai-llm-seo' ),
 			'description'         => __( 'Returns a parsed sitemap (URL + lastmod) of every published post + page. Agent\'s first call when discovering a site cold.', 'rankready-ai-llm-seo' ),
 			'input_schema'        => array(
@@ -648,7 +734,7 @@ class RNRD_MCP {
 		) );
 
 		// 16. get-fresh-content — posts modified in last N days.
-		wp_register_ability( self::NS . '/get-fresh-content', array(
+		self::add_ability( self::NS . '/get-fresh-content', array(
 			'label'               => __( 'Get fresh content', 'rankready-ai-llm-seo' ),
 			'description'         => __( 'Posts and pages modified within the last N days. AI engines prioritise fresh content — this ability surfaces what to read first when context is limited.', 'rankready-ai-llm-seo' ),
 			'input_schema'        => array(
@@ -670,7 +756,7 @@ class RNRD_MCP {
 	public static function ability_get_site_info(): array {
 		// v1.2.0-beta.4 — return the unified Brand Identity so agents see
 		// the same canonical name + summary + about + terms that humans see.
-		$brand = class_exists( 'RNRD_Llms_Txt' )
+		$brand = class_exists( 'RNRD_Brand_Identity' )
 			? RNRD_Brand_Identity::get_brand_identity()
 			: array(
 				'name'    => (string) get_bloginfo( 'name' ),
@@ -699,13 +785,55 @@ class RNRD_MCP {
 	/**
 	 * Whether a post may appear on WebMCP surfaces.
 	 *
-	 * Same gate as llms.txt / Markdown / OKF: published, not password-protected,
-	 * and not excluded via RankReady's per-post opt-out or SEO-plugin noindex.
+	 * Published, of a post type a visitor could actually open, not
+	 * password-protected, and not excluded via RankReady's per-post opt-out or
+	 * SEO-plugin noindex.
+	 *
+	 * The post-type test is the one that carries security weight. The list and
+	 * search abilities constrain post_type in the query, but get-post takes a
+	 * raw post ID and get-post-by-url resolves one, so without this check any
+	 * published row of ANY post type was returned in full. Plenty of post types
+	 * are publish + non-public by design: wp_navigation, acf-field-group, form
+	 * entries, popup and email-template CPTs. is_post_type_viewable() is the
+	 * same boundary core uses for "can a logged-out visitor see this".
 	 */
 	private static function is_post_exposable( $post ): bool {
 		if ( ! $post instanceof WP_Post || 'publish' !== $post->post_status || ! empty( $post->post_password ) ) {
 			return false;
 		}
+		if ( ! is_post_type_viewable( $post->post_type ) ) {
+			return false;
+		}
+
+		// CPT exposure is a Pro feature — is_post_type_viewable() only proves a
+		// post type is publicly viewable, it says nothing about our own Free/Pro
+		// policy. Without this check, any public custom post type (WooCommerce
+		// products, a public "case-study" CPT, etc.) was reachable via get-post /
+		// get-post-by-url on a Free install even though the CPT toggle UI is
+		// Pro-only. Free stays to the two built-in types this plugin supports;
+		// Pro may go wider but never below the public=>true data-safety floor.
+		$post_type_obj = get_post_type_object( $post->post_type );
+		if ( ! $post_type_obj || empty( $post_type_obj->public ) ) {
+			return false;
+		}
+		$is_pro = function_exists( 'rnrd_is_pro' ) && rnrd_is_pro();
+		if ( ! $is_pro && ! in_array( $post->post_type, array( 'post', 'page' ), true ) ) {
+			return false;
+		}
+
+		// Honour the per-resource toggles for every ability, not only the one
+		// named after the resource: get-post, search-posts and list-recent-posts
+		// are gated on 'posts' alone, so without this a page or an unticked CPT
+		// was still returned after the admin switched that resource off.
+		$state = self::exposure_state();
+		if ( 'page' === $post->post_type && empty( $state['pages'] ) ) {
+			return false;
+		}
+		if ( ! in_array( $post->post_type, array( 'post', 'page' ), true )
+			&& ! in_array( $post->post_type, (array) $state['cpts'], true ) ) {
+			return false;
+		}
+
 		return ! ( class_exists( 'RNRD_Llms_Txt' ) && RNRD_Llms_Txt::should_exclude_from_llms( $post ) );
 	}
 
@@ -726,19 +854,24 @@ class RNRD_MCP {
 		$limit = max( 1, min( 20, $limit ) );
 
 		$post_types = (array) get_option( RNRD_OPT_POST_TYPES, array( 'post' ) );
-		if ( ! in_array( 'page', $post_types, true ) ) {
+		if ( self::resource_enabled( RNRD_OPT_MCP_EXPOSE_PAGES ) && ! in_array( 'page', $post_types, true ) ) {
 			$post_types[] = 'page';
 		}
 
+		// Over-fetch, then trim. filter_exposable_posts() drops posts excluded
+		// from llms.txt after the query, so asking for exactly $limit returned
+		// fewer results whenever an excluded post ranked in the top $limit.
+		// Search takes no offset, so trimming cannot skip anything a later
+		// call would have returned.
 		$posts = get_posts( array(
 			's'              => $query,
 			'post_type'      => $post_types,
 			'post_status'    => 'publish',
 			'has_password'   => false,
-			'posts_per_page' => $limit,
+			'posts_per_page' => $limit * 3,
 			'orderby'        => 'relevance',
 		) );
-		$posts = self::filter_exposable_posts( $posts );
+		$posts = array_slice( self::filter_exposable_posts( $posts ), 0, $limit );
 
 		$results = array();
 		foreach ( $posts as $p ) {
@@ -764,7 +897,10 @@ class RNRD_MCP {
 		}
 
 		$bullets = array();
-		if ( class_exists( 'RNRD_Summary' ) && RNRD_Summary::is_enabled() && RNRD_Summary::is_post_type_enabled( $post->post_type ) ) {
+		// Per-post opt-out. is_post_exposable() covers status and password;
+		// it does not know about _rnrd_disable_summary.
+		if ( class_exists( 'RNRD_Summary' ) && RNRD_Summary::is_enabled() && RNRD_Summary::is_post_type_enabled( $post->post_type )
+			&& RNRD_Util::can_emit( (int) $post->ID, RNRD_META_DISABLE ) ) {
 			$raw = (string) get_post_meta( $post->ID, RNRD_META_SUMMARY, true );
 			if ( '' !== $raw && class_exists( 'RNRD_Generator' ) ) {
 				$decoded = RNRD_Generator::decode_summary( $raw );
@@ -791,7 +927,8 @@ class RNRD_MCP {
 		}
 
 		$faq = array();
-		if ( class_exists( 'RNRD_Faq' ) && RNRD_Faq::is_enabled() && RNRD_Faq::is_post_type_enabled( $post->post_type ) ) {
+		if ( class_exists( 'RNRD_Faq' ) && RNRD_Faq::is_enabled() && RNRD_Faq::is_post_type_enabled( $post->post_type )
+			&& RNRD_Util::can_emit( (int) $post->ID, RNRD_META_FAQ_DISABLE ) ) {
 			$faq = RNRD_Faq::get_faq_data( $post->ID );
 		}
 
@@ -810,7 +947,7 @@ class RNRD_MCP {
 		$offset = max( 0, $offset );
 
 		$post_types = (array) get_option( RNRD_OPT_POST_TYPES, array( 'post' ) );
-		if ( ! in_array( 'page', $post_types, true ) ) {
+		if ( self::resource_enabled( RNRD_OPT_MCP_EXPOSE_PAGES ) && ! in_array( 'page', $post_types, true ) ) {
 			$post_types[] = 'page';
 		}
 
@@ -820,10 +957,19 @@ class RNRD_MCP {
 			'has_password'   => false,
 			'posts_per_page' => $limit,
 			'offset'         => $offset,
-			'orderby'        => 'modified',
-			'order'          => 'DESC',
+			// ID breaks ties. Posts saved in the same second share a modified
+			// value, and without a tiebreaker MySQL may order them differently
+			// on each OFFSET query, so paging skipped some and repeated others.
+			'orderby'        => array( 'modified' => 'DESC', 'ID' => 'DESC' ),
 		) );
-		$posts = self::filter_exposable_posts( $posts );
+		// Deliberately not over-fetched, unlike search. offset counts raw
+		// published posts, so paging with offset += limit covers every post
+		// exactly once. Excluded posts are dropped from the window they fall
+		// in, so a page can be short or empty without being the last one;
+		// has_more says whether the raw window was full. Both fields are
+		// additive: a client that ignores them pages exactly as before.
+		$raw_count = count( $posts );
+		$posts     = self::filter_exposable_posts( $posts );
 
 		$out = array();
 		foreach ( $posts as $p ) {
@@ -835,7 +981,11 @@ class RNRD_MCP {
 			);
 		}
 
-		return array( 'posts' => $out );
+		return array(
+			'posts'       => $out,
+			'has_more'    => $raw_count === $limit,
+			'next_offset' => $offset + $limit,
+		);
 	}
 
 	// ── v1.2.0-beta.5 — Expanded ability implementations ─────────────────
@@ -848,7 +998,8 @@ class RNRD_MCP {
 	private static function post_payload( WP_Post $post ): array {
 		$post_id   = (int) $post->ID;
 		$summary   = array();
-		if ( class_exists( 'RNRD_Summary' ) && RNRD_Summary::is_enabled() && RNRD_Summary::is_post_type_enabled( $post->post_type ) ) {
+		if ( class_exists( 'RNRD_Summary' ) && RNRD_Summary::is_enabled() && RNRD_Summary::is_post_type_enabled( $post->post_type )
+			&& RNRD_Util::can_emit( $post_id, RNRD_META_DISABLE ) ) {
 			$summary_raw = (string) get_post_meta( $post_id, RNRD_META_SUMMARY, true );
 			if ( '' !== $summary_raw && class_exists( 'RNRD_Generator' ) ) {
 				$decoded = RNRD_Generator::decode_summary( $summary_raw );
@@ -859,7 +1010,8 @@ class RNRD_MCP {
 		}
 
 		$faq = array();
-		if ( class_exists( 'RNRD_Faq' ) && RNRD_Faq::is_enabled() && RNRD_Faq::is_post_type_enabled( $post->post_type ) ) {
+		if ( class_exists( 'RNRD_Faq' ) && RNRD_Faq::is_enabled() && RNRD_Faq::is_post_type_enabled( $post->post_type )
+			&& RNRD_Util::can_emit( $post_id, RNRD_META_FAQ_DISABLE ) ) {
 			$faq = RNRD_Faq::get_faq_data( $post_id );
 		}
 
@@ -958,10 +1110,12 @@ class RNRD_MCP {
 			'has_password'   => false,
 			'posts_per_page' => $limit,
 			'offset'         => $offset,
-			'orderby'        => 'menu_order title',
-			'order'          => 'ASC',
+			// ID breaks ties between pages with the same order and title, for
+			// the same OFFSET-paging reason as list-recent-posts.
+			'orderby'        => array( 'menu_order' => 'ASC', 'title' => 'ASC', 'ID' => 'ASC' ),
 		) );
-		$pages = self::filter_exposable_posts( $pages );
+		$raw_count = count( $pages );
+		$pages     = self::filter_exposable_posts( $pages );
 
 		$out = array();
 		foreach ( $pages as $p ) {
@@ -973,7 +1127,11 @@ class RNRD_MCP {
 				'modified'  => mysql2date( 'c', $p->post_modified_gmt ),
 			);
 		}
-		return array( 'pages' => $out );
+		return array(
+			'pages'       => $out,
+			'has_more'    => $raw_count === $limit,
+			'next_offset' => $offset + $limit,
+		);
 	}
 
 	public static function ability_list_content_types(): array {

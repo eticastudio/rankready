@@ -49,6 +49,12 @@
 	line-height: 1.2;
 }
 
+/* Drawn, not typed — see the matching rule in admin.css. This widget renders
+   on the WP Dashboard, which never loads admin.css, so the rule is repeated
+   here rather than shared. */
+.rnrd-agent-dashboard .rnrd-kpi__go::after { content: "\2192"; }
+[dir="rtl"] .rnrd-agent-dashboard .rnrd-kpi__go::after { content: "\2190"; }
+
 .rnrd-agent-dashboard .rnrd-kpi__go {
 	opacity: 0;
 	max-width: 0;

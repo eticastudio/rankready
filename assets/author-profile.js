@@ -45,8 +45,12 @@
 		del.textContent = '×';
 		del.style.cssText = 'min-width:32px;';
 		del.addEventListener('click', function(){
-			row.parentNode.removeChild(row);
-			syncHidden(row.parentNode || document.querySelector('.rnrd-repeater'));
+			// Capture the container first: after removeChild() row.parentNode is null, and the
+			// old fallback synced whichever repeater came first on the page instead.
+			var parent = row.parentNode;
+			if (!parent) return;
+			parent.removeChild(row);
+			syncHidden(parent);
 		});
 		row.appendChild(del);
 		return row;

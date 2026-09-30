@@ -18,9 +18,15 @@
 			s = s.split( '%' + n + '$s' ).join( val );
 		}
 		if ( arguments.length > 3 ) {
-			s = s.replace( '%s', String( arguments[ 3 ] ) ).replace( '%d', String( arguments[ 3 ] ) );
+			var first = String( arguments[ 3 ] );
+			var at    = s.indexOf( '%s' );
+			if ( at < 0 ) { at = s.indexOf( '%d' ); }
+			if ( at >= 0 ) { s = s.slice( 0, at ) + first + s.slice( at + 2 ); }
 		}
-		return s;
+		// The PHP strings are php-format, so a literal percent sign is written
+		// %% for translators and their tools. printf would collapse it; this
+		// does the same, or the progress line reads "(50%%)".
+		return s.split( '%%' ).join( '%' );
 	}
 
 	window.rnrdI18n = {

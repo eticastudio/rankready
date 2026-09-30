@@ -26,10 +26,11 @@ class RNRD_Llms_Txt {
 
 	public static function init(): void {
 		add_action( 'init',             array( self::class, 'add_rewrite_rules' ) );
-		// v1.2.0-rc.2 — priority 1 so page builders (Bricks, Elementor Pro
-		// templates) can't intercept /llms.txt + /llms-full.txt before we
-		// respond. Our handler exit()s when matched.
-		add_action( 'template_redirect', array( self::class, 'handle_request' ), 1 );
+		// issue #41 — shared, filterable base priority (rnrd_template_redirect_priority(),
+		// defaults to -9999) instead of a hardcoded small number, so page builders
+		// or mu-plugins hooking template_redirect early cannot intercept
+		// /llms.txt + /llms-full.txt before we respond. Our handler exit()s when matched.
+		add_action( 'template_redirect', array( self::class, 'handle_request' ), rnrd_template_redirect_priority( 1 ) );
 
 		// v1.2.0-rc.2 — tell every WP page-cache plugin to never cache the
 		// llms.txt endpoints. RankReady already caches the response in a
@@ -59,6 +60,13 @@ class RNRD_Llms_Txt {
 			RNRD_OPT_LLMS_SHOW_CATEGORIES,  RNRD_OPT_LLMS_CACHE_TTL,
 			RNRD_OPT_LLMS_USE_MD_URLS,      RNRD_OPT_MD_ENABLE,
 			RNRD_OPT_MD_POST_TYPES,
+			// Was missing until 1.4.0, and it is the one option a PAYING
+			// customer touches: flipping "Hide RankReady credit" changed the
+			// generated body but never busted the transient, so the credit
+			// line stayed for the full TTL (1 hour by default) and longer
+			// behind a CDN. Same bug class as the rc.16 fix above; this
+			// option was simply left out of that list.
+			RNRD_OPT_HIDE_BRANDING,
 		);
 		foreach ( $busters as $opt ) {
 			add_action( 'update_option_' . $opt, array( self::class, 'bust_cache_and_purge_cdn' ) );
@@ -98,7 +106,9 @@ class RNRD_Llms_Txt {
 			header( 'Link: <' . esc_url( home_url( '/llms.txt' ) ) . '>; rel="llms-txt"', false );
 		}
 
-		if ( 'on' === get_option( RNRD_OPT_LLMS_FULL_ENABLE, 'off' ) ) {
+		// The route serves llms-full.txt only when llms.txt is on too, so the
+		// advertisement follows the same condition or crawlers get a 404.
+		if ( 'on' === get_option( RNRD_OPT_LLMS_ENABLE, 'off' ) && 'on' === get_option( RNRD_OPT_LLMS_FULL_ENABLE, 'off' ) ) {
 			header( 'Link: <' . esc_url( home_url( '/llms-full.txt' ) ) . '>; rel="llms-full-txt"', false );
 		}
 
@@ -113,24 +123,31 @@ class RNRD_Llms_Txt {
 		// in robots.txt per Google Search Central docs, NOT in HTTP Link
 		// headers for LLM/agent discovery.
 
-		// rc.16 — emit hreflang alternate Link headers for each detected
-		// multilingual plugin so agents can discover language variants.
-		// Per-language /es/llms.txt generation ships in v1.3 Pro.
-		$ml = self::detect_multilingual();
-		if ( ! empty( $ml ) && 'on' === get_option( RNRD_OPT_LLMS_ENABLE, 'off' ) ) {
-			$emitted = array();
-			foreach ( $ml as $set ) {
-				foreach ( (array) $set['langs'] as $code ) {
-					$code = strtolower( (string) $code );
-					if ( '' === $code || isset( $emitted[ $code ] ) ) {
-						continue;
-					}
-					$emitted[ $code ] = true;
-					$lang_url         = home_url( '/' . $code . '/llms.txt' );
-					header( 'Link: <' . esc_url( $lang_url ) . '>; rel="alternate"; hreflang="' . esc_attr( $code ) . '"', false );
-				}
-			}
-		}
+		/*
+		 * REMOVED: hreflang alternate Link headers for /<lang>/llms.txt.
+		 *
+		 * rc.16 emitted one of these per detected WPML/Polylang language, with a
+		 * comment claiming per-language generation "ships in v1.3 Pro". It never
+		 * shipped, in Free or in Pro. add_rewrite_rules() below registers exactly
+		 * one route, `^llms\.txt$`, and handle_request() matches the literal
+		 * string 'llms.txt', so /es/llms.txt has no handler anywhere in either
+		 * plugin. Verified in the lab: /llms.txt returns 200 and /es/llms.txt
+		 * returns 404.
+		 *
+		 * So on every multilingual site running RankReady, the plugin was
+		 * advertising a 404 to AI agents in an RFC 8288 header, as a language
+		 * alternate, which is the precise failure this plugin exists to prevent.
+		 * The option check made it look guarded but only proved the DEFAULT
+		 * endpoint was on. Compare RNRD_Markdown::add_homepage_link_headers(),
+		 * whose docblock states the standard this violated: "Only fires when
+		 * llms.txt is enabled, guarantees the advertised URL actually resolves."
+		 * The .md per-language alternates are honest by contrast: they are built
+		 * from real translated permalinks and the .md rule matches any path.
+		 *
+		 * Do not restore this block as a discovery "hint". A header that names a
+		 * URL is a claim that the URL exists. If per-language llms.txt is ever
+		 * built, the route lands first and the header follows it.
+		 */
 	}
 
 	/**
@@ -144,7 +161,7 @@ class RNRD_Llms_Txt {
 			echo '<link rel="llms-txt" type="text/plain" href="' . esc_url( home_url( '/llms.txt' ) ) . '" />' . "\n";
 		}
 
-		if ( 'on' === get_option( RNRD_OPT_LLMS_FULL_ENABLE, 'off' ) ) {
+		if ( 'on' === get_option( RNRD_OPT_LLMS_ENABLE, 'off' ) && 'on' === get_option( RNRD_OPT_LLMS_FULL_ENABLE, 'off' ) ) {
 			echo '<link rel="llms-full-txt" type="text/plain" href="' . esc_url( home_url( '/llms-full.txt' ) ) . '" />' . "\n";
 		}
 	}
@@ -152,8 +169,10 @@ class RNRD_Llms_Txt {
 	/**
 	 * Whether the "Generated from RankReady" credit line should be hidden.
 	 *
-	 * WP.org Free build: always returns false (credit shows). The branding
-	 * toggle is a Coming Soon placeholder.
+	 * Free build: always returns false, because `rnrd_is_pro()` is false
+	 * without the Pro plugin and a valid license, so the credit always shows.
+	 * With Pro licensed the toggle is live and this is what hides the line.
+	 * (It is NOT a placeholder; that docblock outlived the implementation.)
 	 *
 	 * @since 1.2.0-rc.11
 	 */
@@ -663,18 +682,26 @@ class RNRD_Llms_Txt {
 					continue;
 				}
 
-				$title   = self::flatten_for_list_line( self::clean_text( get_the_title( $post ) ) );
-				$url     = self::entry_url_for_post( $post );
 				$content = self::post_to_clean_markdown( $post, false );
+
+				// issue #9 — a page-builder post whose content could not be
+				// resolved at all (see RNRD_Generator::resolve_post_content())
+				// gets skipped entirely rather than publishing an empty
+				// `# Title` / `Source:` block with nothing under it — a 200
+				// response with no body is worse than simply not listing the
+				// page, since it reads as confirmed thin/duplicate content.
+				if ( '' === trim( (string) $content ) ) {
+					continue;
+				}
+
+				$title = self::flatten_for_list_line( self::clean_text( get_the_title( $post ) ) );
+				$url   = self::entry_url_for_post( $post );
 
 				// Per-page separator: # Title + Source URL
 				$lines[] = '# ' . $title;
 				$lines[] = 'Source: ' . $url;
 				$lines[] = '';
-
-				if ( ! empty( $content ) ) {
-					$lines[] = $content;
-				}
+				$lines[] = $content;
 
 				$lines[] = '';
 				$lines[] = '---';
@@ -725,9 +752,13 @@ class RNRD_Llms_Txt {
 	 * Detect active multilingual plugins so the admin can be warned that
 	 * /llms.txt currently serves only the default language.
 	 *
-	 * Per-language generation (/es/llms.txt etc.) is planned for a future
-	 * release. Today the plugin emits hreflang `<link rel="alternate">`
-	 * discovery tags for each detected language pointing to language-prefixed URLs.
+	 * Per-language generation (/es/llms.txt etc.) does NOT exist, in Free or in
+	 * Pro. The old claim here that the plugin emits hreflang discovery tags for
+	 * language-prefixed URLs described a real block in add_link_headers() that
+	 * pointed at routes nothing registers; it was removed, see the comment there.
+	 * The only caller today is the admin warning on the LLMs.txt screen, which is
+	 * what this method was written for. Keep it that way: this detects, it does
+	 * not advertise.
 	 *
 	 * @since 1.2.0-rc.16
 	 * @return array<int, array{plugin:string,langs:string[],default:string}>
@@ -806,9 +837,17 @@ class RNRD_Llms_Txt {
 	// ═══════════════════════════════════════════════════════════════════════════
 
 	public static function post_to_clean_markdown( $post, bool $run_shortcodes = true ): string {
-		$html = $post->post_content;
+		// issue #9 — page builders (Elementor, and anything else storing its body
+		// in postmeta) leave post_content empty or near-empty even on a fully
+		// rendered, published page. Route through RNRD_Generator::resolve_post_content()
+		// so this reads the ACTUAL body — post_content, else the builder's own
+		// render pipeline, else the `the_content` filter chain — instead of
+		// silently producing an empty markdown body for a real page.
+		$html = ( $post instanceof WP_Post && class_exists( 'RNRD_Generator' ) )
+			? RNRD_Generator::resolve_post_content( $post )
+			: ( is_object( $post ) ? (string) $post->post_content : '' );
 
-		if ( empty( $html ) ) {
+		if ( '' === trim( (string) $html ) ) {
 			return '';
 		}
 

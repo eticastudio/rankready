@@ -38,6 +38,9 @@ class RNRD_OKF {
 	/** admin-post action for the bundle .zip download. */
 	const EXPORT_ACTION = 'rnrd_okf_export';
 
+	/** Cron hook that purges the bundle from edge caches, off the save request. */
+	const PURGE_EVENT = 'rnrd_okf_purge_edge';
+
 	public static function init(): void {
 		// Register rewrite rules BEFORE RNRD_Markdown (init priority 10). Both use the
 		// `top` bucket, which WordPress matches in INSERTION order, and markdown's
@@ -46,13 +49,18 @@ class RNRD_OKF {
 		add_action( 'init', array( self::class, 'add_rewrite_rules' ), 9 );
 		add_filter( 'query_vars', array( self::class, 'register_query_vars' ) );
 
-		// Serve at priority 0 — ahead of the markdown handlers (priority 1/2) so an /okf/
-		// request is answered here and never falls through to the .md resolver, regardless
-		// of class init order.
-		add_action( 'template_redirect', array( self::class, 'handle_request' ), 0 );
+		// Serve ahead of the markdown handlers (offset 1/2) so an /okf/ request is
+		// answered here and never falls through to the .md resolver, regardless of
+		// class init order. Uses the shared, filterable base priority (issue #41)
+		// instead of a hardcoded small number, so a page builder or mu-plugin
+		// hooking template_redirect early cannot still beat us to the request.
+		add_action( 'template_redirect', array( self::class, 'handle_request' ), rnrd_template_redirect_priority( 0 ) );
 
 		// Bundle .zip download (admin-triggered).
 		add_action( 'admin_post_' . self::EXPORT_ACTION, array( self::class, 'handle_export' ) );
+
+		// Edge purge, scheduled by flush_cache() so it never runs inline on a save.
+		add_action( self::PURGE_EVENT, array( self::class, 'purge_edge' ) );
 
 		// Bundle freshness: drop the cached manifest + log whenever content or the
 		// included-types setting changes, so the bundle genuinely refreshes on publish/
@@ -61,13 +69,70 @@ class RNRD_OKF {
 		add_action( 'deleted_post', array( self::class, 'flush_cache' ) );
 		add_action( 'transition_post_status', array( self::class, 'flush_cache' ) );
 		add_action( 'update_option_' . RNRD_OPT_OKF_POST_TYPES, array( self::class, 'flush_cache' ) );
-		add_action( 'update_option_' . RNRD_OPT_OKF_ENABLE, array( self::class, 'flush_cache' ) );
+		add_action( 'update_option_' . RNRD_OPT_OKF_ENABLE, array( self::class, 'on_enable_change' ) );
 	}
 
-	/** Drop the cached manifest + log (called on any content/setting change). */
+	/**
+	 * The enable switch changed. Unlike a content save this must purge the edge
+	 * even when the result is "off": the CDN is still holding the last bundle
+	 * for up to 25 hours, and turning the feature off is exactly when it should
+	 * stop being served.
+	 */
+	public static function on_enable_change(): void {
+		self::flush_cache();
+		if ( ! wp_next_scheduled( self::PURGE_EVENT ) ) {
+			wp_schedule_single_event( time() + 30, self::PURGE_EVENT );
+		}
+	}
+
+	/**
+	 * Drop the cached manifest + log (called on any content/setting change).
+	 *
+	 * Dropping the transients alone is not enough: /okf/ is served with
+	 * s-maxage=3600 and stale-while-revalidate=86400, the longest edge TTL in
+	 * the plugin, so a CDN could keep answering with the pre-edit bundle for up
+	 * to 25 hours after the origin had already rebuilt it.
+	 *
+	 * The edge purge is deliberately NOT run inline here. This method is on
+	 * save_post, deleted_post and transition_post_status, which all fire for the
+	 * same edit, and RNRD_Cache::purge_url() can make a blocking 5-second
+	 * Cloudflare API call per URL on an APO site: doing it inline would add up
+	 * to 15 seconds to a post save. Instead one single cron event is scheduled,
+	 * which also coalesces a bulk edit of 50 posts into a single purge.
+	 */
 	public static function flush_cache(): void {
+		// Drop the per-request slug map too: a save that invalidates the bundle
+		// can also have changed a post_name, and a stale map would hand the rest
+		// of this request keys that no longer match what gets rebuilt.
+		self::$slug_map = null;
+		self::$id_slug  = null;
+
 		delete_transient( self::CACHE_INDEX );
 		delete_transient( self::CACHE_LOG );
+
+		if ( ! self::enabled() ) {
+			return;
+		}
+		if ( ! wp_next_scheduled( self::PURGE_EVENT ) ) {
+			wp_schedule_single_event( time() + 30, self::PURGE_EVENT );
+		}
+	}
+
+	/**
+	 * Purge the bundle's index surfaces from CDN / page-cache layers.
+	 *
+	 * Runs on cron, off the save request. Concept documents (/okf/<slug>.md) are
+	 * not purged here: they are one per post and carry the same TTL, so the
+	 * bundle index is what goes stale in a way a reader can see. A site that
+	 * needs per-concept purging can hook RNRD_OKF::PURGE_EVENT.
+	 */
+	public static function purge_edge(): void {
+		if ( ! class_exists( 'RNRD_Cache' ) ) {
+			return;
+		}
+		RNRD_Cache::purge_url( home_url( '/okf/' ) );
+		RNRD_Cache::purge_url( home_url( '/okf/index.md' ) );
+		RNRD_Cache::purge_url( home_url( '/okf/log.md' ) );
 	}
 
 	/** Is the OKF bundle enabled? */
@@ -200,7 +265,11 @@ class RNRD_OKF {
 			$label  = ( $obj && ! empty( $obj->labels->name ) ) ? $obj->labels->name : ucfirst( $pt );
 			$lines[] = '## ' . self::clean( $label );
 			foreach ( $posts as $post ) {
-				$lines[] = '* [' . self::clean( get_the_title( $post ) ) . '](/okf/' . self::concept_slug( $post ) . '.md) - ' . self::clean( self::excerpt( $post ) );
+				$slug = self::concept_slug( $post );
+				if ( '' === $slug ) {
+					continue; // No slug, no URL. Same guard as slug_map().
+				}
+				$lines[] = '* [' . self::clean( get_the_title( $post ) ) . '](' . self::concept_path( $slug ) . ') - ' . self::clean( self::excerpt( $post ) );
 			}
 			$lines[] = '';
 		}
@@ -235,7 +304,11 @@ class RNRD_OKF {
 		foreach ( $by_date as $date => $group ) {
 			$lines[] = '## ' . $date;
 			foreach ( $group as $post ) {
-				$lines[] = '* Updated [' . self::clean( get_the_title( $post ) ) . '](/okf/' . self::concept_slug( $post ) . '.md)';
+				$slug = self::concept_slug( $post );
+				if ( '' === $slug ) {
+					continue; // No slug, no URL. Same guard as slug_map().
+				}
+				$lines[] = '* Updated [' . self::clean( get_the_title( $post ) ) . '](' . self::concept_path( $slug ) . ')';
 			}
 			$lines[] = '';
 		}
@@ -264,7 +337,7 @@ class RNRD_OKF {
 		$lines   = array();
 		$lines[] = '---';
 		// REQUIRED, non-empty (SPEC §4.1 / §9).
-		$lines[] = 'type: ' . self::map_type( $post );
+		$lines[] = 'type: ' . self::yaml_scalar( self::map_type( $post ) );
 		$lines[] = 'title: "' . self::yaml_escape( get_the_title( $post ) ) . '"';
 		$lines[] = 'description: "' . self::yaml_escape( self::excerpt( $post ) ) . '"';
 		// `resource`: the canonical URI uniquely identifying the underlying asset.
@@ -379,9 +452,76 @@ class RNRD_OKF {
 		return true;
 	}
 
-	/** /okf/<slug>.md uses the post slug. */
+	/**
+	 * slug => WP_Post and ID => slug for every post in the bundle.
+	 *
+	 * WordPress only guarantees a slug is unique WITHIN a post type. With more
+	 * than one type enabled, two posts can both be `post_name = 'pricing'`, and
+	 * the bundle used to key purely on `post_name . '.md'`: one of the two
+	 * silently overwrote the other in the zip, index.md printed the same
+	 * `/okf/pricing.md` link twice, and whichever post `resolve_slug()` did not
+	 * pick was permanently unreachable.
+	 *
+	 * The first post to claim a slug (in `post_types()` order, then the bundle's
+	 * own query order) keeps the bare URL, so nothing changes on the ordinary
+	 * single-collision-free site. A later claimant gets `<slug>-<type>`, and if
+	 * that is taken too, `<slug>-<type>-<id>`, which always terminates because
+	 * the ID is unique.
+	 *
+	 * Building the map is also what makes the three surfaces agree by
+	 * construction: index.md, the zip and the served URL all read the same keys
+	 * rather than each deriving their own.
+	 */
+	private static $slug_map = null;
+
+	/** ID => slug, the reverse of slug_map(); avoids an O(n^2) scan per link. */
+	private static $id_slug = null;
+
+	private static function slug_map(): array {
+		if ( is_array( self::$slug_map ) ) {
+			return self::$slug_map;
+		}
+
+		$map = array();
+		$ids = array();
+
+		foreach ( self::post_types() as $pt ) {
+			foreach ( self::query_posts( array( $pt ) ) as $post ) {
+				if ( '' === (string) $post->post_name ) {
+					continue; // No slug, no URL. Nothing to key on.
+				}
+
+				$key = $post->post_name;
+				if ( isset( $map[ $key ] ) ) {
+					$key = $post->post_name . '-' . $post->post_type;
+				}
+				if ( isset( $map[ $key ] ) ) {
+					$key = $post->post_name . '-' . $post->post_type . '-' . $post->ID;
+				}
+
+				$map[ $key ]        = $post;
+				$ids[ (int) $post->ID ] = $key;
+			}
+		}
+
+		self::$slug_map = $map;
+		self::$id_slug  = $ids;
+
+		return $map;
+	}
+
+	/**
+	 * /okf/<slug>.md. The post slug, disambiguated only when it has to be.
+	 *
+	 * Returns '' for a post the map deliberately left out (an empty post_name,
+	 * which has no URL to link to). Falling back to $post->post_name here undid
+	 * slug_map()'s own guard and emitted `/okf/.md`, a link the router cannot
+	 * resolve. Callers must skip an empty slug rather than print it.
+	 */
 	private static function concept_slug( WP_Post $post ): string {
-		return $post->post_name;
+		self::slug_map();
+
+		return (string) ( self::$id_slug[ (int) $post->ID ] ?? '' );
 	}
 
 	/** Resolve an /okf/<slug>.md request back to a published post in an enabled type. */
@@ -389,16 +529,31 @@ class RNRD_OKF {
 		if ( '' === $slug ) {
 			return null;
 		}
-		$posts = get_posts( array(
+
+		$direct = get_posts( array(
 			'name'             => $slug,
 			'post_type'        => self::post_types(),
 			'post_status'      => 'publish',
 			'has_password'     => false, // TC-SEC-01: exclude password-protected posts.
-			'numberposts'      => 1,
+			'numberposts'      => 2,
 			'suppress_filters' => false,
 			'no_found_rows'    => true,
 		) );
-		return ! empty( $posts ) ? $posts[0] : null;
+
+		// Exactly one post owns this slug, so it is the one index.md links to and
+		// no map build is needed. Still check includability: this method used to
+		// skip the exclusion rules query_posts() applies, so a post the user had
+		// hidden from AI surfaces stayed readable at its /okf/ URL.
+		if ( 1 === count( $direct ) ) {
+			return self::is_includable( $direct[0] ) ? $direct[0] : null;
+		}
+
+		// Either zero matches (a disambiguated `<slug>-<type>` URL) or two-plus
+		// (a real collision). Both need the same map the index and the zip are
+		// keyed from, so the URL resolves to exactly the post published under it.
+		$map = self::slug_map();
+
+		return isset( $map[ $slug ] ) ? $map[ $slug ] : null;
 	}
 
 	// ── Serving ────────────────────────────────────────────────────────────
@@ -460,7 +615,11 @@ class RNRD_OKF {
 			'log.md'   => self::build_log_markdown(),
 		);
 		foreach ( self::query_posts( self::post_types() ) as $post ) {
-			$files[ self::concept_slug( $post ) . '.md' ] = self::build_concept_markdown( $post );
+			$slug = self::concept_slug( $post );
+			if ( '' === $slug ) {
+				continue; // Not in the slug map, so not addressable and not bundled.
+			}
+			$files[ $slug . '.md' ] = self::build_concept_markdown( $post );
 		}
 		return $files;
 	}
@@ -517,7 +676,39 @@ class RNRD_OKF {
 		return trim( (string) $text );
 	}
 
+	/**
+	 * Escape text for the inside of a YAML double-quoted scalar.
+	 *
+	 * Backslash first, then the quote. Escaping only the quote left a title
+	 * like `C:\Users` as `"C:\Users"`, and `\U` is an invalid escape in
+	 * double-quoted YAML, so the frontmatter failed to parse: a direct breach
+	 * of SPEC §9 ("every non-reserved .md has parseable YAML frontmatter").
+	 */
 	private static function yaml_escape( string $text ): string {
-		return str_replace( '"', '\\"', self::clean( $text ) );
+		return str_replace( array( '\\', '"' ), array( '\\\\', '\\"' ), self::clean( $text ) );
+	}
+
+	/**
+	 * A YAML scalar: bare when it is a plain word, double-quoted otherwise.
+	 *
+	 * `type` comes from a post type's registered label for custom types, and a
+	 * label such as "Recipe: Main" breaks an unquoted scalar the same way a
+	 * backslash breaks a quoted one. Plain words stay bare so the core types
+	 * still emit exactly `type: Article` / `type: Page`, as they always have.
+	 */
+	private static function yaml_scalar( string $text ): string {
+		return preg_match( '/^[A-Za-z0-9][A-Za-z0-9 _-]*$/', $text ) ? $text : '"' . self::yaml_escape( $text ) . '"';
+	}
+
+	/**
+	 * Site-relative path of one concept file, subdirectory-aware.
+	 *
+	 * A hard-coded `/okf/<slug>.md` 404s on a site installed at /blog/,
+	 * whose real URL is /blog/okf/<slug>.md. request_path() already handles
+	 * the subdirectory on the way in; this is the matching way out. On a
+	 * root install the output is byte-identical to the old string.
+	 */
+	private static function concept_path( string $slug ): string {
+		return wp_make_link_relative( home_url( '/okf/' . $slug . '.md' ) );
 	}
 }

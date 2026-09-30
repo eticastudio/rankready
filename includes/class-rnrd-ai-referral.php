@@ -53,65 +53,16 @@ class RNRD_AI_Referral {
 		// separate widgets shipped in beta.1.
 	}
 
-	// ── Dashboard widget panel (rendered inside the unified widget) ──────
+	/*
+	 * render_widget() and its private source_colour() helper lived here and were
+	 * deleted on 2026-09-26: ~55 lines of inline-styled markup with zero callers.
+	 * The dashboard panel is rendered by RNRD_Agent_Dashboard, as the note in
+	 * init() already said. The dead copy also carried the only string in the
+	 * plugin that claimed "Each visit here is a real person", which its own bot
+	 * filter (a User-Agent substring match) cannot support, so deleting the
+	 * function removed a live-if-ever-reached honesty problem with it.
+	 */
 
-	public static function render_widget(): void {
-		$counts = self::aggregate_last_n_days( 30 );
-		$total  = array_sum( $counts );
-
-		if ( 0 === $total ) {
-			?>
-			<div style="padding:8px 0;">
-				<p style="margin:0 0 8px;font-size:var(--rnrd-text-md,13px);color:var(--rnrd-color-ink-soft,#3c434a);">
-					<?php esc_html_e( 'Tracking is live. Counters fill in as ChatGPT, Perplexity, Gemini, Claude, or Copilot send their first visitor.', 'rankready-ai-llm-seo' ); ?>
-				</p>
-				<p style="margin:0 0 0;font-size:var(--rnrd-text-sm,12px);color:var(--rnrd-color-text-muted,#646970);">
-					<?php esc_html_e( 'Referrals appear here only once someone clicks through from an AI engine, so this stays empty until that happens. How long that takes depends on your content and how often engines recrawl it.', 'rankready-ai-llm-seo' ); ?>
-				</p>
-			</div>
-			<?php
-			return;
-		}
-
-		echo '<div style="display:flex;align-items:baseline;gap:8px;margin-bottom:10px;">';
-		echo '<strong style="font-size:28px;line-height:1;">' . esc_html( number_format_i18n( $total ) ) . '</strong>';
-		echo '<span style="color:#646970;font-size:12px;">' . esc_html__( 'total AI-sourced visits', 'rankready-ai-llm-seo' ) . '</span>';
-		echo '</div>';
-
-		// Bars.
-		echo '<ul style="margin:0;padding:0;list-style:none;">';
-		$max = max( $counts );
-		foreach ( $counts as $source => $count ) {
-			$label = self::source_label( $source );
-			$pct   = $max > 0 ? (int) round( ( $count / $max ) * 100 ) : 0;
-			$color = self::source_colour( $source );
-			echo '<li style="margin-bottom:6px;">';
-			echo '<div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:2px;">';
-			echo '<span>' . esc_html( $label ) . '</span>';
-			echo '<strong>' . esc_html( number_format_i18n( $count ) ) . '</strong>';
-			echo '</div>';
-			echo '<div style="background:#f0f0f1;height:6px;border-radius:3px;overflow:hidden;">';
-			echo '<div style="background:' . esc_attr( $color ) . ';height:100%;width:' . (int) $pct . '%;border-radius:3px;"></div>';
-			echo '</div>';
-			echo '</li>';
-		}
-		echo '</ul>';
-
-		echo '<p style="margin-top:10px;font-size:11px;color:#646970;">';
-		esc_html_e( 'Each visit here is a real person who clicked through from an AI engine to your site, identified by the HTTP referer. These are counted locally and never sent anywhere.', 'rankready-ai-llm-seo' );
-		echo '</p>';
-	}
-
-	private static function source_colour( string $source ): string {
-		$map = array(
-			'chatgpt'    => '#10a37f', // OpenAI green
-			'perplexity' => '#21808d', // Perplexity teal
-			'gemini'     => '#4285f4', // Google blue
-			'claude'     => '#cc785c', // Anthropic terracotta
-			'copilot'    => '#0078d4', // Microsoft blue
-		);
-		return $map[ $source ] ?? '#646970';
-	}
 
 	/**
 	 * Inspect the current request and, if its Referer is an AI engine,
@@ -209,16 +160,26 @@ class RNRD_AI_Referral {
 	/**
 	 * Increment today's counter for $source.
 	 *
-	 * v1.2.0-rc.2 — race-safe path (audit beta.3 #5):
+	 * Buffered to shutdown so many referrals inside one request cost one write
+	 * per source per day, then persisted by flush_pending_increments().
 	 *
-	 *   1. When a persistent object cache (Redis, Memcached) is available,
-	 *      use atomic wp_cache_incr() to bump the in-memory counter. No DB
-	 *      write, no race.
-	 *   2. Buffer the option write to shutdown so multiple increments in
-	 *      one request only hit wp_options ONCE per source per day per
-	 *      request — not on every page view's worth of multiple referrals.
+	 * The docblock that used to sit here called this path "race-safe". It was
+	 * not. It described an atomic wp_cache_incr() (which happened, but whose
+	 * value NOTHING ever read back: aggregate_last_n_days() reads the option
+	 * only) in front of a flush that was a plain
+	 * get_option → modify → update_option. Two concurrent requests both read
+	 * the same array and the second overwrote the first, on the highest-traffic
+	 * public path in the plugin, feeding a screen sold as analytics. Counts were
+	 * silently lost under exactly the concurrency the comment claimed to handle.
 	 *
-	 * Pruning still happens during the shutdown flush.
+	 * The counters are now integers in their own option rows, incremented with a
+	 * single atomic `UPDATE … SET option_value = option_value + N` (see
+	 * bump_counter()), so no request can clobber another's. The old aggregate
+	 * option is still read for historical data and never written again.
+	 *
+	 * The wp_cache_incr() call is gone rather than fixed: it was a second,
+	 * separate store that no reader consulted, and a number nobody reads is not
+	 * a safeguard. One source of truth, and it is the one the dashboard reads.
 	 */
 	private static $pending_increments = array();
 
@@ -226,18 +187,8 @@ class RNRD_AI_Referral {
 		$today = wp_date( 'Y-m-d' );
 		$key   = $today . '|' . $source;
 
-		// Object-cache atomic path. wp_cache_incr() returns false on miss;
-		// initialise then retry.
-		if ( wp_using_ext_object_cache() ) {
-			$cache_key = 'rnrd_referral_' . $key;
-			if ( false === wp_cache_incr( $cache_key, 1, 'rnrd-referral' ) ) {
-				wp_cache_add( $cache_key, 1, 'rnrd-referral', DAY_IN_SECONDS * ( self::RETENTION_DAYS + 1 ) );
-			}
-		}
-
-		// Always buffer for shutdown flush — guarantees data persists to
-		// wp_options even without object cache, and consolidates many
-		// in-request increments into one write.
+		// Buffer for the shutdown flush, so many referrals in one request cost
+		// one atomic increment per source rather than one per referral.
 		if ( ! isset( self::$pending_increments[ $key ] ) ) {
 			self::$pending_increments[ $key ] = 0;
 			// Register the shutdown flush only once.
@@ -248,40 +199,162 @@ class RNRD_AI_Referral {
 		self::$pending_increments[ $key ]++;
 	}
 
+	/** Option-name prefix for the per-day, per-source integer counters. */
+	const COUNTER_PREFIX = 'rnrd_ref_c_';
+
+	/** Byte offset (1-indexed, for SQL SUBSTRING) of the date inside a counter name. */
+	private const COUNTER_DATE_POS = 12;
+
 	/**
-	 * Shutdown flush — writes accumulated in-request increments to
-	 * wp_options in a single read-modify-write cycle.
+	 * Counter option name for one day and one source, e.g.
+	 * `rnrd_ref_c_20260926_chatgpt`. The date is fixed-width and comes first
+	 * after the prefix so it sorts lexicographically, which is what makes the
+	 * single-query prune in prune_counters() possible.
+	 */
+	private static function counter_name( string $date, string $source ): string {
+		return self::COUNTER_PREFIX . str_replace( '-', '', $date ) . '_' . $source;
+	}
+
+	/**
+	 * Add $by to one counter, atomically.
 	 *
-	 * @since 1.2.0-rc.2
+	 * `UPDATE … SET option_value = option_value + %d` is resolved by MySQL
+	 * itself, so two concurrent requests produce two increments rather than one
+	 * lost write. That is the whole point: this runs on a public page load and
+	 * there can be as many of them at once as there is traffic.
+	 *
+	 * The row may not exist yet. RNRD_Atomic::claim_option() creates it, because
+	 * it is a no-op when another request has created it first (option_name is
+	 * UNIQUE), and the UPDATE is then retried. There is no window in which two
+	 * requests can both believe they created it.
+	 */
+	private static function bump_counter( string $name, int $by ): void {
+		// Was a hand-rolled atomic UPDATE here. Moved to RNRD_Atomic when the same
+		// primitive was needed for the token and DataForSEO spend counters: two
+		// copies of a concurrency fix is how one of them quietly stops matching
+		// the other. This wrapper stays so the call sites read in this class's own
+		// vocabulary.
+		RNRD_Atomic::bump_option_int( $name, $by );
+	}
+
+	/**
+	 * Shutdown flush. One atomic increment per source touched this request.
 	 */
 	public static function flush_pending_increments(): void {
 		if ( empty( self::$pending_increments ) ) {
 			return;
 		}
 
-		$stats = get_option( RNRD_OPT_AI_REFERRAL_STATS, array() );
-		if ( ! is_array( $stats ) ) {
-			$stats = array();
-		}
-
 		foreach ( self::$pending_increments as $key => $count ) {
 			list( $date, $source ) = explode( '|', $key, 2 );
-			if ( ! isset( $stats[ $date ] ) || ! is_array( $stats[ $date ] ) ) {
-				$stats[ $date ] = array();
+			if ( ! isset( self::SOURCES[ $source ] ) ) {
+				continue;
 			}
-			$stats[ $date ][ $source ] = ( isset( $stats[ $date ][ $source ] ) ? (int) $stats[ $date ][ $source ] : 0 ) + (int) $count;
+			self::bump_counter( self::counter_name( $date, $source ), (int) $count );
 		}
 
-		// Prune entries older than RETENTION_DAYS.
-		$cutoff = strtotime( '-' . self::RETENTION_DAYS . ' days' );
-		foreach ( array_keys( $stats ) as $date ) {
-			if ( strtotime( $date ) < $cutoff ) {
-				unset( $stats[ $date ] );
-			}
-		}
-
-		update_option( RNRD_OPT_AI_REFERRAL_STATS, $stats, false );
 		self::$pending_increments = array();
+		self::prune_counters();
+	}
+
+	/**
+	 * Delete counter rows older than RETENTION_DAYS.
+	 *
+	 * Once a day at most: the guard is a claim_option() claim, which is atomic,
+	 * so a traffic spike cannot run the DELETE once per request.
+	 */
+	private static function prune_counters(): void {
+		global $wpdb;
+
+		$today = wp_date( 'Y-m-d' );
+		$guard = 'rnrd_ref_pruned';
+		$last  = (string) get_option( $guard, '' );
+		if ( $last === $today ) {
+			return;
+		}
+		if ( '' === $last ) {
+			if ( ! RNRD_Atomic::claim_option( $guard, $today ) ) {
+				return; // Another request claimed it.
+			}
+		} elseif ( ! update_option( $guard, $today, false ) ) {
+			return;
+		}
+
+		$cutoff = gmdate( 'Ymd', (int) strtotime( '-' . self::RETENTION_DAYS . ' days', (int) strtotime( $today ) ) );
+
+		// phpcs:disable WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- bounded maintenance DELETE, once a day.
+		$stale = $wpdb->get_col(
+			$wpdb->prepare(
+				"SELECT option_name FROM {$wpdb->options}
+				 WHERE option_name LIKE %s
+				   AND SUBSTRING( option_name, %d, 8 ) < %s",
+				$wpdb->esc_like( self::COUNTER_PREFIX ) . '%',
+				self::COUNTER_DATE_POS,
+				$cutoff
+			)
+		);
+		// phpcs:enable WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+
+		foreach ( (array) $stale as $name ) {
+			delete_option( $name );
+		}
+	}
+
+	/**
+	 * Read every counter inside the window, plus whatever the pre-1.4.1
+	 * aggregate option still holds.
+	 *
+	 * @return array<string, array<string, int>> date => source => count
+	 */
+	private static function read_counts( int $days ): array {
+		global $wpdb;
+
+		$out    = array();
+		$cutoff = (int) strtotime( '-' . max( 1, $days ) . ' days' );
+
+		// Historical data written by the old aggregate option. Still read, never
+		// written again, so sites upgrading keep the numbers they already had.
+		$legacy = get_option( RNRD_OPT_AI_REFERRAL_STATS, array() );
+		if ( is_array( $legacy ) ) {
+			foreach ( $legacy as $date => $by_source ) {
+				if ( ! is_string( $date ) || strtotime( $date ) < $cutoff ) {
+					continue;
+				}
+				foreach ( (array) $by_source as $source => $count ) {
+					$out[ $date ][ $source ] = ( $out[ $date ][ $source ] ?? 0 ) + (int) $count;
+				}
+			}
+		}
+
+		// phpcs:disable WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- one read of at most RETENTION_DAYS × SOURCES rows, for an admin screen.
+		$rows = $wpdb->get_results(
+			$wpdb->prepare(
+				"SELECT option_name, option_value FROM {$wpdb->options}
+				 WHERE option_name LIKE %s
+				   AND SUBSTRING( option_name, %d, 8 ) >= %s",
+				$wpdb->esc_like( self::COUNTER_PREFIX ) . '%',
+				self::COUNTER_DATE_POS,
+				gmdate( 'Ymd', $cutoff )
+			),
+			ARRAY_A
+		);
+		// phpcs:enable WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+
+		foreach ( (array) $rows as $row ) {
+			$rest = substr( (string) $row['option_name'], strlen( self::COUNTER_PREFIX ) );
+			if ( strlen( $rest ) < 10 ) {
+				continue;
+			}
+			$ymd    = substr( $rest, 0, 8 );
+			$source = substr( $rest, 9 );
+			$date   = substr( $ymd, 0, 4 ) . '-' . substr( $ymd, 4, 2 ) . '-' . substr( $ymd, 6, 2 );
+			if ( ! isset( self::SOURCES[ $source ] ) ) {
+				continue;
+			}
+			$out[ $date ][ $source ] = ( $out[ $date ][ $source ] ?? 0 ) + (int) $row['option_value'];
+		}
+
+		return $out;
 	}
 
 	// ── Reporting ─────────────────────────────────────────────────────────
@@ -292,7 +365,7 @@ class RNRD_AI_Referral {
 	 *   [ 'chatgpt' => 47, 'perplexity' => 18, ... ]
 	 */
 	public static function aggregate_last_n_days( int $days = 30 ): array {
-		$stats = (array) get_option( RNRD_OPT_AI_REFERRAL_STATS, array() );
+		$stats = self::read_counts( $days );
 		$out   = array_fill_keys( array_keys( self::SOURCES ), 0 );
 
 		$cutoff = strtotime( '-' . max( 1, $days ) . ' days' );

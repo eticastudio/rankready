@@ -74,8 +74,8 @@ class RNRD_Crawler_Log {
 	// ── Bot intent classification (v1.2.0-beta.3) ────────────────────────
 	// Citation-intent bots fetch on behalf of a real user query happening NOW.
 	// A hit from one of these bots is the strongest in-product signal that the
-	// page is being used as a source in an AI response. ~70%+ of these hits
-	// correlate with a citation in the LLM's answer to the user.
+	// page is being fetched for an AI response. A fetch is not proof the answer
+	// quoted or linked the page.
 	const BOTS_CITATION = array(
 		'OAI-SearchBot',  // OpenAI search engine bot (ChatGPT Search)
 		'ChatGPT-User',   // ChatGPT browsing on behalf of a user
@@ -329,6 +329,18 @@ class RNRD_Crawler_Log {
 		$rnrd_cl_ip  = isset( $_SERVER['REMOTE_ADDR'] ) ? sanitize_text_field( wp_unslash( $_SERVER['REMOTE_ADDR'] ) ) : '';
 		$rnrd_cl_path = explode( '?', $uri, 2 )[0]; // TC-SEC-03: throttle on PATH only — a spoofed bot cannot bypass the 5-min collapse by varying the query string.
 		$rnrd_cl_key  = 'rnrd_cl_' . md5( $rnrd_cl_ip . '|' . $bot . '|' . $rnrd_cl_path );
+		// MAX_ROWS used to be enforced ONLY by prune(), which runs once a day on
+		// cron. Between two prunes the write path had no cap at all: the 5-minute
+		// transient collapse below is keyed on IP + bot + path, so a client
+		// replaying a spoofed bot User-Agent across distinct paths (or from
+		// distinct addresses) inserts a new row per key per 5 minutes, unbounded,
+		// on a crawler-reachable public endpoint. The cap is a safety net, so it
+		// belongs on the write, not on a timer that may be a day away.
+		// It runs before the throttle transient too: at the cap, each distinct
+		// IP + bot + path would otherwise still write one wp_options row.
+		if ( ! self::write_within_row_cap() ) {
+			return;
+		}
 		if ( get_transient( $rnrd_cl_key ) ) {
 			return;
 		}
@@ -367,6 +379,81 @@ class RNRD_Crawler_Log {
 			array( '%s', '%s', '%s', '%s', '%d', '%s', '%s' )
 		);
 		// phpcs:enable WordPress.DB.DirectDatabaseQuery
+
+		self::note_row_written();
+	}
+
+	/**
+	 * Transient holding the cached row-count estimate, and how long it is trusted.
+	 *
+	 * COUNT(*) on this table is a full index scan, and the point of the cap is to
+	 * stop a flood, not to keep an exact ledger. So the count is measured for real
+	 * at most once a minute and adjusted in between. It can drift low under
+	 * concurrency, because a transient write is not atomic, which is why the cap
+	 * is checked against a headroom allowance rather than the exact limit.
+	 */
+	private const ROWS_ESTIMATE_KEY = 'rnrd_cl_rows';
+	private const ROWS_ESTIMATE_TTL = 60;
+
+	/** Option name of the claim that serialises an inline cap prune. */
+	private const CAP_PRUNE_CLAIM = 'rnrd_cl_cap_prune';
+
+	/**
+	 * May this request add a row, or is the table at its hard cap?
+	 *
+	 * @return bool True to insert, false to drop this hit on the floor.
+	 */
+	private static function write_within_row_cap(): bool {
+		global $wpdb;
+
+		$rows = get_transient( self::ROWS_ESTIMATE_KEY );
+
+		if ( false === $rows ) {
+			$table = $wpdb->prefix . 'rnrd_crawler_log';
+			// Own table with no API equivalent; the transient below is the cache.
+			// phpcs:disable WordPress.DB.DirectDatabaseQuery
+			$rows = (int) $wpdb->get_var( $wpdb->prepare( 'SELECT COUNT(*) FROM %i', $table ) );
+			// phpcs:enable WordPress.DB.DirectDatabaseQuery
+			set_transient( self::ROWS_ESTIMATE_KEY, $rows, self::ROWS_ESTIMATE_TTL );
+		}
+
+		if ( (int) $rows < self::MAX_ROWS ) {
+			return true;
+		}
+
+		// At the cap. Prune inline so logging resumes on its own, but let exactly
+		// one request do it: claim_option() fails for everyone else because
+		// option_name is UNIQUE, so a flood does not become a flood of DELETEs.
+		if ( RNRD_Atomic::claim_option( self::CAP_PRUNE_CLAIM, (string) time() ) ) {
+			self::prune();
+			delete_transient( self::ROWS_ESTIMATE_KEY );
+			delete_option( self::CAP_PRUNE_CLAIM );
+			return true;
+		}
+
+		// Someone else is pruning. Drop this hit rather than queue behind them:
+		// this runs on a public request that is serving a crawler a real page, and
+		// one missing analytics row matters less than that response.
+		$claimed = (int) get_option( self::CAP_PRUNE_CLAIM, 0 );
+		if ( $claimed > 0 && ( time() - $claimed ) > self::ROWS_ESTIMATE_TTL ) {
+			// Claim outlived any plausible prune: the request holding it died.
+			delete_option( self::CAP_PRUNE_CLAIM );
+		}
+
+		return false;
+	}
+
+	/**
+	 * Adjust the cached row estimate after a successful insert.
+	 *
+	 * Deliberately not read-modify-write-correct: see ROWS_ESTIMATE_KEY. The real
+	 * COUNT(*) reclaims any drift within ROWS_ESTIMATE_TTL seconds.
+	 */
+	private static function note_row_written(): void {
+		$rows = get_transient( self::ROWS_ESTIMATE_KEY );
+		if ( false !== $rows ) {
+			set_transient( self::ROWS_ESTIMATE_KEY, (int) $rows + 1, self::ROWS_ESTIMATE_TTL );
+		}
 	}
 
 	// ── Stat queries ───────────────────────────────────────────────────────
@@ -548,9 +635,12 @@ class RNRD_Crawler_Log {
 	/**
 	 * Count hits in the last N days from citation-intent bots only.
 	 *
-	 * This is THE most important crawl number to surface in the UI: every
-	 * hit from a citation-intent bot maps roughly 1:1 to a live AI query
-	 * where your content was retrieved as an answer source.
+	 * This is the most useful crawl number to surface in the UI: a hit from a
+	 * citation-intent bot means a live AI query was in flight when the page
+	 * was fetched. It does NOT mean the answer used or quoted the page, and
+	 * nothing here can observe whether it did. The earlier note claimed a
+	 * rough 1:1 with answer citations, which is what produced the UI strings
+	 * that had to be walked back. Keep the distinction: fetch, not quote.
 	 *
 	 * @since 1.2.0-beta.3
 	 */
@@ -573,7 +663,11 @@ class RNRD_Crawler_Log {
 	/**
 	 * Sum of hits in last N days from training-intent bots. Complement to
 	 * get_citation_hits_total() — together with that they give the
-	 * "is my site being cited right now vs trained for later" split.
+	 * "is my content being fetched to answer a live query right now, or
+	 * crawled to train a model for later" split. Not a citation split: a
+	 * citation-intent hit is a fetch during a live query, never proof the
+	 * answer quoted the page. This comment previously said "being cited",
+	 * and two UI strings were written from it.
 	 *
 	 * @since 1.2.0-beta.3
 	 */
@@ -684,5 +778,10 @@ class RNRD_Crawler_Log {
 			);
 		}
 		// phpcs:enable WordPress.DB.DirectDatabaseQuery,WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+
+		// Both passes just changed the row count, so the write-path estimate is
+		// wrong. Leaving it would keep logging blocked for up to a minute after a
+		// prune that made room.
+		delete_transient( self::ROWS_ESTIMATE_KEY );
 	}
 }

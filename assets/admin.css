@@ -119,10 +119,28 @@
 /* ── v1.2.0-rc.7 — Universal locked-state card pattern ────────────────────── */
 /* "Goal line" — one-line outcome promise under every card title. */
 .rnrd-card-goal {
-	margin: 4px 0 14px;
+	margin: 0 0 16px;
 	font-size: 13px;
 	color: #646970;
 	font-style: italic;
+	text-wrap: pretty;
+}
+
+/* The consequence line under an "Incomplete" badge. Amber-tinted so it reads as
+   an unfinished state rather than an error, and NOT a `.notice`: the WordPress
+   notice class draws the left rail Aditya banned. It carries a hairline left
+   edge in the badge's own amber instead, which ties it to the badge above it
+   without inventing a second visual language. */
+.rnrd-card-why {
+	margin: 8px 0 12px;
+	padding: 10px 13px;
+	border-left: 2px solid #DBA617;
+	border-radius: 0 4px 4px 0;
+	background: #FCF6E3;
+	font-size: 12.5px;
+	line-height: 1.6;
+	color: #4A3B00;
+	max-width: 78ch;
 	text-wrap: pretty;
 }
 
@@ -225,15 +243,6 @@
 }
 
 /* ── Toggle controls ───────────────────────────────────────────────────────── */
-
-.rnrd-toggle {
-	display: flex;
-	/* Top-align the checkbox with the first line of a multi-line label instead of
-	   floating it to the vertical middle. */
-	align-items: flex-start;
-	gap: 8px;
-	cursor: pointer;
-}
 
 .rnrd-toggle > input[type="checkbox"] {
 	margin-top: 2px;
@@ -727,7 +736,7 @@ fieldset[data-rnrd-min-one-checkboxes] {
 .rnrd-kpi__period {
 	font-size: 10px;
 	font-weight: 400;
-	color: #8c8f94;
+	color: var(--rnrd-text-tertiary, #5C625E);
 	text-transform: uppercase;
 	letter-spacing: 0.04em;
 	margin-top: 2px;
@@ -852,7 +861,14 @@ fieldset[data-rnrd-min-one-checkboxes] {
 	cursor: not-allowed;
 }
 
-.rnrd-card--locked .rnrd-card-title {
+.rnrd-card--locked /* Browsers give <fieldset> an implicit `min-width: min-content`, which silently
+   beats width and max-width. A fieldset wrapping a wide grid therefore refuses
+   to shrink and pushes the whole page sideways instead of scrolling itself.
+   This cost a 12px horizontal overflow on the Robots screen at 375, and
+   `max-width:100%` on the fieldset did nothing until min-width was reset. */
+.rnrd-wrap fieldset { min-width: 0; max-width: 100%; box-sizing: border-box; }
+
+.rnrd-card-title {
 	display: flex;
 	align-items: center;
 	gap: 8px;
@@ -1294,7 +1310,7 @@ fieldset[data-rnrd-min-one-checkboxes] {
 .rnrd-feature-list__status {
 	font-size: 12px;
 	font-weight: 500;
-	color: var(--rnrd-text-tertiary, #787c82);
+	color: var(--rnrd-text-tertiary, #5C625E);
 	flex: 0 0 auto;
 }
 
@@ -1435,12 +1451,22 @@ fieldset[data-rnrd-min-one-checkboxes] {
 }
 
 /* Card-title can hold inline badges next to text without gap */
+/* The header row is a flex line, so spacing between its parts is the flex
+   `gap` and nothing else. The doc link also carried its own `margin-left: 6px`,
+   which stacked on top of the gap and put it 16px from the title while the
+   badges sat at 10px, so no two things in the row were spaced alike.
+   Row-gap is set separately because this wraps: at a narrow width the badges
+   drop to a second line and needed vertical breathing room the single `gap`
+   value could not give without over-spacing the horizontal run. */
 .rnrd-card-title {
 	display: flex;
 	align-items: center;
-	gap: 10px;
+	column-gap: 10px;
+	row-gap: 7px;
 	flex-wrap: wrap;
+	margin: 0 0 6px;
 }
+.rnrd-card-title .rnrd-doc-link { margin-left: 0; }
 
 /* ── 8. Quick-nav 6-tile grid (Dashboard bottom) ─────────────────────────── */
 .rnrd-info-grid {
@@ -1522,8 +1548,11 @@ fieldset[data-rnrd-min-one-checkboxes] {
 	letter-spacing: 0.05em;
 }
 
+/* "Last 30 days", "OpenAI": this labels what the number above it means, so it
+   is load-bearing text and not a placeholder. text-muted is deliberately below
+   AA (2.7:1) and was the wrong token for it. */
 .rnrd-kpi__period {
-	color: var(--rnrd-text-muted);
+	color: var(--rnrd-text-tertiary);
 }
 
 .rnrd-kpi__value {
@@ -1863,6 +1892,13 @@ button.rnrd-kpi.rnrd-fw-tab.is-active:focus-visible {
 	margin: 0;
 	padding: 0;
 	list-style: none;
+}
+
+/* The bucket list is capped server-side; this line says so under the rows. */
+.rnrd-fw-cap {
+	margin: 8px 0 0;
+	font-size: 11px;
+	color: var(--rnrd-text-tertiary);
 }
 
 .rnrd-fw-list li {
@@ -2209,7 +2245,7 @@ button.rnrd-kpi.rnrd-fw-tab.is-active:focus-visible {
 
 .rnrd-whatsnew__dismiss {
     font-size: 12px;
-    color: var(--rnrd-text-tertiary, #6B716D);
+    color: var(--rnrd-text-tertiary, #5C625E);
     text-decoration: none;
 }
 
@@ -2280,7 +2316,7 @@ button.rnrd-kpi.rnrd-fw-tab.is-active:focus-visible {
 .rnrd-quicknav__stat {
     font-size: 12px;
     line-height: 1.4;
-    color: var(--rnrd-text-tertiary, #6B716D);
+    color: var(--rnrd-text-tertiary, #5C625E);
     margin-top: auto;
     padding-top: 8px;
 }
@@ -2609,7 +2645,7 @@ button.rnrd-kpi.rnrd-fw-tab.is-active:focus-visible {
     margin: 32px 0 12px;
     font-size: 11px;
     font-weight: 600;
-    color: var(--rnrd-text-tertiary, #6B716D);
+    color: var(--rnrd-text-tertiary, #5C625E);
     text-transform: uppercase;
     letter-spacing: 0.06em;
     line-height: 1.3;
@@ -3091,6 +3127,13 @@ a.rnrd-kpi--link:focus {
     box-shadow: 0 2px 8px rgba(15, 156, 112, 0.08);
     outline: none;
 }
+
+/* The arrow is drawn here rather than typed into the markup. It was a
+   literal U+2192 inside an aria-hidden <span>; in an RTL admin the whole
+   layout mirrors but the character does not, so it pointed away from the
+   link it belonged to. As generated content, [dir="rtl"] can flip it. */
+a.rnrd-kpi--link .rnrd-kpi__go::after { content: "\2192"; }
+[dir="rtl"] a.rnrd-kpi--link .rnrd-kpi__go::after { content: "\2190"; }
 
 a.rnrd-kpi--link .rnrd-kpi__go {
     opacity: 0;
@@ -3595,6 +3638,22 @@ a.rnrd-kpi--link:focus .rnrd-kpi__go {
     to { transform: rotate(360deg); }
 }
 
+/* The tick used to be a literal U+2713 inside the "Saved" string, which put a
+   Unicode icon into every translation file where no translator could remove it.
+   Drawn here instead: a CSS checkmark built from two borders, so it is
+   decoration the screen reader never announces and the string stays clean. */
+.rnrd-wrap .button-primary.rnrd-saved::after,
+.rnrd-wrap input[type="submit"].button-primary.rnrd-saved::after {
+	content: "";
+	display: inline-block;
+	width: 5px;
+	height: 9px;
+	margin-left: 8px;
+	border: solid currentColor;
+	border-width: 0 2px 2px 0;
+	transform: translateY(-1px) rotate(45deg);
+}
+
 .rnrd-wrap .button-primary.rnrd-saved,
 .rnrd-wrap input[type="submit"].button-primary.rnrd-saved {
     background: var(--rnrd-mint-800);
@@ -3771,6 +3830,32 @@ a.rnrd-kpi--link:focus .rnrd-kpi__go {
     outline-offset: 2px;
 }
 
+/* The accent-color above never actually took effect. WordPress core sets
+   `appearance: none` on admin checkboxes and radios and paints the checked
+   state itself (#3858e9 background and border, plus a white tick supplied as
+   a ::before data-URI SVG). A browser ignores accent-color the moment native
+   appearance is off, so every checked control in the plugin rendered in core
+   blue while this file claimed mint. Verified in the lab: computed
+   background-color on a checked box was rgb(56, 88, 233).
+
+   Core's tick is already white, so only the fill and the border need
+   retargeting. Scoped to our own wrappers so no core screen is touched. */
+.rnrd-wrap input[type="checkbox"]:checked,
+.rnrd-wrap input[type="radio"]:checked,
+.rnrd-card input[type="checkbox"]:checked,
+.rnrd-card input[type="radio"]:checked {
+    background: var(--rnrd-mint-700, #0F9C70);
+    border-color: var(--rnrd-mint-700, #0F9C70);
+}
+
+/* Core draws the radio dot as a ::before background, not as the white SVG it
+   uses for checkboxes, so that dot needs its own colour or it stays blue on a
+   mint field. */
+.rnrd-wrap input[type="radio"]:checked::before,
+.rnrd-card input[type="radio"]:checked::before {
+    background-color: #fff;
+}
+
 /* Select dropdown — explicit chevron via inline SVG. Our earlier Section 39
    reset `appearance` indirectly via border + padding overrides which can
    strip the WP-default arrow on some browsers. Inline SVG guarantees the
@@ -3819,7 +3904,7 @@ a.rnrd-kpi--link:focus .rnrd-kpi__go {
 .rnrd-mb summary {
     cursor: pointer;
     font-size: 12px;
-    color: var(--rnrd-text-tertiary, #6B716D);
+    color: var(--rnrd-text-tertiary, #5C625E);
     padding: 4px 0;
     user-select: none;
 }
@@ -3832,11 +3917,11 @@ a.rnrd-kpi--link:focus .rnrd-kpi__go {
     font-weight: 600;
     text-transform: uppercase;
     letter-spacing: 0.04em;
-    color: var(--rnrd-text-tertiary, #6B716D);
+    color: var(--rnrd-text-tertiary, #5C625E);
     margin-bottom: 4px;
 }
 .rnrd-mb__field select { width: 100%; }
-.rnrd-mb__hint { margin: 2px 0 0; font-size: 11px; color: var(--rnrd-text-tertiary, #6B716D); }
+.rnrd-mb__hint { margin: 2px 0 0; font-size: 11px; color: var(--rnrd-text-tertiary, #5C625E); }
 
 /* ═══════════════════════════════════════════════════════════════════════════
  * Section 41 — Kill WP-core blue hover leaks
@@ -3847,14 +3932,20 @@ a.rnrd-kpi--link:focus .rnrd-kpi__go {
  * descriptions with embedded <a>.
  * ═══════════════════════════════════════════════════════════════════════════ */
 
+/* The link colour is mint-800, not mint-700. mint-700 measures 3.07:1 on the
+   #F0F0F0 that wp-admin paints behind .rnrd-wrap, and this one declaration
+   (specificity 0,1,1) beat every per-component colour in the file, so it set
+   the colour of nearly every link in the plugin. Changing it here fixes the
+   header pill, the "View all" and "Open Settings" arrows and the crawler
+   Allow/Block links in one place instead of six. */
 .rnrd-wrap a {
-    color: var(--rnrd-mint-700, #0F9C70);
+    color: var(--rnrd-text-link, #0A6E50);
     transition: color 150ms ease;
 }
 
 .rnrd-wrap a:hover,
 .rnrd-wrap a:focus {
-    color: var(--rnrd-mint-800, #0A6E50);
+    color: var(--rnrd-text-link-hover, #064A36);
     outline: none;
 }
 
@@ -3864,11 +3955,15 @@ a.rnrd-kpi--link:focus .rnrd-kpi__go {
     border-radius: 3px;
 }
 
-/* WP-core .button-link → mint */
-.rnrd-wrap .button-link,
+/* WP-core .button-link → mint. Same mint-800 as `.rnrd-wrap a` above: mint-700
+   measured 3.49:1 on the crawler "Set every crawler to" links (AA needs 4.5). */
+.rnrd-wrap .button-link {
+    color: var(--rnrd-text-link, #0A6E50);
+    box-shadow: none;
+}
 .rnrd-wrap .button-link:hover,
 .rnrd-wrap .button-link:focus {
-    color: var(--rnrd-mint-700, #0F9C70);
+    color: var(--rnrd-text-link-hover, #064A36);
     box-shadow: none;
 }
 
@@ -3910,7 +4005,7 @@ a.rnrd-kpi--link:focus .rnrd-kpi__go {
 .rnrd-wrap .nav-tab,
 .rnrd-wrap .nav-tab:link,
 .rnrd-wrap .nav-tab:visited {
-    color: var(--rnrd-text-tertiary, #6B716D) !important;
+    color: var(--rnrd-text-tertiary, #5C625E) !important;
 }
 
 .rnrd-wrap .nav-tab-active,
@@ -3974,7 +4069,7 @@ a.rnrd-kpi--link:focus .rnrd-kpi__go {
     padding: 6px 12px;
     font-size: 12px;
     font-weight: 500;
-    color: var(--rnrd-text-tertiary, #6B716D);
+    color: var(--rnrd-text-tertiary, #5C625E);
     background: #fff;
     border: 1px solid #E5E7E0;
     border-radius: 6px;
@@ -4078,10 +4173,12 @@ a.rnrd-kpi--link:focus .rnrd-kpi__go {
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    width: 22px;
-    height: 22px;
+    /* 24px is the WCAG 2.2 (2.5.8) minimum target, not a design preference.
+       The dashicon inside stays 14px, so only the hit area grows. */
+    width: 24px;
+    height: 24px;
     border-radius: 4px;
-    color: var(--rnrd-text-tertiary, #6B716D);
+    color: var(--rnrd-text-tertiary, #5C625E);
     text-decoration: none;
     background: transparent;
     transition: background-color 150ms ease, color 150ms ease;
@@ -4102,7 +4199,7 @@ a.rnrd-kpi--link:focus .rnrd-kpi__go {
 .rnrd-aside-card__version {
     margin: 0 0 10px;
     font-size: 11px;
-    color: var(--rnrd-text-tertiary, #6B716D);
+    color: var(--rnrd-text-tertiary, #5C625E);
     font-weight: 500;
     letter-spacing: 0.4px;
 }
@@ -4195,7 +4292,7 @@ a.rnrd-kpi--link:focus .rnrd-kpi__go {
     width: 5px;
     height: 5px;
     border-radius: 50%;
-    background: var(--rnrd-text-tertiary, #6B716D);
+    background: var(--rnrd-text-tertiary, #5C625E);
 }
 
 .rnrd-aside-changes strong {
@@ -4277,15 +4374,25 @@ a.rnrd-kpi--link:focus .rnrd-kpi__go {
 
 .rnrd-aside-link span:nth-child(2) { flex: 1; }
 
+/* Same as .rnrd-kpi__go: drawn, not typed, so RTL can mirror it. The hover
+   nudge below is mirrored too, otherwise the arrow slid away from the
+   direction it points in. */
+.rnrd-aside-link__arrow::after { content: "\2192"; }
+[dir="rtl"] .rnrd-aside-link__arrow::after { content: "\2190"; }
+
 .rnrd-aside-link__arrow {
     font-size: 14px;
-    color: var(--rnrd-text-tertiary, #6B716D);
+    color: var(--rnrd-text-tertiary, #5C625E);
     transition: transform 150ms ease;
 }
 
 .rnrd-aside-link:hover .rnrd-aside-link__arrow {
     transform: translateX(2px);
     color: var(--rnrd-mint-700, #0F9C70);
+}
+
+[dir="rtl"] .rnrd-aside-link:hover .rnrd-aside-link__arrow {
+    transform: translateX(-2px);
 }
 
 /* ── Star rating widget ──────────────────────────────────────────────── */
@@ -4306,7 +4413,7 @@ a.rnrd-kpi--link:focus .rnrd-kpi__go {
     border: 0;
     border-radius: 4px;
     cursor: pointer;
-    color: var(--rnrd-text-tertiary, #6B716D);
+    color: var(--rnrd-text-tertiary, #5C625E);
     transition: color 150ms ease, transform 150ms ease;
 }
 
@@ -4333,8 +4440,14 @@ a.rnrd-kpi--link:focus .rnrd-kpi__go {
 .rnrd-header__home-link {
     font-size: 12px;
     font-weight: 500;
-    color: var(--rnrd-text-tertiary);
+    color: var(--rnrd-text-link, #0A6E50);
     text-decoration: none;
+    /* inline-flex so the trailing dashicon sits on the text's optical centre.
+       As plain inline content the icon rode the baseline and pushed the pill
+       2px taller than the version chip beside it. */
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
     margin-left: 6px;
     padding: 2px 8px;
     border: 1px solid #E5E7E0;
@@ -4352,7 +4465,6 @@ a.rnrd-kpi--link:focus .rnrd-kpi__go {
 }
 
 .rnrd-header__home-link span[aria-hidden] {
-    margin-left: 2px;
     opacity: 0.7;
 }
 
@@ -4474,7 +4586,7 @@ a.rnrd-kpi--link:focus .rnrd-kpi__go {
 .rnrd-soon-row__desc {
 	flex-basis: 100%;
 	font-size: 12px;
-	color: var(--rnrd-text-tertiary, #6B716D);
+	color: var(--rnrd-text-tertiary, #5C625E);
 	line-height: 1.55;
 	margin: 4px 0 0;
 }
@@ -4548,7 +4660,7 @@ a.rnrd-kpi--link:focus .rnrd-kpi__go {
 
 .rnrd-author-card__desc {
 	font-size: 13px;
-	color: var(--rnrd-text-tertiary, #6B716D);
+	color: var(--rnrd-text-tertiary, #5C625E);
 	line-height: 1.55;
 	margin: 0;
 	max-width: 720px;
@@ -4592,6 +4704,17 @@ a.rnrd-kpi--link:focus .rnrd-kpi__go {
 }
 .rnrd-author-card__head-link:hover .rnrd-author-card__head-link-arrow {
 	transform: translateX(2px);
+}
+
+/* Drawn, not typed, and mirrored for RTL — same pattern as
+   .rnrd-aside-link__arrow. A typed U+2192 in the markup keeps pointing right
+   in Arabic and Hebrew, where it should point at the link it belongs to. The
+   hover nudge is mirrored with it, otherwise the arrow slides away from the
+   direction it points in. */
+.rnrd-author-card__head-link-arrow::after { content: "\2192"; }
+[dir="rtl"] .rnrd-author-card__head-link-arrow::after { content: "\2190"; }
+[dir="rtl"] .rnrd-author-card__head-link:hover .rnrd-author-card__head-link-arrow {
+	transform: translateX(-2px);
 }
 
 .rnrd-author-card__table {
@@ -4794,7 +4917,7 @@ a.rnrd-kpi--link:focus .rnrd-kpi__go {
 .rnrd-author-card__section-intro {
 	font-size: 12px;
 	font-weight: 400;
-	color: var(--rnrd-text-tertiary, #6B716D);
+	color: var(--rnrd-text-tertiary, #5C625E);
 	line-height: 1.5;
 	margin: 4px 0 4px;
 	max-width: 720px;
@@ -4853,7 +4976,7 @@ a.rnrd-kpi--link:focus .rnrd-kpi__go {
  * give it the RankReady tone instead. */
 .rnrd-author-card .description {
 	font-size: 12px;
-	color: var(--rnrd-text-tertiary, #6B716D);
+	color: var(--rnrd-text-tertiary, #5C625E);
 	line-height: 1.5;
 	margin: 4px 0 0;
 }
@@ -4864,7 +4987,7 @@ a.rnrd-kpi--link:focus .rnrd-kpi__go {
  * when full CPT support unlocks. */
 .rnrd-cpt-hint {
 	font-size: 12px;
-	color: var(--rnrd-text-tertiary, #6B716D);
+	color: var(--rnrd-text-tertiary, #5C625E);
 	margin: 8px 0 0;
 	line-height: 1.5;
 }
@@ -4897,7 +5020,7 @@ a.rnrd-kpi--link:focus .rnrd-kpi__go {
 }
 .rnrd-cf-status--muted {
 	background: transparent;
-	color: var(--rnrd-text-tertiary, #6B716D);
+	color: var(--rnrd-text-tertiary, #5C625E);
 	padding: 0;
 	margin: 8px 0 16px;
 	font-size: 13px;
@@ -5010,7 +5133,7 @@ a.rnrd-kpi--link:focus .rnrd-kpi__go {
 }
 .rnrd-card__soon-block .rnrd-soon-row__desc {
 	margin-top: 2px;
-	color: var(--rnrd-text-tertiary, #6B716D);
+	color: var(--rnrd-text-tertiary, #5C625E);
 	font-size: 12px;
 	line-height: 1.55;
 }
@@ -5214,4 +5337,825 @@ a.rnrd-kpi--link:focus .rnrd-kpi__go {
     margin-left: 0;
     display: inline-flex;
     align-items: center;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Pro surfaces, second pass
+   ---------------------------------------------------------------------------
+   The first pass was decorated where it should have been plain: a glowing dark
+   pill with a status dot sitting inline next to a checkbox, and a large dark
+   card with a radial glow on a settings screen. On a WordPress admin page that
+   reads as an advert, and an advert next to a control is the thing users resent.
+
+   Reference: Relume's inline gate, which is a quiet grey bar reading
+   "Only available for accounts on a paid plan" with one Upgrade button. Nothing
+   else. The restraint is what makes it feel like part of the product.
+
+   Three pieces, each with one job:
+     .rnrd-pro-tag   a LABEL. Says a feature is Pro. Not a link, not a button.
+     .rnrd-gate      the inline bar. One line of why, one action, one comparison link.
+     .rnrd-pro-panel a per-feature panel where Free would show an empty placeholder.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/* ── The label ───────────────────────────────────────────────────────────
+   ONE pill, every Pro surface in the plugin. Three class names resolve to the
+   same rule so they cannot drift apart again:
+
+     .rnrd-pro-tag    the pill beside a locked field or a card title
+     .rnrd-gate__tag  the same pill closing an inline gate line
+     (and the same pill again inside .rnrd-pro-panel__head)
+
+   Amber, because it is the WordPress admin's own notice-warning family rather
+   than brand colour shouting from inside a settings row. #FFC93C on #3D2C00
+   measures 8.77:1, which clears AA with room. It was hollow before, a thin
+   outline that disappeared against a white card, which is what Aditya flagged.
+
+   IMPORTANT: PLACEMENT RULE, no exceptions anywhere in the admin: the pill is the LAST
+   thing in the row it marks and is pinned to the RIGHT edge, so a column of
+   gated settings carries its markers on one vertical line. A pill sitting
+   mid-sentence at a different x on every row is what made these read as
+   scattered. Every container below (.rnrd-gate, .rnrd-locked, .rnrd-pro-row)
+   is a flex line whose label takes the free space and whose pill has
+   `flex: none` plus `margin-left: auto`. */
+.rnrd-pro-tag,
+.rnrd-gate__tag {
+	display: inline-flex;
+	align-items: center;
+	flex: none;
+	padding: 2px 8px;
+	border-radius: 3px;
+	background: #FFC93C;
+	color: #3D2C00;
+	font-size: 10.5px;
+	font-weight: 700;
+	line-height: 1.5;
+	letter-spacing: .04em;
+	text-transform: uppercase;
+	text-decoration: none;
+	white-space: nowrap;
+	transition: background .15s ease, color .15s ease;
+}
+
+/* The generic right-pinning row, for markup that is not a gate or a locked
+   checkbox (a card title with a pill, for instance). */
+.rnrd-pro-row { display: flex; align-items: center; gap: 10px; width: 100%; }
+.rnrd-pro-row > .rnrd-pro-tag,
+.rnrd-pro-row > .rnrd-gate__tag { margin-left: auto; }
+
+/* ── Interaction states ──────────────────────────────────────────────────
+   Every selector below is deliberately scoped under .rnrd-wrap and repeats the
+   component class. That is not decoration: the admin sheet already carries
+
+       .rnrd-wrap .description a         (0,2,1)
+       .rnrd-wrap .description a:hover   (0,3,1)
+
+   which set the mint link colour. A bare `.rnrd-pro-tag` is (0,1,0) and a bare
+   `.rnrd-gate__btn:hover` is (0,2,0), so BOTH lost, and the label rendered mint
+   on near-black at 4.55:1 while the buttons went mint-on-mint at 1.17:1 on
+   hover, which is invisible text. Measured, not assumed: hover-e2e.mjs.
+   Specificity is the fix here rather than !important, so these stay overridable
+   by anything more specific later. */
+.rnrd-wrap a.rnrd-pro-tag,
+.rnrd-wrap a.rnrd-gate__tag { color: #3D2C00; }
+.rnrd-wrap a.rnrd-pro-tag:hover,
+.rnrd-wrap a.rnrd-pro-tag:focus-visible,
+.rnrd-wrap a.rnrd-gate__tag:hover,
+.rnrd-wrap a.rnrd-gate__tag:focus-visible {
+	background: #FFD97A;
+	color: #241A00;
+}
+.rnrd-wrap a.rnrd-pro-tag:focus-visible,
+.rnrd-wrap a.rnrd-gate__tag:focus-visible {
+	outline: 2px solid #0B7A57;
+	outline-offset: 2px;
+}
+
+/* ── The inline gate ─────────────────────────────────────────────────────
+   A field-level note, styled to sit where a WordPress `.description` sits.
+
+   This was a bordered, filled, full-width bar. Against a pair of checkboxes it
+   read as an advert dropped into the form, which is the "too cluttered" note.
+   Yoast marks a Pro field with a small inline pill and nothing else; Rank Math
+   only uses a box for a whole locked feature. So the box moved to
+   .rnrd-pro-panel, where a whole feature is genuinely gated, and a field gets
+   this single line: one sentence of why, and the pill, which is itself the
+   upgrade link. One clickable target on the row, not three. */
+.rnrd-gate {
+	display: flex;
+	align-items: center;
+	gap: 12px;
+	margin: 8px 0 0;
+	padding: 0;
+	font-size: 12.5px;
+	line-height: 1.6;
+	color: #646970;
+}
+/* The pill sits with the sentence, NOT pushed to the far right edge.
+   `margin-left: auto` put it flush with the card, which on a wide screen left
+   a 300px gap between the words and the marker they belong to, so the pill
+   read as decoration floating in the row rather than as a label on that
+   setting. Proximity is the thing that says "this one": the pill stays
+   attached to the end of the text it marks. */
+.rnrd-gate__text { flex: 0 1 auto; min-width: 0; }
+.rnrd-gate__text b { color: #1d2327; font-weight: 600; }
+.rnrd-gate .rnrd-gate__tag { margin: 0; }
+/* Soaks up the leftover width so the pair stays left-aligned instead of the
+   text stretching to fill the row. */
+.rnrd-gate::after { content: ""; flex: 1 1 auto; }
+
+@media (max-width: 600px) {
+	/* Below this the sentence needs the whole line, so the pill drops under it
+	   and stays right-aligned rather than squeezing the text to two words. */
+	.rnrd-gate { flex-wrap: wrap; gap: 6px; }
+	.rnrd-gate__text { flex: 0 1 auto; }
+	.rnrd-gate::after { content: none; }
+}
+/* The panel keeps the solid button: there the whole feature is gated, so the
+   CTA is the primary action on that block rather than an interruption. */
+.rnrd-gate__btn {
+	display: inline-block;
+	padding: 5px 14px;
+	border-radius: 4px;
+	background: #1D2327;
+	color: #fff;
+	font-size: 12.5px;
+	font-weight: 500;
+	text-decoration: none;
+	white-space: nowrap;
+	transition: background 0.15s ease, color 0.15s ease;
+}
+/* Scoped, because `.rnrd-wrap .description a` (0,2,1) beats a bare
+   `.rnrd-gate__btn` (0,1,0) and would otherwise repaint the label mint. */
+.rnrd-wrap .rnrd-pro-panel a.rnrd-gate__btn { color: #fff; }
+.rnrd-wrap .rnrd-pro-panel a.rnrd-gate__btn:hover,
+.rnrd-wrap .rnrd-pro-panel a.rnrd-gate__btn:focus-visible {
+	background: #0B7A57;
+	color: #fff;
+}
+
+/* The panel's secondary action. It had NO rule of its own, so it inherited
+   `.rnrd-wrap .description a` mint (#0F9C70) and measured 3.49:1 on white,
+   which fails AA. hover-e2e.mjs caught it. Same near-black as the body text so
+   it reads as a link without competing with the solid Upgrade button beside it. */
+.rnrd-wrap .rnrd-pro-panel a.rnrd-gate__compare {
+	color: #50575e;
+	font-size: 12.5px;
+	text-decoration: underline;
+	text-underline-offset: 2px;
+}
+.rnrd-wrap .rnrd-pro-panel a.rnrd-gate__compare:hover,
+.rnrd-wrap .rnrd-pro-panel a.rnrd-gate__compare:focus-visible { color: #1d2327; }
+.rnrd-wrap .rnrd-pro-panel a.rnrd-gate__compare:focus-visible {
+	outline: 2px solid #0B7A57;
+	outline-offset: 2px;
+}
+.rnrd-wrap .rnrd-pro-panel a.rnrd-gate__btn:focus-visible {
+	outline: 2px solid #0B7A57;
+	outline-offset: 2px;
+	box-shadow: none;
+}
+
+/* ── The per-feature panel ──────────────────────────────────────────────── */
+.rnrd-pro-panel {
+	margin: 18px 0;
+	border: 1px solid #dcdcde;
+	border-radius: 8px;
+	background: #fff;
+	overflow: hidden;
+}
+.rnrd-pro-panel__head {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	padding: 14px 18px;
+	border-bottom: 1px solid #f0f0f1;
+}
+.rnrd-pro-panel__head h3 {
+	margin: 0;
+	font-size: 14px;
+	font-weight: 600;
+	color: #1d2327;
+}
+.rnrd-pro-panel__body { padding: 16px 18px 18px; }
+/* The "why", which is the only sentence that has to earn its place. */
+.rnrd-pro-panel__why {
+	margin: 0 0 14px;
+	font-size: 13.5px;
+	line-height: 1.6;
+	color: #50575e;
+	max-width: 68ch;
+}
+.rnrd-pro-panel__why b { color: #1d2327; font-weight: 600; }
+.rnrd-pro-panel__foot { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+.rnrd-pro-panel__fine {
+	margin: 12px 0 0;
+	font-size: 12px;
+	color: var(--rnrd-text-tertiary, #5C625E);
+}
+
+@media (max-width: 782px) {
+	.rnrd-gate { align-items: flex-start; }
+	.rnrd-gate__actions { width: 100%; }
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Documentation link
+
+   Inline, beside the option it explains. The plugin shipped with 49 published
+   docs and zero links to them; the first fix put a "read the docs for this
+   screen" bar at the top of every tab, which is not how a real product does it.
+   The link belongs in the sentence that raised the question.
+   ═══════════════════════════════════════════════════════════════════════════ */
+/* ONE help affordance, identical on every screen.
+   Small and always underlined, because an underline is what people already
+   read as "this is help I can click", and a link that only underlines on hover
+   is invisible until you happen to touch it. Sized in rem rather than em so it
+   does not inherit the size of whatever heading or description it sits beside:
+   these used to render at three different sizes depending on their parent,
+   which is half of why the set looked random. */
+.rnrd-doc-link {
+	display: inline-flex;
+	align-items: center;
+	gap: 3px;
+	margin-left: 6px;
+	font-size: 11.5px;
+	font-weight: 500;
+	line-height: 1.5;
+	letter-spacing: .01em;
+	white-space: nowrap;
+	text-decoration: underline;
+	text-underline-offset: 2px;
+	text-decoration-thickness: 1px;
+	vertical-align: middle;
+	transition: color 0.15s ease;
+}
+.rnrd-wrap a.rnrd-doc-link { color: #0A6E50; }
+.rnrd-wrap a.rnrd-doc-link:hover {
+	color: #075139;
+	text-decoration-thickness: 2px;
+}
+.rnrd-wrap a.rnrd-doc-link:focus-visible {
+	color: #075139;
+	outline: 2px solid #0B7A57;
+	outline-offset: 2px;
+	border-radius: 2px;
+}
+
+/* The "opens in a new tab" marker, on doc links and on notice CTAs.
+
+   This was a literal &#8599; (↗) baked into the markup until 1.4.0. Same rule
+   as every other glyph in this plugin: icons are Dashicons or SVG applied
+   through CSS, never characters in the HTML, because a character inherits
+   whatever font the admin theme happens to load and renders at a different
+   weight, baseline and width in each one. Both call sites are aria-hidden
+   with a real "(opens in a new tab)" string next to them for screen readers,
+   so nothing is lost by making it an icon.
+
+   Sized in em on purpose: the two parents run at 11.5px and 12.5px, and an
+   absolute size looked correct against one and oversized against the other.
+   Dashicons needs font-size, width and height to agree or the glyph clips. */
+.rnrd-extlink {
+	font-size: 1.05em;
+	width: 1.05em;
+	height: 1.05em;
+	line-height: 1;
+	flex: 0 0 auto;
+	text-decoration: none;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Upgrade Pro screen
+
+   Free is shown beside Pro deliberately: Freemius's own pricing page lists paid
+   plans only, so a reader cannot see what they already have next to what they
+   would be buying, and "what am I actually getting?" goes unanswered.
+
+   The grid is auto-fit, not three fixed columns. WordPress admin content width
+   swings enormously — collapsed menu, folded menu, 782px tablet breakpoint —
+   so a hard 3-up either overflows or leaves one card stranded on its own row.
+   auto-fit with a min track lets it fall 3 -> 2 -> 1 wherever the content
+   actually needs to, which is what "responsive large to small" means here.
+   ═══════════════════════════════════════════════════════════════════════════ */
+/* Centred and padded, no imagery. The page is a decision surface: whitespace and
+   a clear centre line do the work a hero image would only pretend to. clamp()
+   keeps the side padding proportional from a 1440 desktop down to 375 without a
+   breakpoint for every step in between. */
+.rnrd-pricing {
+	max-width: 1120px;
+	margin: 24px auto 48px;
+	padding: 0 clamp(8px, 3vw, 32px);
+}
+
+/* Launch offer badge. One bright thing at the top, nothing else competes. */
+.rnrd-launch {
+	display: inline-block; margin-bottom: 10px; padding: 4px 12px; border-radius: 999px;
+	background: #14181B; color: #38E59B;
+	font-size: 10.5px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase;
+}
+/*
+ * "Already bought Pro?" panel. Sits above the plans and only renders when the
+ * Pro plugin is installed without a license, so it is a one-state helper, not
+ * a banner. Deliberately quiet: a left rule and a tint, no icon, no border box
+ * competing with the plan cards directly underneath it.
+ */
+/*
+ * This block was the one element on the pricing screen still built from
+ * hardcoded WordPress-core colours (core blue rail, core greys), which made
+ * the notice aimed at customers who have already paid read as a foreign
+ * admin notice sitting inside a RankReady screen. Retargeted onto the
+ * --rnrd-* tokens so it belongs to the page.
+ */
+.rnrd-pricing__owned {
+	max-width: 620px; margin: 0 auto 22px; padding: 14px 18px;
+	background: var(--rnrd-bg-surface-2); border-left: 3px solid var(--rnrd-mint-600); border-radius: 6px;
+}
+.rnrd-pricing__owned p { margin: 0 0 10px; font-size: 13.5px; line-height: 1.6; color: var(--rnrd-text-secondary); }
+.rnrd-pricing__owned p:last-child { margin-bottom: 0; }
+.rnrd-pricing__owned strong { color: var(--rnrd-text-primary); }
+.rnrd-pricing__owned-hint { margin-left: 10px; font-size: 12.5px; color: var(--rnrd-text-tertiary); }
+@media (max-width: 600px) {
+	.rnrd-pricing__owned-hint { display: block; margin: 8px 0 0; }
+}
+
+.rnrd-pricing__head { text-align: center; margin-bottom: 26px; }
+.rnrd-pricing__head h2 {
+	margin: 0 0 8px; font-size: clamp(20px, 2.2vw, 27px); line-height: 1.25;
+	color: #1d2327; text-wrap: balance;
+}
+.rnrd-pricing__head p {
+	margin: 0 auto; max-width: 64ch; font-size: 14px; line-height: 1.6; color: #50575e;
+}
+
+.rnrd-toggle { display: inline-flex; }
+
+.rnrd-plans {
+	display: grid; grid-template-columns: repeat(auto-fit, minmax(272px, 1fr));
+	gap: 16px; align-items: stretch;
+}
+@media (min-width: 1100px) { .rnrd-plans { grid-template-columns: repeat(3, 1fr); } }
+
+.rnrd-plan {
+	position: relative; display: flex; flex-direction: column;
+	padding: 46px 22px 22px; border: 1px solid #dcdcde; border-radius: 10px; background: #fff;
+}
+/* The dark card is Pro, and only Pro. One emphasised thing per screen. */
+.rnrd-plan--pro { background: #14181B; border-color: #14181B; color: #E9EDEB; }
+.rnrd-plan__flag {
+	position: absolute; top: 16px; left: 50%; transform: translateX(-50%);
+	padding: 3px 11px; border-radius: 999px; background: #38E59B; color: #04150E;
+	font-size: 10px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; white-space: nowrap;
+}
+.rnrd-plan__eyebrow { font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--rnrd-text-tertiary, #5C625E); }
+.rnrd-plan--pro .rnrd-plan__eyebrow { color: rgba(233,237,235,.6); }
+.rnrd-plan__name { margin: 6px 0 10px; font-size: 19px; font-weight: 600; color: #1d2327; }
+.rnrd-plan--pro .rnrd-plan__name { color: #fff; }
+.rnrd-plan__price { margin: 0 0 6px; display: flex; align-items: baseline; gap: 7px; flex-wrap: wrap; }
+.rnrd-plan__price strong { font-size: 31px; font-weight: 600; color: #1d2327; font-variant-numeric: tabular-nums; }
+.rnrd-plan--pro .rnrd-plan__price strong { color: #fff; }
+.rnrd-plan__price span { font-size: 13px; color: var(--rnrd-text-tertiary, #5C625E); }
+.rnrd-plan--pro .rnrd-plan__price span { color: rgba(233,237,235,.65); }
+/* Site count sits with the price, at price weight, because it is the qualifier
+   that decides which card someone picks. Buried as bullet four it was invisible,
+   which is exactly what Aditya flagged. Reference: Plain, where the count reads
+   as part of the price rather than as a feature. */
+.rnrd-plan__count {
+	margin: 2px 0 12px; padding-bottom: 12px; border-bottom: 1px solid #f0f0f1;
+	font-size: 14px; color: #50575e;
+}
+.rnrd-plan__count strong { font-size: 17px; font-weight: 600; color: #1d2327; }
+.rnrd-plan--pro .rnrd-plan__count { color: rgba(233,237,235,.72); border-bottom-color: rgba(255,255,255,.14); }
+.rnrd-plan--pro .rnrd-plan__count strong { color: #fff; }
+/* Size only, no colour. This rule used to also paint the number brand green,
+   which made "100" the single accent-coloured number anywhere on the screen,
+   sitting on the 100 Sites card. The card we actually want chosen is the Pro
+   one beside it, which already carries the dark fill and the START HERE badge,
+   and its own "1" is plain white. So the one piece of colour emphasis on the
+   page was pointing at the card that is not the recommendation, competing with
+   the badge instead of supporting it. The size bump stays: 100 versus 1 is the
+   real difference between the two paid cards and deserves the weight. */
+.rnrd-plan__count--big strong { font-size: 19px; }
+
+.rnrd-plan__sub { margin: 0 0 16px; font-size: 12.5px; line-height: 1.55; color: #646970; }
+.rnrd-plan--pro .rnrd-plan__sub { color: rgba(233,237,235,.72); }
+.rnrd-plan__list { flex: 1; margin: 0 0 18px; padding: 0; list-style: none; }
+.rnrd-plan__list li {
+	position: relative; margin: 0 0 9px; padding-left: 22px;
+	font-size: 13px; line-height: 1.5; color: #3c434a;
+}
+.rnrd-plan--pro .rnrd-plan__list li { color: rgba(233,237,235,.9); }
+.rnrd-plan__list li::before {
+	content: ""; position: absolute; left: 4px; top: 6px; width: 5px; height: 9px;
+	border: solid #0B7A57; border-width: 0 2px 2px 0; transform: rotate(45deg);
+}
+.rnrd-plan--pro .rnrd-plan__list li::before { border-color: #38E59B; }
+/* A feature that is genuinely not built yet says so, inline, dimmed. This is the
+   opposite of the 1.3 mistake where SHIPPED Pro features were labelled COMING
+   SOON: that told people to wait for something free that was never coming. Here
+   the label is true, and the day it ships the bullet loses the tag. */
+.rnrd-plan__list li.is-soon { color: var(--rnrd-text-tertiary, #5C625E); }
+.rnrd-plan--pro .rnrd-plan__list li.is-soon { color: rgba(233,237,235,.55); }
+.rnrd-plan__list li.is-soon::before { border-color: #a7aaad; }
+.rnrd-plan--pro .rnrd-plan__list li.is-soon::before { border-color: rgba(233,237,235,.4); }
+.rnrd-soon {
+	display: inline-block; margin-left: 6px; padding: 0 6px; border-radius: 8px;
+	background: #f0f0f1; color: #646970;
+	font-size: 9.5px; font-weight: 600; letter-spacing: .05em; text-transform: uppercase;
+	vertical-align: 1px;
+}
+.rnrd-plan--pro .rnrd-soon { background: rgba(255,255,255,.1); color: rgba(233,237,235,.7); }
+
+/* Free's footer is one line of text where the paid cards carry a button plus a
+   risk line, so at the bottom of an equal-height grid the three footers landed
+   at three different heights. Matching the min-height and centring inside it
+   puts all three on one baseline without faking a button Free does not need. */
+.rnrd-plan__current {
+	display: flex; align-items: center; justify-content: center;
+	min-height: 64px;
+	margin: 0; padding: 9px 0; text-align: center; font-size: 12.5px; font-weight: 500;
+	color: #646970; border-top: 1px solid #f0f0f1;
+}
+/* The dark Pro card only. This rule had lost its `.rnrd-plan--pro` prefix to a
+   dangling selector glued onto the comment above it, so every card got the
+   dark-card text colour and "Your current plan" rendered pale grey on the WHITE
+   Free card at 1.9:1, which is invisible. The same dangling selector duplicated
+   the whole is-soon block below it. Third instance of this exact bug in this
+   sheet: a selector left on the line before a comment silently swallows it. */
+.rnrd-plan--pro .rnrd-plan__current { color: rgba(233,237,235,.7); border-top-color: rgba(255,255,255,.14); }
+/* Risk reversal sits directly under the button, where the hesitation is. */
+/* The refund line is the risk-reversal on the paid-conversion screen, so it
+   was the worst possible string to leave at 4.2:1. */
+.rnrd-plan__risk { margin: 8px 0 0; text-align: center; font-size: 11.5px; color: var(--rnrd-text-tertiary, #5C625E); }
+.rnrd-plan--pro .rnrd-plan__risk { color: rgba(233,237,235,.6); }
+
+.rnrd-buy {
+	display: block; padding: 11px 18px; border-radius: 6px; text-align: center;
+	font-size: 13.5px; font-weight: 600; text-decoration: none;
+	background: #fff; border: 1px solid #1d2327;
+	transition: background .15s ease, color .15s ease, border-color .15s ease;
+}
+.rnrd-wrap a.rnrd-buy { color: #1d2327; }
+.rnrd-wrap a.rnrd-buy:hover, .rnrd-wrap a.rnrd-buy:focus-visible { background: #1d2327; color: #fff; }
+.rnrd-buy--primary { background: #38E59B; border-color: #38E59B; }
+.rnrd-wrap a.rnrd-buy--primary { color: #04150E; }
+.rnrd-wrap a.rnrd-buy--primary:hover, .rnrd-wrap a.rnrd-buy--primary:focus-visible { background: #7DF7C6; border-color: #7DF7C6; color: #04150E; }
+.rnrd-wrap a.rnrd-buy:focus-visible { outline: 2px solid #0B7A57; outline-offset: 2px; }
+
+/* Risk reversal as its own row under the grid: three short facts, not prose. */
+.rnrd-assure {
+	display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 1px;
+	margin: 20px 0 0; padding: 0; list-style: none;
+	background: #dcdcde; border: 1px solid #dcdcde; border-radius: 10px; overflow: hidden;
+}
+.rnrd-assure li {
+	margin: 0; padding: 14px 16px; background: #fff;
+	font-size: 12.5px; line-height: 1.5; color: #646970;
+}
+.rnrd-assure strong { display: block; margin-bottom: 2px; font-size: 13px; color: #1d2327; }
+
+/* Freemius renders its own sticky notices with an ABSOLUTELY positioned
+   `.fs-plugin-title`, which lands on top of our lede paragraph on this screen.
+   A purchase page is the one place a stray SDK notice cannot be allowed to
+   overlap the copy, and "Premium plugin version was successfully activated" is
+   not information anyone needs while deciding whether to buy. Scoped to this
+   page only by the WordPress-generated body class, so every other admin screen
+   still shows Freemius notices normally.
+
+   `!important` is not laziness here. Freemius's own common.css ships
+   `div.fs-notice.promotion, div.fs-notice.success, div.fs-notice.updated
+   { display: block !important }`, so no amount of specificity wins. Verified by
+   reading their stylesheet, after a non-important rule measured as still
+   visible in the rendered page. */
+body.admin_page_rankready-pro-upgrade div.fs-notice,
+body.admin_page_rankready-pro-upgrade .fs-plugin-title { display: none !important; }
+
+.rnrd-pricing__foot {
+	margin: 26px auto 0; max-width: 76ch; text-align: center;
+	font-size: 12.5px; line-height: 1.7; color: #646970;
+}
+.rnrd-pricing__foot strong { color: #1d2327; }
+
+/* WordPress collapses its own menu at 960 and stacks the admin at 782. Give the
+   cards room back rather than keeping desktop padding on a phone. */
+@media (max-width: 782px) {
+	.rnrd-pricing { margin-top: 8px; }
+	.rnrd-plan { padding: 42px 18px 18px; }
+	.rnrd-compare { margin-top: 34px; }
+	.rnrd-compare tbody th[scope="row"], .rnrd-compare tbody td { padding: 10px 8px; }
+	.rnrd-compare thead th { padding: 11px 8px; }
+}
+
+/* Make the table FIT, do not make it scroll.
+   A horizontally scrolling table technically works, but on a phone it puts the
+   Pro column — the entire reason anyone opens this section — off-screen with no
+   affordance saying to swipe. Every cell here is short enough to wrap, so the
+   columns narrow and the type steps down until all three fit. The scroll box
+   stays as the safety net for anything narrower still. */
+@media (max-width: 600px) {
+	.rnrd-compare table { min-width: 0; font-size: 12px; }
+	.rnrd-compare thead th:first-child { width: 44%; }
+	.rnrd-compare thead th:not(:first-child) { width: 28%; }
+	.rnrd-compare tbody th[scope="row"], .rnrd-compare tbody td { padding: 10px 6px; }
+	.rnrd-compare thead th { padding: 10px 6px; font-size: 10.5px; }
+	.rnrd-compare .rnrd-group th { padding: 15px 6px 6px; }
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Admin notice
+
+   A card, not a WordPress `.notice`. The core class paints a coloured bar down
+   the left edge, and a column of those rails stacked above the plugin header is
+   the look that was ruled out. This opts out of core styling completely: one
+   hairline border all the way round, a tinted icon to carry the kind, an X in
+   the corner where every dismissible thing keeps it.
+   ═══════════════════════════════════════════════════════════════════════════ */
+.rnrd-notice {
+	position: relative;
+	display: flex;
+	align-items: flex-start;
+	gap: 13px;
+	margin: 16px 0;
+	padding: 15px 44px 15px 16px;
+	background: #fff;
+	border: 1px solid #dcdcde;
+	border-radius: 8px;
+	box-shadow: 0 1px 2px rgba(0,0,0,.03);
+}
+.rnrd-notice__icon {
+	flex: none;
+	width: 30px; height: 30px;
+	display: flex; align-items: center; justify-content: center;
+	border-radius: 50%;
+	font-size: 16px;
+}
+.rnrd-notice--info    .rnrd-notice__icon { background: #E6F0EB; color: #0B7A57; }
+.rnrd-notice--warning .rnrd-notice__icon { background: #FBF1D6; color: #8A6A12; }
+.rnrd-notice--error   .rnrd-notice__icon { background: #FAE9E4; color: #9A3A22; }
+
+.rnrd-notice__body { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.rnrd-notice__title { margin: 0; font-size: 13.5px; font-weight: 600; color: #1d2327; }
+.rnrd-notice__text  { margin: 0; font-size: 13px; line-height: 1.6; color: #50575e; max-width: 74ch; }
+.rnrd-notice__actions { margin: 7px 0 0; display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+
+.rnrd-notice__cta {
+	display: inline-flex; align-items: center; gap: 5px;
+	padding: 6px 14px; border-radius: 5px;
+	background: #1d2327; font-size: 12.5px; font-weight: 500; text-decoration: none;
+	transition: background .15s ease;
+}
+/* Scoped to .rnrd-notice, NOT to .rnrd-wrap.
+   admin_notices renders before the plugin's own wrapper opens, so the notice
+   lives outside .rnrd-wrap entirely and every rule scoped to it silently missed.
+   The core admin sheet's `a` and `a:hover` then won, and "Leave a review" was
+   painted dark blue on the near-black button: unreadable. `.rnrd-notice a.x` is
+   (0,2,1) and beats both. */
+.rnrd-notice a.rnrd-notice__cta { color: #fff; text-decoration: none; }
+.rnrd-notice a.rnrd-notice__cta:hover,
+.rnrd-notice a.rnrd-notice__cta:focus-visible { background: #0B7A57; color: #fff; text-decoration: none; }
+.rnrd-notice a.rnrd-notice__cta:focus-visible { outline: 2px solid #0B7A57; outline-offset: 2px; box-shadow: none; }
+
+.rnrd-notice a.rnrd-notice__link { font-size: 12.5px; text-decoration: none; color: #646970; }
+.rnrd-notice a.rnrd-notice__link:hover,
+.rnrd-notice a.rnrd-notice__link:focus-visible { color: #1d2327; text-decoration: underline; text-underline-offset: 2px; }
+.rnrd-notice a.rnrd-notice__x { color: #a7aaad; text-decoration: none; }
+.rnrd-notice a.rnrd-notice__x:hover, .rnrd-notice a.rnrd-notice__x:focus-visible { color: #1d2327; }
+
+.rnrd-notice__x {
+	position: absolute; top: 10px; right: 10px;
+	width: 26px; height: 26px; border-radius: 5px;
+	display: flex; align-items: center; justify-content: center;
+	color: #a7aaad; text-decoration: none; transition: background .15s ease, color .15s ease;
+}
+.rnrd-notice__x:hover, .rnrd-notice__x:focus-visible { background: #f0f0f1; color: #1d2327; }
+.rnrd-notice__x:focus-visible { outline: 2px solid #0B7A57; outline-offset: 1px; }
+.rnrd-notice__x .dashicons { font-size: 17px; width: 17px; height: 17px; }
+
+/* ── Inline status message ──────────────────────────────────────────────────
+   `.rnrd-notice` grew two jobs. The card above is one of them: a dismissible
+   admin_notices card with an icon, a title and a CTA. The other is a one-line
+   status message printed inside a settings panel, next to the field it is
+   about, with no icon and nothing to dismiss.
+
+   Those two wanted opposite base styles, and the card won by source order:
+   every `.rnrd-notice--warn` / `--info` / `--success` / `--error` tint defined
+   earlier in this file ties with `.rnrd-notice` on specificity (both a single
+   class), so the later card block overrode all four. The result was that the
+   modifier class did nothing at all: the Cloudflare and bulk-author-box
+   messages, and the bulk preview's own "Error: ..." reply from admin.js, all
+   rendered as the same neutral white card. Success and failure were
+   indistinguishable in the one flow where that distinction is the whole point.
+   The 44px right padding the card reserves for its dismiss X also sat there as
+   dead space on a message that has no X.
+
+   `--inline` is the second shape, stated rather than inherited. It restores the
+   compact strip and takes back the tint with a two-class selector, so the
+   colour applies without touching the card. Existing class names are left
+   exactly as they were; this is added alongside them. */
+.rnrd-notice--inline {
+	display: block;
+	padding: 9px 13px;
+	margin: 12px 0;
+	border-radius: 5px;
+	font-size: 13px;
+	line-height: 1.55;
+	box-shadow: none;
+	border: 1px solid transparent;
+	border-left-width: 3px;
+	max-width: 74ch;
+}
+.rnrd-notice--inline.rnrd-notice--info    { background: #eef6fb; border-left-color: #2271b1; color: #1d2327; }
+.rnrd-notice--inline.rnrd-notice--warn,
+.rnrd-notice--inline.rnrd-notice--warning { background: #fcf9e8; border-left-color: #dba617; color: #1d2327; }
+.rnrd-notice--inline.rnrd-notice--success,
+.rnrd-notice--inline.rnrd-notice--ok      { background: #edfaef; border-left-color: #00a32a; color: #1d2327; }
+.rnrd-notice--inline.rnrd-notice--error   { background: #fcf0f1; border-left-color: #d63638; color: #1d2327; }
+
+@media (max-width: 600px) {
+	.rnrd-notice { padding: 14px 40px 14px 14px; gap: 11px; }
+	.rnrd-notice__icon { width: 26px; height: 26px; font-size: 14px; }
+}
+
+/* A gated setting shows its actual control, disabled, rather than only a
+   sentence about it. "Hide RankReady credit" rendered as a description and a
+   tag with no checkbox at all, so there was nothing to recognise as the thing
+   being bought. The control is inert and marked aria-disabled; the tag says why. */
+/* Scoped under .rnrd-wrap .form-table, because that sheet already carries
+   `.rnrd-wrap .form-table label:not(.rnrd-radio-list__item)` at (0,3,1), which
+   sets `display: inline-flex; align-items: flex-start` and beat a bare
+   `.rnrd-locked` (0,1,0). The row then shrink-wrapped and the pill sat wherever
+   the sentence ended. Same cascade trap as `.rnrd-wrap .description a`. */
+.rnrd-wrap .form-table label.rnrd-locked,
+.rnrd-locked {
+	display: flex;
+	align-items: center;
+	gap: 9px;
+	width: 100%;
+	padding: 4px 0;
+}
+.rnrd-locked input[type="checkbox"] { pointer-events: none; opacity: .55; margin: 0; flex: none; }
+.rnrd-locked__label { flex: 0 1 auto; min-width: 0; color: #646970; font-size: 13px; }
+/* Same rule as the gate: the pill follows the label it marks. */
+.rnrd-locked .rnrd-pro-tag { margin-left: 0; }
+.rnrd-locked::after { content: ""; flex: 1 1 auto; }
+
+/* ── v1.4.0 — CSS-drawn status marks (finishes the v1.1.2 emoji removal)
+ *
+ * IMPORTANT: v1.1.2 added `.rnrd-status-pill` to kill the emoji ticks near Active AI
+ * Provider, and then three later features re-introduced the same glyphs by
+ * hand instead of reusing it: the MCP status pills in class-rnrd-admin.php,
+ * the "Excluded from AI" flag in the post-list column, and the whole
+ * diagnostics panel in assets/admin.js. `✓ ⚠ ✗ ○` are Unicode glyphs, so they
+ * render in whatever the user's emoji font decides — colour on some Windows
+ * builds, tofu when the font lacks the codepoint — and the plugin's own rule
+ * is SVG or CSS only. These marks are drawn from borders and boxes, so they
+ * inherit currentColor and cannot fall back to an emoji font.
+ *
+ * They are DECORATIVE. The adjacent text always carries the meaning, so every
+ * standalone mark is marked aria-hidden at the call site. Do not put a mark
+ * next to a number with no word ("✓ 5") and call that accessible.
+ */
+.rnrd-mark {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	position: relative;
+	flex: none;
+	width: 14px;
+	height: 14px;
+	vertical-align: middle;
+}
+/* Checkmark: two borders of an empty box, rotated. */
+.rnrd-mark--ok::before {
+	content: "";
+	width: 5px;
+	height: 9px;
+	margin-top: -2px;
+	border: solid currentColor;
+	border-width: 0 2px 2px 0;
+	transform: rotate(45deg);
+}
+/* Exclamation: a bar plus a dot, drawn with box-shadow so it stays one node. */
+.rnrd-mark--warn::before {
+	content: "";
+	width: 2px;
+	height: 6px;
+	border-radius: 1px;
+	background: currentColor;
+	box-shadow: 0 5px 0 currentColor;
+	margin-top: -2px;
+}
+/* Cross: two bars crossed. Needs both pseudo-elements, hence position. */
+.rnrd-mark--fail::before,
+.rnrd-mark--fail::after {
+	content: "";
+	position: absolute;
+	width: 11px;
+	height: 2px;
+	border-radius: 1px;
+	background: currentColor;
+}
+.rnrd-mark--fail::before { transform: rotate(45deg); }
+.rnrd-mark--fail::after  { transform: rotate(-45deg); }
+/* Off/idle: a hollow ring. */
+.rnrd-mark--off::before {
+	content: "";
+	width: 9px;
+	height: 9px;
+	border: 2px solid currentColor;
+	border-radius: 50%;
+	opacity: .7;
+}
+
+/* Third pill variant. `--ok` and `--warn` already exist above; grey is for
+ * "the feature is switched off", which is neither good news nor a problem. */
+.rnrd-status-pill--off {
+	color: var(--rnrd-color-text-muted, #646970);
+	background: var(--rnrd-color-surface-3, #F0F0F1);
+	border: 1px solid #DCDCDE;
+}
+/* A mark inside a pill sits tighter than a standalone one. */
+.rnrd-status-pill .rnrd-mark {
+	width: 11px;
+	height: 12px;
+	margin-right: 5px;
+	margin-left: -1px;
+}
+/* The MCP pills carry a full sentence, not a two-word status, so they must be
+ * allowed to wrap and to sit on the text baseline of the paragraph. */
+.rnrd-status-pill--block {
+	height: auto;
+	min-height: 18px;
+	padding: 3px 9px;
+	margin-left: 0;
+	white-space: normal;
+	text-transform: none;
+	letter-spacing: 0;
+	font-size: 11px;
+	line-height: 1.45;
+	align-items: flex-start;
+}
+.rnrd-status-pill--block .rnrd-mark { margin-top: 1px; }
+
+/* Diagnostics panel (assets/admin.js). The per-check icon column and the
+ * pass/warn/fail totals row. Markup used to be inline-styled spans holding a
+ * glyph; the colours below are the same ones those spans hard-coded. */
+.rnrd-diag-icon { width: 18px; height: 18px; }
+.rnrd-diag-icon.rnrd-mark--ok   { color: var(--rnrd-mint-600, #0F9C70); }
+.rnrd-diag-icon.rnrd-mark--warn { color: var(--rnrd-color-warning-icon, #DBA617); }
+.rnrd-diag-icon.rnrd-mark--fail { color: var(--rnrd-color-error-icon, #B42318); }
+.rnrd-diag-icon.rnrd-mark--ok::before   { width: 6px; height: 11px; border-width: 0 2.5px 2.5px 0; }
+.rnrd-diag-icon.rnrd-mark--warn::before { height: 7px; box-shadow: 0 6px 0 currentColor; }
+.rnrd-diag-icon.rnrd-mark--fail::before,
+.rnrd-diag-icon.rnrd-mark--fail::after  { width: 14px; }
+
+.rnrd-diag-total {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	padding: 4px 12px;
+	margin-right: 8px;
+	border-radius: 12px;
+	font-weight: 600;
+}
+.rnrd-diag-total--ok   { background: #D1ECDF; color: #0A6C39; }
+.rnrd-diag-total--warn { background: #FCF4D6; color: #7A5D00; }
+.rnrd-diag-total--fail { background: #F9D7D8; color: #8A1F1F; }
+
+/* Inline status lines ("Copied to clipboard", "Request failed"). These are
+ * plain text nodes updated via textContent, so they get a mark as a sibling
+ * span rather than a prefix character. */
+.rnrd-inline-status {
+	display: inline-flex;
+	align-items: center;
+	gap: 5px;
+}
+.rnrd-inline-status--ok   { color: var(--rnrd-mint-700, #0B7A57); }
+.rnrd-inline-status--fail { color: var(--rnrd-color-error-text, #B42318); }
+/* Info: a bar with a dot above it, i.e. a lowercase "i". */
+.rnrd-mark--info::before {
+	content: "";
+	width: 2px;
+	height: 6px;
+	margin-top: 2px;
+	border-radius: 1px;
+	background: currentColor;
+	box-shadow: 0 -5px 0 currentColor;
+}
+.rnrd-diag-icon.rnrd-mark--info { color: var(--rnrd-color-text-muted, #646970); }
+.rnrd-diag-icon.rnrd-mark--info::before { height: 7px; box-shadow: 0 -6px 0 currentColor; }
+.rnrd-diag-total--info { background: #E5F1F9; color: #0B4B75; }
+
+/* Phone width: five equal-width pills cannot hold their labels ("Dashboa",
+ * "AI Visibi" clipped and overlapping), so the tray scrolls sideways and each
+ * pill keeps its full label. */
+@media (max-width: 600px) {
+	.rnrd-wrap .nav-tab-wrapper {
+		overflow-x: auto;
+		overscroll-behavior-x: contain;
+		scrollbar-width: none;
+	}
+	.rnrd-wrap .nav-tab-wrapper::-webkit-scrollbar { display: none; }
+	.rnrd-wrap .nav-tab {
+		flex: 0 0 auto;
+		white-space: nowrap;
+	}
 }

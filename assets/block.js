@@ -106,10 +106,10 @@
 	}
 
 	registerBlockType( 'rankready/ai-summary', {
-		title:       'AI Summary — RankReady',
+		title:       t( 'summaryBlockTitle', 'AI Summary — RankReady' ),
 		icon:        'editor-ul',
 		category:    'rankready',
-		description: 'Displays AI-generated key takeaways. Auto-generates on publish/update.',
+		description: t( 'summaryBlockDescription', 'Displays AI-generated key takeaways. Generate them from the RankReady panel.' ),
 		keywords:    [ 'summary', 'takeaways', 'key points', 'ai', 'ai seo', 'llm', 'geo', 'answer engine', 'seo', 'rankready' ],
 
 		attributes: {
@@ -178,10 +178,10 @@
 
 			useEffect( function () {
 				if ( cooldown <= 0 ) return;
-				var t = setTimeout( function () {
+				var cooldownTimer = setTimeout( function () {
 					setCooldown( function ( c ) { return c - 1; } );
 				}, 1000 );
-				return function () { clearTimeout( t ); };
+				return function () { clearTimeout( cooldownTimer ); };
 			}, [ cooldown ] );
 
 			var isSaving     = useSelect( function ( s ) { return s( 'core/editor' ).isSavingPost(); }, [] );
@@ -316,11 +316,11 @@
 						),
 
 						! hasKey && el( 'p', { style: { color: '#d63638', fontSize: '12px', margin: '8px 0 0' } },
-							t( 'apiKeyMissing', 'API key missing — Settings → RankReady.' )
+							t( 'apiKeyMissing', 'No API key yet. Add one under RankReady → Settings → API Keys.' )
 						),
 
 						el( 'p', { style: { color: '#757575', fontSize: '11px', margin: '8px 0 0', fontStyle: 'italic' } },
-							t( 'summaryAutoGenerate', 'Summary auto-generates on publish/update.' )
+							t( 'summaryAutoGenerate', 'Click Generate in the RankReady panel to write the summary. RankReady Pro generates it automatically on publish.' )
 						)
 					),
 
@@ -508,8 +508,8 @@
 								? el( 'p', { className: 'rnrd-text', style: bulletStyle }, summary.data )
 								: el( 'p', { style: { opacity: 0.5, fontStyle: 'italic', margin: 0 } },
 									! hasKey
-										? t( 'addApiKey', 'Add API key in Settings → RankReady.' )
-										: t( 'summaryAfterPublish', 'Summary will appear here after you publish this post.' )
+										? t( 'addApiKey', 'Add an API key under RankReady → Settings → API Keys.' )
+										: t( 'summaryAfterPublish', 'No summary yet. Use Generate in the RankReady panel, as often as you like. Pro generates it for you on publish.' )
 								)
 				)
 			);

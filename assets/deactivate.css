@@ -1,0 +1,223 @@
+/**
+ * The deactivation feedback modal.
+ *
+ * Freemius ships this form unstyled beyond WordPress defaults: a grey bar, a
+ * tight radio list, and two blue buttons of equal weight. It is the LAST thing
+ * a departing user sees, and it looked like a bug report form rather than
+ * something we made.
+ *
+ * This file is deliberately its own stylesheet rather than a block inside
+ * admin.css. admin.css is 147KB and is scoped to exactly two screen groups on
+ * purpose, and undoing that to style one modal on plugins.php would put the
+ * whole sheet on a screen that never shows RankReady UI. This is ~4KB, loads
+ * only on plugins.php, and only for users who can actually see the form.
+ *
+ * Everything below targets Freemius's own markup (.fs-modal-deactivation-
+ * feedback and its panels), so it restyles their form in place rather than
+ * replacing it. Their JS keeps working untouched: the radio list, the
+ * conditional text input, the "Anonymous feedback" box and both buttons are
+ * all still theirs.
+ */
+
+.fs-modal.fs-modal-deactivation-feedback {
+	background: rgba(15, 20, 18, .55);
+}
+
+/* Freemius centres this dialog with `position:absolute; left:50%;
+   margin-left:-298px` for a 596px box, so the negative margin IS the centring.
+   A `margin: 8vh auto` shorthand silently replaced that maths and pushed the
+   whole dialog off the right edge at narrow widths. Change the width, then
+   restate the matching half-width offset; never hand it `auto`. */
+.fs-modal.fs-modal-deactivation-feedback .fs-modal-dialog {
+	width: 520px;
+	margin-left: -260px;
+}
+
+.fs-modal.fs-modal-deactivation-feedback .fs-modal-body,
+.fs-modal.fs-modal-deactivation-feedback .fs-modal-header,
+.fs-modal.fs-modal-deactivation-feedback .fs-modal-footer {
+	border: 0;
+	background: #fff;
+}
+
+.fs-modal.fs-modal-deactivation-feedback .fs-modal-header {
+	padding: 22px 26px 0;
+	border-radius: 10px 10px 0 0;
+	box-shadow: none;
+}
+/* Freemius prints "QUICK FEEDBACK" here as a grey bar. It reads like a form
+   header on an intranet, so it becomes a quiet eyebrow instead. */
+.fs-modal.fs-modal-deactivation-feedback .fs-modal-header h4 {
+	margin: 0;
+	font-size: 10.5px;
+	font-weight: 700;
+	letter-spacing: .13em;
+	text-transform: uppercase;
+	color: #8c9491;
+}
+
+.fs-modal.fs-modal-deactivation-feedback .fs-modal-body {
+	padding: 10px 26px 4px;
+}
+
+/* The question. It was the same size as the options, so nothing led. */
+.fs-modal.fs-modal-deactivation-feedback .fs-modal-body h3 {
+	margin: 6px 0 18px;
+	padding: 0;
+	font-size: 17px;
+	font-weight: 600;
+	line-height: 1.4;
+	color: #15201c;
+	text-wrap: balance;
+}
+
+.fs-modal.fs-modal-deactivation-feedback .reasons-list {
+	margin: 0;
+	padding: 0;
+	list-style: none;
+}
+/* Freemius's own sheet leaves a large bottom margin on each list item, which
+   made seven options span most of the viewport and pushed the buttons under
+   the fold on a laptop. The row's own padding is the spacing now. */
+.fs-modal.fs-modal-deactivation-feedback .reasons-list > li {
+	margin: 0 0 2px;
+}
+
+/* Each reason is a real target, not a 13px radio with a label beside it.
+   The whole row is clickable because the label wraps the input in their
+   markup, so giving the row padding and a hover state makes that visible. */
+.fs-modal.fs-modal-deactivation-feedback .reason {
+	margin: 0 0 2px;
+	border: 1px solid transparent;
+	border-radius: 7px;
+	transition: background .12s ease, border-color .12s ease;
+}
+.fs-modal.fs-modal-deactivation-feedback .reason > label {
+	display: flex;
+	align-items: flex-start;
+	gap: 10px;
+	margin: 0;
+	padding: 9px 12px;
+	font-size: 13.5px;
+	line-height: 1.5;
+	color: #3c4341;
+	cursor: pointer;
+}
+.fs-modal.fs-modal-deactivation-feedback .reason:hover {
+	background: #f4f6f5;
+}
+/* Freemius never adds a `selected` class to the chosen row, so a `.selected`
+   rule was dead CSS. `:has()` reads the radio's real state instead, which also
+   means the highlight follows keyboard selection, not just clicks. */
+.fs-modal.fs-modal-deactivation-feedback .reason:has(input[type="radio"]:checked) {
+	background: #ecf7f2;
+	border-color: #bfe3d4;
+}
+.fs-modal.fs-modal-deactivation-feedback .reason input[type="radio"] {
+	flex: none;
+	margin: 2px 0 0;
+}
+
+/* The follow-up text field only appears for some answers. It used to inherit a
+   bright focus ring wider than the row it sat in. */
+.fs-modal.fs-modal-deactivation-feedback .reason-input {
+	margin: 4px 0 8px 34px;
+}
+.fs-modal.fs-modal-deactivation-feedback .reason-input input,
+.fs-modal.fs-modal-deactivation-feedback .reason-input textarea {
+	width: 100%;
+	padding: 8px 11px;
+	border: 1px solid #d3d8d6;
+	border-radius: 6px;
+	font-size: 13.5px;
+	line-height: 1.5;
+	box-shadow: none;
+}
+.fs-modal.fs-modal-deactivation-feedback .reason-input input:focus,
+.fs-modal.fs-modal-deactivation-feedback .reason-input textarea:focus {
+	border-color: #0B7A57;
+	outline: 2px solid rgba(11, 122, 87, .28);
+	outline-offset: 1px;
+	box-shadow: none;
+}
+
+/* What happens to the answer. Written by rnrd-deactivate.js so the sentence
+   lives in a translatable PHP string rather than in a CSS `content` value. */
+.rnrd-deactivate-note {
+	margin: 14px 0 2px;
+	padding: 11px 13px;
+	border-radius: 7px;
+	background: #f4f6f5;
+	font-size: 12px;
+	line-height: 1.6;
+	color: #5b625f;
+}
+.rnrd-deactivate-note strong {
+	color: #15201c;
+	font-weight: 600;
+}
+
+.fs-modal.fs-modal-deactivation-feedback .fs-modal-footer {
+	padding: 16px 26px 20px;
+	border-radius: 0 0 10px 10px;
+	text-align: right;
+}
+.fs-modal.fs-modal-deactivation-feedback .fs-modal-footer .anonymous-feedback-label {
+	float: left;
+	margin: 8px 0 0;
+	font-size: 12.5px;
+	color: #5b625f;
+}
+
+/* Two equally blue buttons made "submit" and "skip" look like one decision.
+   The primary action is the one that helps us; leaving is the quiet one. */
+.fs-modal.fs-modal-deactivation-feedback .fs-modal-footer .button {
+	height: auto;
+	margin-left: 8px;
+	padding: 8px 16px;
+	border-radius: 6px;
+	font-size: 13px;
+	font-weight: 500;
+	line-height: 1.5;
+	box-shadow: none;
+	text-shadow: none;
+}
+.fs-modal.fs-modal-deactivation-feedback .fs-modal-footer .button-primary {
+	border: 1px solid #0B7A57;
+	background: #0B7A57;
+	color: #fff;
+}
+.fs-modal.fs-modal-deactivation-feedback .fs-modal-footer .button-primary:hover,
+.fs-modal.fs-modal-deactivation-feedback .fs-modal-footer .button-primary:focus {
+	border-color: #095F44;
+	background: #095F44;
+	color: #fff;
+}
+.fs-modal.fs-modal-deactivation-feedback .fs-modal-footer .button-secondary {
+	border: 1px solid #d3d8d6;
+	background: #fff;
+	color: #3c4341;
+}
+.fs-modal.fs-modal-deactivation-feedback .fs-modal-footer .button-secondary:hover,
+.fs-modal.fs-modal-deactivation-feedback .fs-modal-footer .button-secondary:focus {
+	border-color: #9aa3a0;
+	background: #f4f6f5;
+	color: #15201c;
+}
+.fs-modal.fs-modal-deactivation-feedback .fs-modal-footer .button:focus-visible {
+	outline: 2px solid #0B7A57;
+	outline-offset: 2px;
+}
+
+@media (max-width: 600px) {
+	/* Below 650 Freemius switches to `width:100%; margin-left:-50%` with its own
+	   10px side padding. Leave that alone and only restate the width, or the
+	   dialog leaves the viewport. */
+	.fs-modal.fs-modal-deactivation-feedback .fs-modal-dialog { width: 100%; margin-left: -50%; }
+	.fs-modal.fs-modal-deactivation-feedback .fs-modal-header,
+	.fs-modal.fs-modal-deactivation-feedback .fs-modal-body,
+	.fs-modal.fs-modal-deactivation-feedback .fs-modal-footer { padding-left: 18px; padding-right: 18px; }
+	.fs-modal.fs-modal-deactivation-feedback .fs-modal-footer { text-align: left; }
+	.fs-modal.fs-modal-deactivation-feedback .fs-modal-footer .anonymous-feedback-label { float: none; display: block; margin: 0 0 12px; }
+	.fs-modal.fs-modal-deactivation-feedback .fs-modal-footer .button { margin: 0 8px 0 0; }
+}

@@ -28,6 +28,18 @@ class RNRD_Rest {
 	private const BULK_BATCH     = 5;
 	private const AUTHOR_BATCH   = 20;
 
+	/**
+	 * Option name of the Start Over queue lock, and how long a held lock is
+	 * believed before it is treated as abandoned.
+	 *
+	 * Regenerating one post is two provider API calls, so a worker that has held
+	 * the lock for five minutes did not finish: it fataled, timed out, or was
+	 * killed mid-request. Without a breaker that lock parks the queue forever and
+	 * the only recovery is deleting an option by hand.
+	 */
+	private const STARTOVER_LOCK     = 'rnrd_so_lock';
+	private const STARTOVER_LOCK_TTL = 300;
+
 	public static function init(): void {
 		add_action( 'rest_api_init', array( self::class, 'register_routes' ) );
 
@@ -113,7 +125,7 @@ class RNRD_Rest {
 				'key' => array(
 					'required' => true,
 					'type'     => 'string',
-					'sanitize_callback' => 'sanitize_text_field',
+					'sanitize_callback' => array( self::class, 'sanitize_secret' ),
 				),
 				'provider' => array(
 					'required'          => false,
@@ -121,6 +133,12 @@ class RNRD_Rest {
 					'default'           => 'openai',
 					'enum'              => array( 'openai', 'anthropic', 'gemini', 'deepseek' ),
 					'sanitize_callback' => 'sanitize_key',
+				),
+				'model' => array(
+					'required'          => false,
+					'type'              => 'string',
+					'default'           => '',
+					'sanitize_callback' => 'sanitize_text_field',
 				),
 			),
 		) );
@@ -140,7 +158,7 @@ class RNRD_Rest {
 					'required'          => false,
 					'type'              => 'string',
 					'default'           => '',
-					'sanitize_callback' => 'sanitize_text_field',
+					'sanitize_callback' => array( self::class, 'sanitize_secret' ),
 				),
 			),
 		) );
@@ -150,8 +168,8 @@ class RNRD_Rest {
 			'callback'            => array( self::class, 'verify_dfs_key' ),
 			'permission_callback' => array( self::class, 'is_admin_user' ),
 			'args'                => array(
-				'login'    => array( 'type' => 'string', 'sanitize_callback' => 'sanitize_text_field' ),
-				'password' => array( 'type' => 'string', 'sanitize_callback' => 'sanitize_text_field' ),
+				'login'    => array( 'type' => 'string', 'sanitize_callback' => array( self::class, 'sanitize_secret' ) ),
+				'password' => array( 'type' => 'string', 'sanitize_callback' => array( self::class, 'sanitize_secret' ) ),
 			),
 		) );
 
@@ -274,7 +292,8 @@ class RNRD_Rest {
 		) );
 
 		// (Old /health-check route removed in rc.15 — replaced by the live
-		// 22-probe Diagnostics endpoint registered by RNRD_Diagnostics class:
+		// Diagnostics endpoint registered by RNRD_Diagnostics class (probe count lives
+		// in run(), never in a comment that cannot be kept true):
 		//   GET /rankready/v1/diagnostics?include_api=0|1
 		//   GET /rankready/v1/diagnostics/report?include_api=0|1
 		// See class-rnrd-diagnostics.php for the new implementation.)
@@ -327,6 +346,8 @@ class RNRD_Rest {
 			'success' => true,
 			'summary' => (string) get_post_meta( $post_id, RNRD_META_SUMMARY, true ),
 			'has_key' => RNRD_LLM::active_provider_ready(),
+			'autogen_pending' => RNRD_Generator::autogen_pending( 'summary', $post_id ),
+			'autogen_error'   => RNRD_Generator::autogen_error( 'summary', $post_id ),
 		), 200 );
 	}
 
@@ -343,7 +364,7 @@ class RNRD_Rest {
 		if ( ! RNRD_LLM::active_provider_ready() ) {
 			$rnrd_prov = RNRD_LLM::get_provider_label( RNRD_LLM::get_active_provider() );
 			/* translators: %s: AI provider name */
-			return new WP_Error( 'rnrd_no_api_key', sprintf( __( 'No %s API key yet. Add it under Settings → AI Provider, then generate.', 'rankready-ai-llm-seo' ), $rnrd_prov ), array( 'status' => 400 ) );
+			return new WP_Error( 'rnrd_no_api_key', sprintf( __( 'No %s API key yet. Add it under RankReady → Settings → API Keys, then generate.', 'rankready-ai-llm-seo' ), $rnrd_prov ), array( 'status' => 400 ) );
 		}
 
 		// 3. AI Summary enabled for this post type.
@@ -362,11 +383,42 @@ class RNRD_Rest {
 		$content = RNRD_Generator::get_content_string( $post );
 		$words   = (int) preg_match_all( '/\S+/', (string) $content );
 		if ( $words < 25 ) {
+			// Issue #9: resolve_post_content() already tries a builder-specific
+			// render path, but if that still comes back thin (unsupported
+			// builder, or the render path failed) the stock "add a few more
+			// sentences" message sends the user to edit the wrong field —
+			// post_content is empty because the real copy lives in a builder's
+			// own meta, not because the post is genuinely short.
+			$builder_meta = array(
+				'_elementor_data'          => 'Elementor',
+				'_bricks_page_content_2'   => 'Bricks',
+				'ct_builder_shortcodes'    => 'Oxygen',
+			);
+			$builder_name = '';
+			foreach ( $builder_meta as $meta_key => $label ) {
+				if ( '' !== (string) get_post_meta( $post_id, $meta_key, true ) ) {
+					$builder_name = $label;
+					break;
+				}
+			}
+			if ( '' !== $builder_name ) {
+				return new WP_Error(
+					'rnrd_thin_content_builder',
+					/* translators: 1: page builder name, e.g. "Elementor". 2: the same page builder name. */
+					sprintf( __( 'This page’s content lives in %1$s, and RankReady could not read it. Open the page in %2$s and confirm it has real content, or contact support.', 'rankready-ai-llm-seo' ), $builder_name, $builder_name ),
+					array( 'status' => 400 )
+				);
+			}
 			return new WP_Error( 'rnrd_thin_content', __( 'Not enough content to summarise yet. Add a few more sentences to the post, then generate.', 'rankready-ai-llm-seo' ), array( 'status' => 400 ) );
 		}
 
-		// 5. Cooldown.
-		$last  = (int) get_post_meta( $post_id, RNRD_META_GENERATED, true );
+		// 5. Cooldown. Read both stamps and take the later one: Delete clears
+		// RNRD_META_GENERATED but leaves RNRD_META_COOLDOWN behind, so
+		// "Delete, then Generate" can no longer skip the throttle.
+		$last  = max(
+			(int) get_post_meta( $post_id, RNRD_META_GENERATED, true ),
+			(int) get_post_meta( $post_id, RNRD_META_COOLDOWN, true )
+		);
 		$since = time() - $last;
 		if ( $last > 0 && $since < self::REGEN_COOLDOWN ) {
 			return new WP_Error(
@@ -406,18 +458,74 @@ class RNRD_Rest {
 	 * Delete summary post meta keys. Shared by Start Over and per-post delete.
 	 */
 	private static function clear_summary_meta( int $post_id ): void {
+		self::carry_cooldown_forward( $post_id, RNRD_META_GENERATED, RNRD_META_COOLDOWN );
 		delete_post_meta( $post_id, RNRD_META_SUMMARY );
 		delete_post_meta( $post_id, RNRD_META_HASH );
 		delete_post_meta( $post_id, RNRD_META_GENERATED );
+		self::purge_derived_output( $post_id );
 	}
 
 	/**
 	 * Delete FAQ content meta (rows, hash, timestamp). Keeps saved keyword.
 	 */
 	private static function clear_faq_content_meta( int $post_id ): void {
+		self::carry_cooldown_forward( $post_id, RNRD_META_FAQ_GENERATED, RNRD_META_FAQ_COOLDOWN );
 		delete_post_meta( $post_id, RNRD_META_FAQ );
 		delete_post_meta( $post_id, RNRD_META_FAQ_HASH );
 		delete_post_meta( $post_id, RNRD_META_FAQ_GENERATED );
+		self::purge_derived_output( $post_id );
+	}
+
+	/**
+	 * Copy a generation timestamp onto its own cooldown key before the caller
+	 * deletes it, so the throttle outlives the thing that was generated.
+	 *
+	 * Only ever moves the clock forward. A post cleared twice keeps the newer
+	 * stamp rather than resetting to whatever the second delete happened to
+	 * find, which by then is nothing.
+	 */
+	private static function carry_cooldown_forward( int $post_id, string $from_key, string $to_key ): void {
+		$stamp = (int) get_post_meta( $post_id, $from_key, true );
+		if ( $stamp <= 0 ) {
+			return;
+		}
+		if ( $stamp > (int) get_post_meta( $post_id, $to_key, true ) ) {
+			update_post_meta( $post_id, $to_key, $stamp );
+		}
+	}
+
+	/**
+	 * Invalidate everything downstream of a post's generated meta.
+	 *
+	 * Markdown output embeds the summary and the FAQ, and its URL cache is
+	 * only busted on save_post / status change / delete. Clearing the meta
+	 * through REST fires none of those, so before this the admin said the
+	 * summary was gone while /post.md kept serving it to crawlers until the
+	 * next unrelated edit.
+	 */
+	public static function purge_derived_output( int $post_id ): void {
+		if ( class_exists( 'RNRD_Markdown' ) && method_exists( 'RNRD_Markdown', 'purge_post_md_url' ) ) {
+			RNRD_Markdown::purge_post_md_url( $post_id );
+		}
+		/**
+		 * Fires after a post's generated summary or FAQ has been cleared.
+		 *
+		 * @since 1.4.0
+		 * @param int $post_id Post whose derived output is now stale.
+		 */
+		do_action( 'rnrd_post_derived_output_purged', $post_id );
+	}
+
+	/**
+	 * Sanitise a credential from a request: trim only. sanitize_text_field() strips
+	 * tags and percent-encoded octets, which silently corrupts a password or key
+	 * that legitimately contains them and turns a valid credential into a 401.
+	 *
+	 * @param mixed $value Raw request value.
+	 * @return string
+	 */
+	public static function sanitize_secret( $value ): string {
+		return is_scalar( $value ) ? trim( (string) $value ) : '';
 	}
 
 	/**
@@ -433,7 +541,7 @@ class RNRD_Rest {
 	 * Lets the summary endpoint surface WHY a generation failed (provider quota,
 	 * bad key, timeout) instead of a flat "Failed to generate".
 	 */
-	private static function last_generation_error(): string {
+	public static function last_generation_error(): string {
 		if ( ! class_exists( 'RNRD_Generator' ) || ! method_exists( 'RNRD_Generator', 'get_error_log' ) ) {
 			return '';
 		}
@@ -446,8 +554,9 @@ class RNRD_Rest {
 	 * Translate a raw provider/error string into a short, friendly, actionable
 	 * message. Shared by the AI Summary AND FAQ generate endpoints so the
 	 * Gutenberg block and the Elementor widget show identical guided errors.
+	 * Public since 1.4.0 so Pro's bulk runner can show the same reason per post.
 	 */
-	private static function friendly_generation_error( string $raw ): string {
+	public static function friendly_generation_error( string $raw ): string {
 		$low      = strtolower( $raw );
 		$provider = class_exists( 'RNRD_LLM' )
 			? RNRD_LLM::get_provider_label( RNRD_LLM::get_active_provider() )
@@ -455,7 +564,9 @@ class RNRD_Rest {
 
 		$has = function ( $needles ) use ( $low ) {
 			foreach ( (array) $needles as $n ) {
-				if ( false !== strpos( $low, $n ) ) {
+				// HTTP status codes match as whole numbers only, so "1401 tokens" or
+				// "request 4290" is not read as a 401 or a 429.
+				if ( ctype_digit( $n ) ? 1 === preg_match( '/(?<!\d)' . $n . '(?!\d)/', $low ) : false !== strpos( $low, $n ) ) {
 					return true;
 				}
 			}
@@ -468,7 +579,7 @@ class RNRD_Rest {
 		}
 
 		// Quota / billing / rate limit.
-		if ( $has( array( 'quota', 'insufficient_quota', 'billing', 'exceeded', 'rate limit', 'rate_limit', 'too many requests', '429' ) ) ) {
+		if ( $has( array( 'quota', 'insufficient_quota', 'billing', 'exceeded your current', 'rate limit', 'rate_limit', 'too many requests', '429' ) ) ) {
 			/* translators: %s: AI provider name. */
 			return sprintf( __( '%s says the account is out of credits or rate-limited. Check your usage/billing on the provider dashboard, then try again.', 'rankready-ai-llm-seo' ), $provider );
 		}
@@ -476,13 +587,13 @@ class RNRD_Rest {
 		// Auth / invalid key.
 		if ( $has( array( 'invalid api key', 'invalid_api_key', 'invalid key', 'incorrect api key', 'unauthorized', 'authentication', 'permission', '401', '403' ) ) ) {
 			/* translators: %s: AI provider name. */
-			return sprintf( __( '%s rejected the API key. Re-check it under Settings → AI Provider.', 'rankready-ai-llm-seo' ), $provider );
+			return sprintf( __( '%s rejected the API key. Re-check it under RankReady → Settings → API Keys.', 'rankready-ai-llm-seo' ), $provider );
 		}
 
 		// Model unavailable / retired.
 		if ( $has( array( 'model' ) ) && $has( array( 'not found', 'does not exist', 'deprecat', 'unavailable', 'not supported' ) ) ) {
 			/* translators: %s: AI provider name. */
-			return sprintf( __( 'The selected %s model is unavailable. Pick a current model under Settings → AI Provider.', 'rankready-ai-llm-seo' ), $provider );
+			return sprintf( __( 'The selected %s model is unavailable. Pick a current model under RankReady → Settings → API Keys.', 'rankready-ai-llm-seo' ), $provider );
 		}
 
 		// Network / timeout.
@@ -507,6 +618,32 @@ class RNRD_Rest {
 
 	// ── Start Over — clear all data and regenerate both summary + FAQ ────────
 
+	/**
+	 * Start Over for one post: wipe summary + FAQ, regenerate both.
+	 *
+	 * This used to carry its own inline copy of the wipe-then-regenerate
+	 * sequence, and that copy had every bug the bulk path had already been
+	 * fixed for:
+	 *
+	 * 1. It tested `false !== $summary`. A WP_Error is not false, so a failed
+	 *    generation reported 'generated' inside an HTTP 200. The user was told
+	 *    the summary had been rebuilt when it had been deleted and not replaced.
+	 * 2. It deleted the meta with no snapshot, so any provider timeout, quota
+	 *    error or bad key permanently destroyed a hand-edited FAQ. The safe
+	 *    implementation sat in this same file, unused.
+	 * 3. It gated FAQ regeneration on DataForSEO credentials AFTER wiping the
+	 *    FAQ, so a site without a paid DataForSEO account lost its FAQ and got
+	 *    'skipped_no_dfs' back. DataForSEO only supplies optional keyword hints
+	 *    (see regenerate_with_rollback()'s note), so it was never a real gate.
+	 * 4. It enforced no cooldown at all, while regenerate_summary() and
+	 *    faq_generate() are both throttled at REGEN_COOLDOWN.
+	 *
+	 * All four are gone because the body is now the shared twin. Two callers,
+	 * one implementation: a fix to the bulk path can no longer skip this one.
+	 *
+	 * @param WP_REST_Request $request Request.
+	 * @return WP_REST_Response|WP_Error
+	 */
 	public static function start_over( $request ) {
 		$post_id = (int) $request->get_param( 'id' );
 		$keyword = sanitize_text_field( (string) $request->get_param( 'keyword' ) );
@@ -514,50 +651,80 @@ class RNRD_Rest {
 		if ( ! RNRD_LLM::active_provider_ready() ) {
 			$rnrd_prov = RNRD_LLM::get_provider_label( RNRD_LLM::get_active_provider() );
 			/* translators: %s: the active AI provider name, e.g. "Gemini (Google)". */
-			return new WP_Error( 'rnrd_no_api_key', sprintf( __( '%s API key not configured. Add it in Settings → AI Provider.', 'rankready-ai-llm-seo' ), $rnrd_prov ), array( 'status' => 400 ) );
+			return new WP_Error( 'rnrd_no_api_key', sprintf( __( '%s has no API key yet. Add one under RankReady → Settings → API Keys, then start the run.', 'rankready-ai-llm-seo' ), $rnrd_prov ), array( 'status' => 400 ) );
 		}
 
-		// Clear existing summary data.
-		self::clear_summary_meta( $post_id );
-
-		// Clear existing FAQ data.
-		self::clear_faq_meta( $post_id );
-
-		$result = array(
-			'summary' => null,
-			'faq'     => null,
+		// Same throttle as Regenerate and Generate FAQ. Start Over is the most
+		// expensive button in the plugin (two LLM calls), so leaving it as the
+		// one unthrottled path meant a held-down click could burn a quota.
+		$last  = max(
+			(int) get_post_meta( $post_id, RNRD_META_GENERATED, true ),
+			(int) get_post_meta( $post_id, RNRD_META_COOLDOWN, true )
 		);
-
-		// Regenerate summary.
-		$summary = RNRD_Generator::force_generate( $post_id );
-		if ( false !== $summary ) {
-			$result['summary'] = 'generated';
-		} else {
-			$result['summary'] = 'failed';
+		$since = time() - $last;
+		if ( $last > 0 && $since < self::REGEN_COOLDOWN ) {
+			return new WP_Error(
+				'rnrd_rate_limited',
+				/* translators: %d: remaining seconds before regeneration is allowed */
+				sprintf( __( 'Please wait %d more seconds before regenerating.', 'rankready-ai-llm-seo' ), self::REGEN_COOLDOWN - $since ),
+				array( 'status' => 429 )
+			);
 		}
 
-		// Regenerate FAQ (if DFS credentials available).
-		$has_dfs = ! empty( get_option( RNRD_OPT_DFS_LOGIN ) ) && ! empty( get_option( RNRD_OPT_DFS_PASSWORD ) );
-		if ( $has_dfs ) {
-			$faq = RNRD_Faq::generate_faq( $post_id, $keyword );
-			if ( is_array( $faq ) && ! is_wp_error( $faq ) ) {
-				$result['faq'] = 'generated';
-				$result['faq_count'] = count( $faq );
-			} else {
-				$result['faq'] = 'failed';
-				$result['faq_error'] = is_wp_error( $faq ) ? $faq->get_error_message() : 'Unknown error';
-			}
-		} else {
-			$result['faq'] = 'skipped_no_dfs';
+		$status = self::regenerate_with_rollback( $post_id, $keyword );
+
+		/*
+		 * `'success' => true` used to be hardcoded here. The body underneath it
+		 * already said 'failed' or 'restored' per half, so the envelope and its
+		 * own payload could contradict each other, and a caller that reads the
+		 * one field a success envelope exists for was told the rebuild worked
+		 * when neither half had been rebuilt. Nothing in the plugin calls this
+		 * route (the UI drives the bulk path), which is exactly why it went
+		 * unnoticed: the only consumers are other people's integrations, and
+		 * they have no UI to notice the contradiction in.
+		 *
+		 * 'restored' is not success either. It means the regeneration failed and
+		 * the previous content was put back, so the caller's request did not
+		 * happen. Reporting it as success is how an integration ends up looping
+		 * over a catalogue, getting 200 every time, and changing nothing.
+		 */
+		$generated = array_keys( array_filter( $status, static function ( $v ) { return 'generated' === $v; } ) );
+
+		if ( ! $generated ) {
+			return new WP_Error(
+				'rnrd_start_over_failed',
+				__( 'Neither the summary nor the FAQ could be regenerated. Previous content, where there was any, has been restored. The provider error is in Diagnostics → Error Log.', 'rankready-ai-llm-seo' ),
+				array( 'status' => 502, 'result' => $status )
+			);
 		}
 
-		return new WP_REST_Response( array( 'success' => true, 'result' => $result ), 200 );
+		$all = count( $generated ) === count( $status );
+
+		return new WP_REST_Response(
+			array(
+				'success' => $all,
+				'partial' => ! $all,
+				'result'  => $status,
+			),
+			200
+		);
 	}
 
 	// ══════════════════════════════════════════════════════════════════════════
 	// BULK START OVER (clear + regenerate all)
 	// ══════════════════════════════════════════════════════════════════════════
 
+	/**
+	 * Queue every published post of the chosen types for clear + regenerate.
+	 *
+	 * The response carries `total` (queued) and, on a fresh start, `available`
+	 * (published posts matched, which exceeds `total` only when the
+	 * RNRD_BULK_MAX_POSTS cap applied). `available` is additive: existing
+	 * callers that read `total` are unaffected. No Free screen calls this route;
+	 * it stays registered as a shipped contract.
+	 *
+	 * @param WP_REST_Request $request Request with `post_types` and `resume`.
+	 */
 	public static function startover_bulk_start( $request ) {
 		$resume = (bool) $request->get_param( 'resume' );
 
@@ -590,7 +757,7 @@ class RNRD_Rest {
 		if ( ! RNRD_LLM::active_provider_ready() ) {
 			$rnrd_prov = RNRD_LLM::get_provider_label( RNRD_LLM::get_active_provider() );
 			/* translators: %s: the active AI provider name, e.g. "Gemini (Google)". */
-			return new WP_Error( 'rnrd_no_api_key', sprintf( __( '%s API key not configured. Add it in Settings → AI Provider.', 'rankready-ai-llm-seo' ), $rnrd_prov ), array( 'status' => 400 ) );
+			return new WP_Error( 'rnrd_no_api_key', sprintf( __( '%s has no API key yet. Add one under RankReady → Settings → API Keys, then start the run.', 'rankready-ai-llm-seo' ), $rnrd_prov ), array( 'status' => 400 ) );
 		}
 
 		$raw_types  = (array) $request->get_param( 'post_types' );
@@ -598,16 +765,17 @@ class RNRD_Rest {
 		$post_types = array_values( array_intersect( $raw_types, $allowed ) );
 
 		if ( empty( $post_types ) ) {
-			return new WP_Error( 'rnrd_invalid_types', __( 'No valid post types selected.', 'rankready-ai-llm-seo' ), array( 'status' => 400 ) );
+			return new WP_Error( 'rnrd_invalid_types', __( 'Pick at least one post type to run.', 'rankready-ai-llm-seo' ), array( 'status' => 400 ) );
 		}
 
-		$ids = get_posts( array(
+		$ids = array_map( 'intval', get_posts( array(
 			'post_type'      => $post_types,
 			'post_status'    => 'publish',
-			'posts_per_page' => 2000,
+			'posts_per_page' => RNRD_BULK_MAX_POSTS,
 			'fields'         => 'ids',
 			'no_found_rows'  => true,
-		) );
+		) ) );
+		$available = self::count_published( $post_types, count( $ids ), RNRD_BULK_MAX_POSTS );
 
 		$total = count( $ids );
 
@@ -616,16 +784,139 @@ class RNRD_Rest {
 		update_option( RNRD_SO_DONE,    0,      false );
 		update_option( RNRD_SO_RUNNING, true,   false );
 
+		// A fresh run starts with the claim lock released. Without this, a lock
+		// left behind by a worker that died in the previous run would stall the
+		// first tick for the whole STARTOVER_LOCK_TTL window for no reason.
+		delete_option( self::STARTOVER_LOCK );
+
 		// Schedule WP-Cron to process queue even if browser closes.
 		if ( ! wp_next_scheduled( RNRD_CRON_BULK_STARTOVER ) ) {
 			wp_schedule_event( time() + 10, 'rnrd_one_minute', RNRD_CRON_BULK_STARTOVER );
 		}
 
 		return new WP_REST_Response( array(
-			'total'   => $total,
-			'done'    => 0,
-			'running' => $total > 0,
+			'total'     => $total,
+			'available' => $available,
+			'done'      => 0,
+			'running'   => $total > 0,
 		), 200 );
+	}
+
+	/**
+	 * How many published posts a capped bulk query matched, for the
+	 * "Queued X of Y" note.
+	 *
+	 * get_posts() forces no_found_rows, so it cannot report a total, and a
+	 * WP_Query with suppress_filters => true is a Plugin Check ERROR. Below the
+	 * cap the queue length already is the total. At the cap, wp_count_posts()
+	 * gives the same unfiltered count get_posts() matched, from core's cache.
+	 *
+	 * @param string[] $post_types Post types the query ran over.
+	 * @param int      $queued     IDs the capped query returned.
+	 * @param int      $cap        The posts_per_page cap.
+	 */
+	public static function count_published( array $post_types, int $queued, int $cap ): int {
+		if ( $queued < $cap ) {
+			return $queued;
+		}
+		$n = 0;
+		foreach ( $post_types as $pt ) {
+			$c  = wp_count_posts( $pt );
+			$n += isset( $c->publish ) ? (int) $c->publish : 0;
+		}
+		return max( $n, $queued );
+	}
+
+	/**
+	 * Claim exactly one post id from the Start Over queue, atomically.
+	 *
+	 * Two workers drain this queue at the same time by design: the browser polls
+	 * the REST tick while RNRD_CRON_BULK_STARTOVER runs every minute so the run
+	 * survives the tab closing. Both used to do their own
+	 * `get_option() -> array_shift() -> update_option()` with no lock at all, so
+	 * the interleaving was: both read [A, B, C], both shift A, both write
+	 * [B, C]. A is regenerated twice, burning two provider calls on one post, and
+	 * `done` is incremented twice for one post of progress. The same shape with
+	 * the writes reordered loses a pop instead, and the queue never empties.
+	 *
+	 * RNRD_Atomic::claim_option() is the fix because it is a single INSERT IGNORE
+	 * against a UNIQUE `option_name`: whichever worker loses the race gets false back, rather than
+	 * the read-then-write pattern that a lock written with get_option() would
+	 * still have (that is exactly the broken lock that produced 29 duplicate rows
+	 * from 5 parallel requests in the crawler log).
+	 *
+	 * @return int The claimed post id, or 0 when the queue is empty or another
+	 *             worker holds the claim right now. 0 is not an error: the caller
+	 *             reports current progress and the next tick tries again.
+	 */
+	private static function startover_claim_next(): int {
+		// Returns false while another worker holds a live claim. A claim older than
+		// the TTL is taken over atomically, so a crashed worker cannot wedge the run.
+		if ( ! RNRD_Atomic::acquire_lock( self::STARTOVER_LOCK, self::STARTOVER_LOCK_TTL ) ) {
+			return 0;
+		}
+
+		// Read the committed row, not whatever this process cached earlier in the
+		// request. Holding the lock is pointless if the read behind it is stale.
+		wp_cache_delete( RNRD_SO_QUEUE, 'options' );
+
+		$queue   = (array) get_option( RNRD_SO_QUEUE, array() );
+		$post_id = $queue ? (int) array_shift( $queue ) : 0;
+
+		if ( $post_id > 0 ) {
+			update_option( RNRD_SO_QUEUE, $queue, false );
+		}
+
+		RNRD_Atomic::release_lock( self::STARTOVER_LOCK );
+
+		return $post_id;
+	}
+
+	/**
+	 * Increment the Start Over progress counter and return the new value.
+	 *
+	 * Deliberately NOT `get_option() + 1 -> update_option()`: that is the lost
+	 * update the claim lock above exists to prevent, and it would reintroduce it
+	 * one line after the claim was made safe. MySQL resolves the arithmetic, so
+	 * two concurrent workers produce two increments.
+	 *
+	 * @return int The progress count after this increment.
+	 */
+	private static function startover_bump_done(): int {
+		global $wpdb;
+
+		$name = RNRD_SO_DONE;
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Atomic increment; the Options API cannot express one. Cache is invalidated below.
+		$updated = $wpdb->query( $wpdb->prepare(
+			"UPDATE {$wpdb->options} SET option_value = option_value + 1 WHERE option_name = %s",
+			$name
+		) );
+
+		if ( ! $updated ) {
+			// Either the row is missing, or it exists and the UPDATE was a no-op.
+			// claim_option() tells the two apart: it fails when the row is there.
+			if ( ! RNRD_Atomic::claim_option( $name, '1' ) ) {
+				// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- See above.
+				$wpdb->query( $wpdb->prepare(
+					"UPDATE {$wpdb->options} SET option_value = option_value + 1 WHERE option_name = %s",
+					$name
+				) );
+			}
+		}
+
+		// The direct UPDATE bypassed the Options API, so its cached copy is stale.
+		wp_cache_delete( $name, 'options' );
+
+		return (int) get_option( $name, 0 );
+	}
+
+	/**
+	 * Is the Start Over queue empty right now, reading the committed row?
+	 */
+	private static function startover_queue_is_empty(): bool {
+		wp_cache_delete( RNRD_SO_QUEUE, 'options' );
+		return empty( (array) get_option( RNRD_SO_QUEUE, array() ) );
 	}
 
 	public static function startover_bulk_process() {
@@ -637,17 +928,17 @@ class RNRD_Rest {
 			), 200 );
 		}
 
-		$queue = (array) get_option( RNRD_SO_QUEUE, array() );
 		$done  = (int) get_option( RNRD_SO_DONE, 0 );
 		$total = (int) get_option( RNRD_SO_TOTAL, 0 );
 
-		if ( empty( $queue ) ) {
+		if ( self::startover_queue_is_empty() ) {
 			update_option( RNRD_SO_RUNNING, false );
 			return new WP_REST_Response( array( 'total' => $total, 'done' => $done, 'running' => false ), 200 );
 		}
 
-		// Process 1 post at a time (both summary + FAQ are heavy).
-		$post_id = (int) array_shift( $queue );
+		// Process 1 post at a time (both summary + FAQ are heavy). The claim is
+		// atomic, so the every-minute cron cannot hand us the same post.
+		$post_id = self::startover_claim_next();
 		$log     = array();
 
 		if ( $post_id > 0 ) {
@@ -655,7 +946,7 @@ class RNRD_Rest {
 			$summary_status = $status['summary'];
 			$faq_status     = $status['faq'];
 
-			$done++;
+			$done = self::startover_bump_done();
 
 			$post  = get_post( $post_id );
 			$title = $post ? $post->post_title : '#' . $post_id;
@@ -669,17 +960,16 @@ class RNRD_Rest {
 			);
 		}
 
-		update_option( RNRD_SO_QUEUE, $queue, false );
-		update_option( RNRD_SO_DONE,  $done,  false );
+		$empty = self::startover_queue_is_empty();
 
-		if ( empty( $queue ) ) {
+		if ( $empty ) {
 			update_option( RNRD_SO_RUNNING, false );
 		}
 
 		return new WP_REST_Response( array(
 			'total'   => $total,
 			'done'    => $done,
-			'running' => ! empty( $queue ),
+			'running' => ! $empty,
 			'log'     => $log,
 		), 200 );
 	}
@@ -700,10 +990,13 @@ class RNRD_Rest {
 	 * without it, so gating the whole feature withheld a working free feature
 	 * from every user without a paid DataForSEO account.
 	 *
-	 * @param int $post_id Post to regenerate.
+	 * @param int    $post_id Post to regenerate.
+	 * @param string $keyword Optional focus keyword for the FAQ prompt. The bulk
+	 *                        path has none to offer; the single-post endpoint
+	 *                        accepts one from the editor sidebar.
 	 * @return array{summary:string,faq:string} Per-item status: generated|failed|restored.
 	 */
-	private static function regenerate_with_rollback( int $post_id ): array {
+	private static function regenerate_with_rollback( int $post_id, string $keyword = '' ): array {
 		$meta_keys = array(
 			RNRD_META_SUMMARY,
 			RNRD_META_HASH,
@@ -720,6 +1013,12 @@ class RNRD_Rest {
 			$snapshot[ $key ] = get_post_meta( $post_id, $key, true );
 		}
 
+		// Start Over keeps the keyword the author saved for this post's FAQ; the
+		// delete below would otherwise turn the regenerated FAQ into a keyword-less one.
+		if ( '' === $keyword && is_string( $snapshot[ RNRD_META_FAQ_KEYWORD ] ) ) {
+			$keyword = $snapshot[ RNRD_META_FAQ_KEYWORD ];
+		}
+
 		foreach ( $meta_keys as $key ) {
 			delete_post_meta( $post_id, $key );
 		}
@@ -727,7 +1026,7 @@ class RNRD_Rest {
 		$restore = function ( array $keys ) use ( $post_id, $snapshot ) {
 			foreach ( $keys as $key ) {
 				if ( '' !== $snapshot[ $key ] && null !== $snapshot[ $key ] ) {
-					update_post_meta( $post_id, $key, $snapshot[ $key ] );
+					update_post_meta( $post_id, $key, wp_slash( $snapshot[ $key ] ) );
 				}
 			}
 		};
@@ -751,7 +1050,7 @@ class RNRD_Rest {
 		}
 
 		// ── FAQ ───────────────────────────────────────────────────────────────
-		$faq    = RNRD_Faq::generate_faq( $post_id );
+		$faq    = RNRD_Faq::generate_faq( $post_id, $keyword );
 		$faq_ok = ( is_array( $faq ) && ! is_wp_error( $faq ) );
 
 		if ( ! $faq_ok ) {
@@ -767,6 +1066,11 @@ class RNRD_Rest {
 		} else {
 			$faq_status = 'generated';
 		}
+
+		// Start Over rewrites the summary and the FAQ without firing save_post,
+		// so /post.md would keep serving the previous pair. Same reason
+		// clear_summary_meta() purges.
+		self::purge_derived_output( $post_id );
 
 		return array( 'summary' => $summary_status, 'faq' => $faq_status );
 	}
@@ -887,12 +1191,24 @@ class RNRD_Rest {
 			remove_action( 'wp_after_insert_post', array( 'RNRD_Generator', 'schedule_generation' ), 10 );
 		}
 
+		$skipped = 0;
 		foreach ( $batch as $post_id ) {
 			$post_id = (int) $post_id;
 			if ( $post_id < 1 ) {
 				continue;
 			}
-			wp_update_post( array(
+			// The route gate is the blanket edit_others_posts, but the queue
+			// spans every status and every allowed post type. A CPT with its
+			// own capability_type, or a custom role, can hold edit_others_posts
+			// without being allowed to edit this post, so re-check per object
+			// (same pattern as RNRD_Freshness::rest_refresh()). Skipped posts
+			// still advance $done so the progress bar completes.
+			if ( ! current_user_can( 'edit_post', $post_id ) ) {
+				$skipped++;
+				$done++;
+				continue;
+			}
+			RNRD_Util::update_post_fields( array(
 				'ID'          => $post_id,
 				'post_author' => $to_author,
 			) );
@@ -912,7 +1228,7 @@ class RNRD_Rest {
 			update_option( RNRD_BAC_RUNNING, false );
 		}
 
-		return new WP_REST_Response( array( 'total' => $total, 'done' => $done, 'running' => $still_running ), 200 );
+		return new WP_REST_Response( array( 'total' => $total, 'done' => $done, 'running' => $still_running, 'skipped' => $skipped ), 200 );
 	}
 
 	public static function author_stop() {
@@ -943,8 +1259,10 @@ class RNRD_Rest {
 			return new WP_Error( 'rnrd_no_post_types', __( 'Select at least one post type.', 'rankready-ai-llm-seo' ), array( 'status' => 400 ) );
 		}
 
-		if ( ! $to_author || ! get_userdata( $to_author ) ) {
-			return new WP_Error( 'rnrd_invalid_author', __( 'Invalid target author.', 'rankready-ai-llm-seo' ), array( 'status' => 400 ) );
+		// A subscriber as post author is a valid user id and an invalid author:
+		// the posts would show a byline (and Person schema) for someone who cannot write.
+		if ( ! $to_author || ! user_can( $to_author, 'edit_posts' ) ) {
+			return new WP_Error( 'rnrd_invalid_author', __( 'Invalid target author. Choose a user who can write posts.', 'rankready-ai-llm-seo' ), array( 'status' => 400 ) );
 		}
 
 		if ( $from_author && ! get_userdata( $from_author ) ) {
@@ -1086,8 +1404,10 @@ class RNRD_Rest {
 			'gemini'    => array(
 				'verify'  => function ( $key, $model = '' ) {
 					// `models` list endpoint — cheapest valid auth check for AI Studio keys.
-					return wp_remote_get( 'https://generativelanguage.googleapis.com/v1beta/models?key=' . rawurlencode( $key ), array(
+					// Key in a header, never in the query string — see RNRD_LLM_Gemini.
+					return wp_remote_get( 'https://generativelanguage.googleapis.com/v1beta/models', array(
 						'timeout' => 15,
+						'headers' => array( 'x-goog-api-key' => $key ),
 					) );
 				},
 			),
@@ -1131,15 +1451,46 @@ class RNRD_Rest {
 		}
 
 		$code = (int) wp_remote_retrieve_response_code( $response );
+		$raw  = (string) wp_remote_retrieve_body( $response );
 
 		if ( 200 === $code ) {
+			// A 200 alone is not proof. Corporate proxies, captive portals and
+			// WAF interstitials all answer 200 with an HTML page (or plain
+			// text), and a couple of providers return 200 with an error object
+			// in the body. Any of these would have been reported to the user
+			// as "valid and working" and then failed on the first real
+			// generation, so the body must both parse as JSON AND contain the
+			// field this provider's endpoint is actually documented to return
+			// — not just "some JSON came back".
+			$ok_body = json_decode( $raw, true );
+
+			if ( is_array( $ok_body ) && isset( $ok_body['error'] ) ) {
+				$msg = '';
+				if ( isset( $ok_body['error']['message'] ) ) {
+					$msg = (string) $ok_body['error']['message'];
+				} elseif ( is_string( $ok_body['error'] ) ) {
+					$msg = (string) $ok_body['error'];
+				}
+				return new WP_REST_Response( array(
+					'valid'   => false,
+					'message' => '' !== $msg ? $msg : __( 'The provider returned an error.', 'rankready-ai-llm-seo' ),
+				), 200 );
+			}
+
+			if ( ! is_array( $ok_body ) || ! self::verify_response_has_expected_shape( $provider, $ok_body ) ) {
+				return new WP_REST_Response( array(
+					'valid'   => false,
+					'message' => __( 'The provider replied with an unexpected response instead of API data. A proxy, firewall or captive portal may be intercepting the request.', 'rankready-ai-llm-seo' ),
+				), 200 );
+			}
+
 			return new WP_REST_Response( array(
 				'valid'   => true,
 				'message' => __( 'API key is valid and working.', 'rankready-ai-llm-seo' ),
 			), 200 );
 		}
 
-		$body = json_decode( wp_remote_retrieve_body( $response ), true );
+		$body = json_decode( $raw, true );
 		// Each provider nests its error message differently — try the common
 		// shapes before falling back to a generic HTTP status.
 		$err = '';
@@ -1154,6 +1505,40 @@ class RNRD_Rest {
 			'valid'   => false,
 			'message' => $err,
 		), 200 );
+	}
+
+	/**
+	 * Whether a 200-OK verify-key response body actually has the shape this
+	 * provider's endpoint is documented to return, not just "some JSON".
+	 *
+	 * A captive portal / corporate proxy / WAF can answer 200 with a JSON body
+	 * that isn't the provider's real payload (a status page, a login-required
+	 * object, an empty `{}`) just as easily as with an HTML interstitial — the
+	 * HTML-sniffing check above catches only the latter. This checks for the
+	 * field each endpoint is documented to always include on success:
+	 *   - OpenAI chat/completions  -> `choices` (non-empty array)
+	 *   - Anthropic messages       -> `content` (array)
+	 *   - Gemini  models list      -> `models`  (array) — same field
+	 *     RNRD_LLM::extract_model_ids() reads from the same endpoint.
+	 *   - DeepSeek models list     -> `data`    (array) — same field
+	 *     RNRD_LLM::extract_model_ids() reads from the same endpoint.
+	 *
+	 * @param string               $provider Provider ID.
+	 * @param array<string,mixed>  $body     Decoded JSON response body.
+	 */
+	private static function verify_response_has_expected_shape( string $provider, array $body ): bool {
+		switch ( $provider ) {
+			case 'openai':
+				return isset( $body['choices'] ) && is_array( $body['choices'] ) && ! empty( $body['choices'] );
+			case 'anthropic':
+				return isset( $body['content'] ) && is_array( $body['content'] );
+			case 'gemini':
+				return isset( $body['models'] ) && is_array( $body['models'] );
+			case 'deepseek':
+				return isset( $body['data'] ) && is_array( $body['data'] );
+			default:
+				return false;
+		}
 	}
 
 	/**
@@ -1224,19 +1609,29 @@ class RNRD_Rest {
 		$body = json_decode( wp_remote_retrieve_body( $response ), true );
 
 		// Guard the leaf key, not just `money` — a shape change would otherwise warn
-		// (or throw on a string offset) inside the REST callback, on the same branch
-		// that persists the credentials.
+		// (or throw on a string offset) inside the REST callback.
 		if ( 200 === $code && isset( $body['tasks'][0]['result'][0]['money']['balance'] ) ) {
 			$balance = $body['tasks'][0]['result'][0]['money']['balance'];
 
-			// Auto-save verified credentials to DB.
-			update_option( RNRD_OPT_DFS_LOGIN, $login );
-			update_option( RNRD_OPT_DFS_PASSWORD, $password );
-
+			/*
+			 * Verify does not write. Until 2026-09-26 a successful verify called
+			 * update_option() on both credentials, so a button labelled "Verify
+			 * DataForSEO" silently replaced the stored login and password with
+			 * whatever happened to be in the form — including when the admin was
+			 * only testing a colleague's credentials, or typed a value and then
+			 * navigated away without saving. There was no undo, because the old
+			 * value was gone.
+			 *
+			 * The fields are real registered settings (see
+			 * RNRD_Admin::register_settings, sanitize_dfs_login /
+			 * sanitize_dfs_password), so the form's own Save is what persists
+			 * them, and sanitize_dfs_password() already leaves the stored secret
+			 * alone when the masked bullet value is posted back.
+			 */
 			return new WP_REST_Response( array(
 				'valid'   => true,
 				/* translators: %s: DataForSEO account balance in USD, e.g. "12.34" */
-				'message' => sprintf( __( 'Credentials valid and saved. Balance: $%s', 'rankready-ai-llm-seo' ), number_format( (float) $balance, 2 ) ),
+				'message' => sprintf( __( 'Credentials valid. Balance: $%s. Save changes to store them.', 'rankready-ai-llm-seo' ), number_format( (float) $balance, 2 ) ),
 			), 200 );
 		}
 
@@ -1256,8 +1651,12 @@ class RNRD_Rest {
 		$keyword = sanitize_text_field( $request->get_param( 'keyword' ) );
 		$count   = (int) $request->get_param( 'count' );
 
-		// Cooldown: prevent rapid-fire FAQ generation for the same post.
-		$last  = (int) get_post_meta( $post_id, RNRD_META_FAQ_GENERATED, true );
+		// Cooldown: prevent rapid-fire FAQ generation for the same post. Same
+		// two-stamp read as the summary endpoint, for the same reason.
+		$last  = max(
+			(int) get_post_meta( $post_id, RNRD_META_FAQ_GENERATED, true ),
+			(int) get_post_meta( $post_id, RNRD_META_FAQ_COOLDOWN, true )
+		);
 		$since = time() - $last;
 		if ( $last && $since < self::REGEN_COOLDOWN ) {
 			return new WP_Error(
@@ -1275,7 +1674,7 @@ class RNRD_Rest {
 			if ( 'no_api_key' === $code ) {
 				$rnrd_prov = RNRD_LLM::get_provider_label( RNRD_LLM::get_active_provider() );
 				/* translators: %s: AI provider name */
-				$message = sprintf( __( 'No %s API key yet. Add it under Settings → AI Provider, then generate.', 'rankready-ai-llm-seo' ), $rnrd_prov );
+				$message = sprintf( __( 'No %s API key yet. Add it under RankReady → Settings → API Keys, then generate.', 'rankready-ai-llm-seo' ), $rnrd_prov );
 			} elseif ( 'invalid_post' === $code ) {
 				$message = __( 'This post no longer exists. Save the page, then try again.', 'rankready-ai-llm-seo' );
 			} elseif ( 'type_disabled' === $code ) {
@@ -1328,6 +1727,8 @@ class RNRD_Rest {
 			'keyword'   => (string) get_post_meta( $post_id, RNRD_META_FAQ_KEYWORD, true ),
 			'generated' => $generated_str,
 			'disabled'  => (bool) get_post_meta( $post_id, RNRD_META_FAQ_DISABLE, true ),
+			'autogen_pending' => RNRD_Generator::autogen_pending( 'faq', $post_id ),
+			'autogen_error'   => RNRD_Generator::autogen_error( 'faq', $post_id ),
 		), 200 );
 	}
 
@@ -1349,6 +1750,12 @@ class RNRD_Rest {
 			}
 		}
 
+		// A non-empty payload where no row has both a question and an answer is a
+		// malformed request, not "clear the FAQ": refuse it rather than wipe a good FAQ.
+		if ( empty( $clean ) && ! empty( $faq_data['faq'] ) ) {
+			return new WP_Error( 'rnrd_invalid_faq', __( 'Every FAQ row needs a question and an answer. Nothing was changed.', 'rankready-ai-llm-seo' ), array( 'status' => 400 ) );
+		}
+
 		if ( empty( $clean ) ) {
 			// Clearing every row must REMOVE the meta, not store "[]".
 			// wp_json_encode( array() ) is the two-character string "[]", which is
@@ -1364,8 +1771,12 @@ class RNRD_Rest {
 
 		// JSON_UNESCAPED_UNICODE preserves non-Latin characters as UTF-8 in
 		// post meta — see class-rnrd-generator.php for full rationale.
-		update_post_meta( $post_id, RNRD_META_FAQ, wp_json_encode( $clean, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES ) );
+		// wp_slash: update_post_meta() unslashes, which would strip the escapes out of the JSON and store it invalid.
+		update_post_meta( $post_id, RNRD_META_FAQ, wp_slash( wp_json_encode( $clean, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES ) ) );
 		update_post_meta( $post_id, RNRD_META_FAQ_GENERATED, time() );
+		// Editing rows changes what /post.md serves, and this endpoint fires no
+		// save_post, so the URL cache has to be busted here as well.
+		self::purge_derived_output( $post_id );
 
 		return new WP_REST_Response( array( 'success' => true, 'count' => count( $clean ) ), 200 );
 	}
@@ -1426,7 +1837,8 @@ class RNRD_Rest {
 
 		// Add human-readable time.
 		foreach ( $log as &$entry ) {
-			$entry['time_ago'] = human_time_diff( $entry['time'] ) . ' ago';
+			/* translators: %s: human-readable time difference, e.g. "3 hours". */
+			$entry['time_ago'] = sprintf( __( '%s ago', 'rankready-ai-llm-seo' ), human_time_diff( $entry['time'] ) );
 			$entry['date']     = wp_date( 'Y-m-d H:i:s', $entry['time'] );
 		}
 		unset( $entry );
@@ -1467,13 +1879,16 @@ class RNRD_Rest {
 			);
 		}
 
-		$totals = (array) get_option( 'rnrd_token_usage', array() );
+		// Legacy option plus atomic counters, via the one reader that knows about
+		// both. Reading the raw option here would under-report every generation
+		// since 1.4.0.
+		$totals = RNRD_Generator::get_token_usage();
 
 		return new WP_REST_Response( array(
 			'posts'          => $posts,
-			'summary_tokens' => isset( $totals['summary_tokens'] ) ? (int) $totals['summary_tokens'] : 0,
-			'faq_tokens'     => isset( $totals['faq_tokens'] ) ? (int) $totals['faq_tokens'] : 0,
-			'total_calls'    => isset( $totals['total_calls'] ) ? (int) $totals['total_calls'] : 0,
+			'summary_tokens' => (int) $totals['summary_tokens'],
+			'faq_tokens'     => (int) $totals['faq_tokens'],
+			'total_calls'    => (int) $totals['total_calls'],
 		), 200 );
 	}
 
@@ -1639,30 +2054,26 @@ class RNRD_Rest {
 			return;
 		}
 
-		$queue = (array) get_option( RNRD_SO_QUEUE, array() );
-		if ( empty( $queue ) ) {
+		if ( self::startover_queue_is_empty() ) {
 			update_option( RNRD_SO_RUNNING, false, false );
 			wp_clear_scheduled_hook( RNRD_CRON_BULK_STARTOVER );
 			return;
 		}
 
-		$done = (int) get_option( RNRD_SO_DONE, 0 );
-
-		// Process 1 post per cron tick (summary + FAQ are heavy API calls).
-		$post_id = (int) array_shift( $queue );
+		// Process 1 post per cron tick (summary + FAQ are heavy API calls). Same
+		// atomic claim the REST tick uses, so whichever of the two gets here
+		// first takes the post and the other one sees the queue already moved on.
+		$post_id = self::startover_claim_next();
 
 		if ( $post_id > 0 ) {
 			// Same rollback-protected path the REST tick uses. This runs after the
 			// user has closed the browser, so a silent failure here is the worst
 			// case: nobody is watching. Failures are logged and data is restored.
 			self::regenerate_with_rollback( $post_id );
-			$done++;
+			self::startover_bump_done();
 		}
 
-		update_option( RNRD_SO_QUEUE, $queue, false );
-		update_option( RNRD_SO_DONE,  $done,  false );
-
-		if ( empty( $queue ) ) {
+		if ( self::startover_queue_is_empty() ) {
 			update_option( RNRD_SO_RUNNING, false, false );
 			wp_clear_scheduled_hook( RNRD_CRON_BULK_STARTOVER );
 		}

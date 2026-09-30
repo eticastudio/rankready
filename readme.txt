@@ -4,7 +4,7 @@ Tags: seo, schema, ai seo, aeo, llms.txt
 Requires at least: 6.9
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 1.3.1
+Stable tag: 1.4.0
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -36,7 +36,7 @@ Built by [HostMyBlog](https://hostmy.blog/).
 
 ## Works alongside your WordPress SEO plugin — Yoast, Rank Math, AIOSEO, SEOPress and more
 
-RankReady is not a WordPress SEO plugin and does not replace one. It is the LLM SEO layer that sits on top of the SEO plugin you already run, handling AEO (answer engine optimization) and GEO (generative engine optimization). Compatible with Yoast SEO, Rank Math, AIOSEO, SEOPress, The SEO Framework, Slim SEO and Squirrly SEO. Every release is tested against all seven.
+RankReady is not a WordPress SEO plugin and does not replace one. It is the LLM SEO layer that sits on top of the SEO plugin you already run, handling AEO (answer engine optimization) and GEO (generative engine optimization). RankReady detects Yoast SEO, Rank Math, AIOSEO, SEOPress, The SEO Framework, Slim SEO, Squirrly SEO, SiteSEO and SureRank, and defers Article schema to whichever one is active so you never get duplicate structured data.
 
 
 In every one of those combinations:
@@ -91,10 +91,10 @@ Setup guide is in the FAQ section below.
 
 ## Author Box with E-E-A-T schema and Person JSON-LD
 
-E-E-A-T (Experience, Expertise, Authoritativeness, Trustworthiness) is how search engines and AI models judge which sources to trust. It is the framework Google sets out in its Search Quality Rater Guidelines. RankReady ships a basic Author Box with name, job title, employer, bio, headshot and basic sameAs links, published as Person JSON-LD alongside Article, Speakable and FAQPage schema, so AI search engines and LLMs can attribute your content to a real author. It auto-detects Rank Math, Yoast and AIOSEO and skips duplicate output.
+E-E-A-T (Experience, Expertise, Authoritativeness, Trustworthiness) is how search engines and AI models judge which sources to trust. It is the framework Google sets out in its Search Quality Rater Guidelines. RankReady ships a basic Author Box with name, job title, employer, bio and headshot, published as Person JSON-LD alongside Article, Speakable and FAQPage schema, so AI search engines and LLMs can attribute your content to a real author. It auto-detects Rank Math, Yoast and AIOSEO and skips duplicate output.
 
 * **Author details.** Name, job title, employer, bio, headshot
-* **sameAs links** connecting the author to their profiles elsewhere
+* **Profile links (sameAs), topics (knowsAbout), credentials, memberships and awards** are added by RankReady Pro
 * **Article, Speakable and FAQPage JSON-LD** included
 * **Never doubles up.** Detects Rank Math, Yoast and AIOSEO and defers to their E-E-A-T output
 * **Place it anywhere.** Gutenberg block or Elementor widget
@@ -176,28 +176,36 @@ On Cloudflare it can create the cache rule for you from the **Settings** tab.
 * **Every failure comes with a one-line fix**
 * **One-click report** you can paste into a support ticket
 
-## Coming soon in RankReady AI SEO
+## Still in development
 
-Everything above is free AI SEO, with no caps on manual generation. In development: auto-generate and bulk-generate AI Summaries and FAQs, HowTo and ItemList schema, deeper author schema, custom post types, and headless plus WPGraphQL support. These are marked "Coming soon" inside the plugin and are not available yet.
+Everything above is free AI SEO, with no caps on manual generation.
 
-== Privacy & Third-Party Services ==
+Genuinely not built yet: white-labelling the plugin for clients.
+
+Removing the "Generated from RankReady" credit line from /llms.txt and /llms-full.txt is built and shipping, in the paid version. It is a toggle on the LLMs.txt subtab that unlocks when a license is active.
+
+Auto-generate, bulk generate, HowTo and ItemList schema, custom post types, and the headless REST plus WPGraphQL support are built and shipping. They are in the paid version, not "coming soon". See the FAQ for what is free and what is paid.
+
+== External services ==
 
 Your post content never leaves your site unless you ask for it. Your API keys stay in your own database, and every AI service below runs on your own key.
 
-**Plugin usage data (Freemius).** [Terms](https://freemius.com/terms/) · [Privacy](https://freemius.com/privacy/). Opt-in only, and skippable on activation. If you allow it, sends your site URL, WordPress and PHP versions, your name and email, active plugins and theme, and activation events. Never your post content, API keys or visitor data. Opt out any time from the Plugins page.
+**Plugin usage data (Freemius).** api.freemius.com. [Terms](https://freemius.com/terms/) · [Privacy](https://freemius.com/privacy/). Opt-in only, and skippable on activation. If you allow it, sends your site URL, WordPress and PHP versions, your name and email, active plugins and theme, and activation events. Never your post content, API keys or visitor data. Opt out any time from the Plugins page.
+
+**Checkout (Freemius).** checkout.freemius.com. [Terms](https://freemius.com/terms/) · [Privacy](https://freemius.com/privacy/). Loaded only on RankReady's own admin screens, so the Pro plans can open in an overlay instead of sending you to another site. It runs for logged-in administrators only, never on your public pages, and it sends nothing until you start a purchase yourself. If you never open it, no data is exchanged.
 
 **AI providers.** Pick one. When you click Generate, that post's title and text go to your chosen provider and the reply is saved on your site. Nothing else is shared.
 
-* **OpenAI.** [Terms](https://openai.com/policies/terms-of-use) · [Privacy](https://openai.com/policies/privacy-policy)
-* **Anthropic Claude.** [Terms](https://www.anthropic.com/legal/consumer-terms) · [Privacy](https://www.anthropic.com/legal/privacy)
-* **Google Gemini.** [Terms](https://ai.google.dev/terms) · [Privacy](https://policies.google.com/privacy)
-* **DeepSeek.** [Terms](https://cdn.deepseek.com/policies/en-US/deepseek-terms-of-use.html) · [Privacy](https://cdn.deepseek.com/policies/en-US/deepseek-privacy-policy.html)
+* **OpenAI.** api.openai.com. [Terms](https://openai.com/policies/terms-of-use) · [Privacy](https://openai.com/policies/privacy-policy)
+* **Anthropic Claude.** api.anthropic.com. [Terms](https://www.anthropic.com/legal/consumer-terms) · [Privacy](https://www.anthropic.com/legal/privacy)
+* **Google Gemini.** generativelanguage.googleapis.com. [Terms](https://ai.google.dev/terms) · [Privacy](https://policies.google.com/privacy)
+* **DeepSeek.** api.deepseek.com. [Terms](https://cdn.deepseek.com/policies/en-US/deepseek-terms-of-use.html) · [Privacy](https://cdn.deepseek.com/policies/en-US/deepseek-privacy-policy.html)
 
 **Optional extras.** These only run if you set them up.
 
-* **DataForSEO.** [Terms](https://dataforseo.com/terms-of-service) · [Privacy](https://dataforseo.com/privacy-policy). Sends your focus keyword when you run the FAQ Generator. Never your article text.
-* **Cloudflare.** [Terms](https://www.cloudflare.com/terms/) · [Privacy](https://www.cloudflare.com/privacypolicy/). Only if you connect it. Sends your zone ID and API credentials so RankReady can add or remove one cache rule and clear changed pages. No post content is ever sent.
-* **HostMyBlog tips email.** [Terms](https://hostmy.blog/terms/) · [Privacy](https://hostmy.blog/privacy/). Only if you opt in from the setup wizard or the dashboard. Sends your first name and email address once for that admin account. Leave it unticked / don't submit and nothing is sent.
+* **DataForSEO.** api.dataforseo.com. [Terms](https://dataforseo.com/terms-of-service) · [Privacy](https://dataforseo.com/privacy-policy). Sends your focus keyword when you run the FAQ Generator. Never your article text.
+* **Cloudflare.** api.cloudflare.com. [Terms](https://www.cloudflare.com/terms/) · [Privacy](https://www.cloudflare.com/privacypolicy/). Only if you connect it. Sends your zone ID and API credentials so RankReady can add or remove one cache rule and clear changed pages. No post content is ever sent.
+* **HostMyBlog tips email.** [Terms](https://hostmy.blog/terms/) · [Privacy](https://hostmy.blog/privacy/). Only if you opt in from the setup wizard or the dashboard. Sends your first name and email address, once, to https://webhook.hostmy.blog/subscribe.php for that admin account. Leave it unticked / don't submit and nothing is sent.
 
 == Installation ==
 
@@ -224,17 +232,38 @@ Your post content never leaves your site unless you ask for it. Your API keys st
 
 == Frequently Asked Questions ==
 
+= Is there a paid version, and what is free? =
+
+Yes. Everything described on this page is in the free plugin, and **manual generation is unlimited**. There is no monthly cap, no usage counter and no watermark. Summaries and FAQs are generated with your own API key, so RankReady never resells credits and has nothing to meter. That is a design decision, not a trial period.
+
+RankReady Pro is a one-time purchase, sold through Freemius, for people who need the work done in bulk or unattended. What is paid:
+
+* Bulk generation across an entire archive as one resumable job.
+* Generating on publish, so new posts are covered without you clicking anything.
+* Custom post types, such as WooCommerce products or a docs post type. Posts and Pages are free.
+* HowTo and ItemList schema, and the headless REST and WPGraphQL API.
+
+If you only ever generate a post at a time, the free plugin is the whole product and there is nothing you are missing.
+
+Pro is a separate plugin that installs **alongside** this one, not a replacement for it. This free plugin stays installed, stays active and keeps working exactly as it does now; nothing here is removed, locked or downgraded when Pro is absent, and no paid code ships inside this free download.
+
+= What does Pro cost, and where do I get it? =
+
+One-time payment, no subscription: **$49 for a single site** or **$99 for up to 100 sites**, both covering lifetime updates, with a 14-day money-back guarantee. Details and checkout: https://hostmy.blog/plugins/rankready/
+
+You do not need it to use anything on this page.
+
 = Will RankReady conflict with Rank Math, Yoast, or AIOSEO? =
 
 No. RankReady is designed to work **alongside** Rank Math, Yoast, All in One SEO, SEOPress, SEO Framework, and Slim SEO. Before injecting any schema, it checks if another schema-generating plugin is active. If yes, it skips its own output or merges fields into the existing schema graph via documented filters. Verifiable with Google's Rich Results Test, no duplicate Article, Person, or FAQPage nodes.
 
 = How does RankReady actually work? =
 
-Three layers: (1) it serves **discovery files** (`/llms.txt`, `/llms-full.txt`, `/post-slug.md`) that AI crawlers read to find your content faster; (2) it adds **AI-specific schema** (FAQPage, Speakable, Article JSON-LD) that AI engines cite; (3) it gives you **controls** over which AI bots see your content, plus Insights analytics on which ones already do. It also registers read-only MCP abilities through the WordPress Abilities API so AI agents can discover your content.
+Three layers: (1) it serves **discovery files** (`/llms.txt`, `/llms-full.txt`, `/post-slug.md`) that AI crawlers read to find your content faster; (2) it adds **AI-specific schema** (FAQPage, Speakable, Article JSON-LD) that AI engines can read; (3) it gives you **controls** over which AI bots see your content, plus Insights analytics on which ones already do. It also registers read-only MCP abilities through the WordPress Abilities API so AI agents can discover your content.
 
 = What is Answer Engine Optimization (AEO)? =
 
-Answer Engine Optimization (AEO) means optimizing your content so AI answer engines, ChatGPT, Perplexity, Claude, Gemini and Google AI Overviews, can read, understand and cite it. RankReady handles the technical AEO signals for WordPress: llms.txt, Markdown endpoints, FAQ and Article schema, and AI crawler controls, alongside the SEO plugin you already use.
+Answer Engine Optimization (AEO) means optimizing your content so AI answer engines, ChatGPT, Perplexity, Claude, Gemini and Google AI Overviews, can read and parse it. RankReady handles the technical AEO signals for WordPress: llms.txt, Markdown endpoints, FAQ and Article schema, and AI crawler controls, alongside the SEO plugin you already use.
 
 = What is Generative Engine Optimization (GEO)? =
 
@@ -256,10 +285,15 @@ Only if you want to use the **AI Summary** or **FAQ** generators. The llms.txt g
 
 All four work great. Practical guidance:
 
-* **OpenAI** (`gpt-4o-mini`, `gpt-5`), Best all-rounder, widest model choice, predictable output. Recommended default. Pay-as-you-go at platform.openai.com.
-* **Anthropic Claude** (`claude-sonnet-4`, `claude-opus-4`), Strongest at long-form summaries and faithful citations. Recommended for long posts (3,000+ words). Console at console.anthropic.com.
-* **Google Gemini** (`gemini-2.5-flash`, `gemini-2.5-pro`), Generous free tier (up to 1,500 requests/day on Flash). Recommended to test before paying. Get a key at aistudio.google.com.
-* **DeepSeek** (`deepseek-v4-flash`, `deepseek-v4-pro`), Cheapest paid option, open-source models. Recommended for high-volume sites. Sign up at platform.deepseek.com.
+* **OpenAI** (nano, mini, standard and pro tiers), Best all-rounder, widest model choice, predictable output. Recommended default. Pay-as-you-go at platform.openai.com.
+* **Anthropic Claude** (Haiku, Sonnet and Opus tiers), Strongest at following content rules and staying faithful to the source post. Recommended for long posts (3,000+ words). Console at console.anthropic.com.
+* **Google Gemini** (Flash Lite, Flash and Pro tiers), Has a free tier, so you can try summaries and FAQs before paying for anything. Get a key at aistudio.google.com.
+* **DeepSeek** (Flash and Pro tiers), Cheapest paid option, open-source models. Recommended for high-volume sites. Sign up at platform.deepseek.com.
+
+RankReady never pins you to a model. The Model dropdown is populated live from whichever
+provider you picked as soon as its key is saved, so a model released next month appears
+without waiting for a plugin update, and a model the provider retires is routed to its
+current same-tier equivalent rather than failing.
 
 You can switch providers at any time without losing existing summaries or FAQs.
 
@@ -328,12 +362,29 @@ Yes. RankReady is open source under GPL-2.0-or-later. The complete source ships 
 
 == Changelog ==
 
+= 1.4.0, 2026-09-30 =
+
+* New: Every setting links to the help article that explains it.
+* New: You can see what each Pro setting does before you buy. Writing summaries and FAQs one post at a time stays free, with no limit.
+* New: A short setup message now tells you exactly what is missing, such as a brand name or an AI key.
+* Improved: Admin notices are shorter, close with one click, and stay off the Upgrade screen.
+* Improved: You can leave the setup wizard from any step, and the last step points to what still needs doing.
+* Improved: Screens are easier to read on a phone, with clearer links, checkboxes and keyboard focus.
+* Improved: AI model lists are checked against each provider, and old model names are moved to the current one for you.
+* Improved: "Enable AI Summary" and "Enable AI FAQ" are now called "Show on frontend", which is what they always did. Your saved settings are untouched.
+* Fixed: Smoother updates from older versions.
+* Fixed: Turning off llms.txt, Markdown or reviewer details now switches them off completely.
+* Fixed: Making a summary or FAQ from several places at once no longer creates duplicates.
+* Fixed: Deleting the plugin on a multisite network now cleans every site that opted in.
+* Fixed: Wording across the plugin now says only what RankReady actually does.
+* Fixed: Many small display fixes in the dashboard, the post editor and the setup wizard.
+
 = 1.3.1, 2026-09-01 =
 
 * New: Cloudflare has its own Settings subtab (API Keys → Cloudflare → Advanced). The connect form is always available, with a warning when Cloudflare is not detected, so staging and DNS-only sites can still connect.
 * Fixed: OpenAI "Verify Key" no longer fails on GPT-5.x with "max_tokens or model output limit was reached" — the probe now allows enough completion tokens for reasoning models.
 * Improved: LLM model dropdowns load live model lists from each provider when an API key is saved; a small offline fallback is used only when no key is set or the fetch fails.
-* Improved: Model dropdown labels use exact provider model IDs (e.g. `claude-sonnet-4-6`) so each option is unambiguous; tier guidance remains in the field description below.
+* Improved: Model dropdown labels use exact provider model IDs (e.g. `claude-sonnet-5`) so each option is unambiguous; tier guidance remains in the field description below.
 * New: "Refresh list" button next to each model dropdown fetches the latest models on demand without waiting for the cache to expire. A successful "Verify Key" also refreshes that provider's list.
 * Improved: "Verify Key" sits inline beside each API key field (all four LLM providers and DataForSEO).
 * Fixed: OpenAI model selection no longer reverts after save — removed the hardcoded GPT-4o allowlist that rejected newer model IDs.
@@ -377,7 +428,7 @@ Yes. RankReady is open source under GPL-2.0-or-later. The complete source ships 
 
 = 1.2.0, 2026-07-09 =
 
-* Added: AI SEO tips by email, opt in from the setup wizard or the dashboard for practical AI SEO tips and product updates. Optional and one-time; nothing is sent unless you tick the box, and it never appears again once you subscribe. See "Privacy & Third-Party Services".
+* Added: AI SEO tips by email, opt in from the setup wizard or the dashboard for practical AI SEO tips and product updates. Optional and one-time; nothing is sent unless you tick the box, and it never appears again once you subscribe. See "External services".
 * Fixed: AI provider keys (OpenAI, Claude, Gemini, DeepSeek) now save exactly what you enter, every time.
 * Fixed: the "Saved" confirmation now reflects the real result, if a save cannot complete, you are prompted to reload instead of seeing a false success.
 * Fixed: Markdown (.md) versions of your pages stay out of Google's index even when served from a page cache (WP Rocket, LiteSpeed, W3 Total Cache, WP Super Cache). CDN and browser caching are unaffected.
@@ -428,6 +479,9 @@ Yes. RankReady is open source under GPL-2.0-or-later. The complete source ships 
 First public release. The AI-search layer for WordPress: unlimited manual AI Summaries and FAQ schema, llms.txt + llms-full.txt, Markdown endpoints, 29 AI-crawler controls with robots.txt sync, E-E-A-T + Article/Speakable schema (coexists with Rank Math / Yoast / AIOSEO without duplicate output), content freshness, Insights, broad cache-plugin compatibility, multilingual llms.txt, and a Diagnostics suite.
 
 == Upgrade Notice ==
+
+= 1.4.0 =
+Contextual help on every option, clearer admin notices, and two renamed settings: Enable AI Summary and Enable AI FAQ are both now Show on frontend, which is all they ever controlled. Fixes the Author Box icons and right-to-left arrows. No option names changed, no data lost.
 
 = 1.3.1 =
 Live model lists with Refresh list and inline Verify Key. Metabox delete + regenerate cooldown. llms.txt .md post links are opt-in on upgrade (Settings → llms.txt). Cloudflare tab always available. No data loss; safe to update.

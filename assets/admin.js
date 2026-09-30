@@ -41,6 +41,15 @@
 		} ).then( function ( r ) { return r.json(); } );
 	}
 
+	/**
+	 * A REST error body ({code, message, data:{status}}) resolves through
+	 * r.json() like a success. Handlers that would otherwise read it as an
+	 * empty result, or as "done", check this first.
+	 */
+	function isApiError( data ) {
+		return !! ( data && typeof data.code === 'string' && data.data && data.data.status >= 400 );
+	}
+
 	/* ═══════════════════════════════════════════════════════════════════════
 	 * TOGGLE FIELDS (data-toggle-target)
 	 * ═══════════════════════════════════════════════════════════════════════ */
@@ -118,13 +127,13 @@
 
 					if ( data.code ) {
 						bacPrevResult.textContent  = t( 'errorPrefix', 'Error:' ) + ' ' + ( data.message || t( 'unknownError', 'Unknown error' ) );
-						bacPrevResult.className    = 'rnrd-notice rnrd-notice--error';
+						bacPrevResult.className    = 'rnrd-notice rnrd-notice--inline rnrd-notice--error';
 						bacPrevResult.style.display = 'block';
 						return;
 					}
 
 					bacPrevResult.textContent   = data.message;
-					bacPrevResult.className     = data.count > 0 ? 'rnrd-notice rnrd-notice--info' : 'rnrd-notice rnrd-notice--warn';
+					bacPrevResult.className     = data.count > 0 ? 'rnrd-notice rnrd-notice--inline rnrd-notice--info' : 'rnrd-notice rnrd-notice--inline rnrd-notice--warn';
 					bacPrevResult.style.display = 'block';
 					bacExecute.disabled         = data.count < 1;
 				} )
@@ -132,7 +141,7 @@
 					bacPreview.disabled    = false;
 					bacPreview.textContent = t( 'previewCount', 'Preview Count' );
 					bacPrevResult.textContent  = t( 'previewRequestFailed', 'Preview request failed.' );
-					bacPrevResult.className    = 'rnrd-notice rnrd-notice--error';
+					bacPrevResult.className    = 'rnrd-notice rnrd-notice--inline rnrd-notice--error';
 					bacPrevResult.style.display = 'block';
 				} );
 		} );
@@ -168,7 +177,7 @@
 					bacProcessNext();
 				} )
 				.catch( function () {
-					bacSetFinished( t( 'failedToStart', 'Failed to start.' ) );
+					bacSetFinished( t( 'failedToStart', 'Could not reach your site to start. Check your connection and try again.' ) );
 				} );
 		} );
 
@@ -186,10 +195,13 @@
 		bacStatus.textContent  = tr( 'postsUpdatedProgress', '%1$d / %2$d posts updated (%3$d%%)', data.done, data.total, pct );
 	}
 
+	var bacFailStreak = 0;
+
 	function bacProcessNext() {
 		if ( ! bacRunning ) return;
 		rnrdFetch( '/author/process', 'POST' )
 			.then( function ( data ) {
+				bacFailStreak = 0;
 				if ( data.code ) {
 					bacSetFinished( t( 'errorPrefix', 'Error:' ) + ' ' + ( data.message || t( 'unknownError', 'Unknown error' ) ) );
 					return;
@@ -199,13 +211,18 @@
 					setTimeout( bacProcessNext, 200 );
 				} else {
 					bacDone.textContent  = data.done === 1
-						? t( 'postsReassignedOne', 'Done! 1 post reassigned.' )
-						: tr( 'postsReassignedMany', 'Done! %d posts reassigned.', data.done );
+						? t( 'postsReassignedOne', 'Finished. 1 post reassigned.' )
+						: tr( 'postsReassignedMany', 'Finished. %d posts reassigned.', data.done );
 					bacDone.style.display = 'block';
 					bacSetFinished();
 				}
 			} )
 			.catch( function () {
+				bacFailStreak++;
+				if ( bacFailStreak >= 6 ) {
+					bacSetFinished( t( 'bulkGaveUp', 'Could not reach your site after several tries, so the run was paused. Reload the page and try again.' ) );
+					return;
+				}
 				if ( bacRunning ) {
 					bacStatus.textContent = t( 'retryIn3s', 'Request failed — retrying in 3s…' );
 					setTimeout( bacProcessNext, 3000 );
@@ -222,7 +239,7 @@
 
 		if ( errorMsg ) {
 			bacPrevResult.textContent  = errorMsg;
-			bacPrevResult.className    = 'rnrd-notice rnrd-notice--error';
+			bacPrevResult.className    = 'rnrd-notice rnrd-notice--inline rnrd-notice--error';
 			bacPrevResult.style.display = 'block';
 		}
 	}
@@ -248,21 +265,25 @@
 			}
 
 			rnrdFetch( '/llms/flush-cache', 'POST' )
-				.then( function () {
+				.then( function ( data ) {
+					if ( isApiError( data ) ) { throw data; }
 					flushBtn.disabled    = false;
 					flushBtn.textContent = flushLabelDefault;
 					if ( flushStatus ) {
 						flushStatus.classList.add( 'is-success' );
-						flushStatus.textContent = '✓ ' + flushSuccessMsg;
+						setStatus( flushStatus, 'ok', flushSuccessMsg );
 						setTimeout( function () {
-							flushStatus.textContent = '';
+							setStatus( flushStatus, '', '' );
 							flushStatus.classList.remove( 'is-success' );
 						}, 3000 );
 					}
 				} )
-				.catch( function () {
+				.catch( function ( err ) {
 					flushBtn.disabled    = false;
 					flushBtn.textContent = flushLabelDefault;
+					if ( flushStatus && err && err.message ) {
+						setStatus( flushStatus, 'fail', String( err.message ) );
+					}
 				} );
 		} );
 	}
@@ -274,191 +295,66 @@
 	 * ═══════════════════════════════════════════════════════════════════════ */
 
 	/* ═══════════════════════════════════════════════════════════════════════
-	 * FAQ POSTS LIST
+	 * REMOVED IN 1.4.0 — three handlers with no DOM to bind to
+	 * ─────────────────────────────────────────────────────────────────────
+	 * "FAQ POSTS LIST", "FAQ INLINE EDIT MODAL" and "START OVER — BULK
+	 * REGENERATE" bound 15 element ids that are rendered by no PHP file in
+	 * either plugin: the cards moved to the Pro add-on, which ships its own
+	 * assets/pro-admin.js, and these copies were left behind. ~200 lines that
+	 * ran `getElementById` on every admin page load and then did nothing.
+	 *
+	 * Two of them also carried live XSS shapes that were only harmless because
+	 * nothing reached them: a `"` in a post title broke out of an onclick
+	 * attribute, and one path assigned an unescaped title to innerHTML.
+	 *
+	 * The REST routes they called are NOT removed — /faq/posts, /faq/get/{id},
+	 * /faq/save/{id} and /startover-bulk/* stay registered in
+	 * class-rnrd-rest.php. A shipped route is a permanent contract even when
+	 * this plugin's own UI no longer calls it.
 	 * ═══════════════════════════════════════════════════════════════════════ */
 
-	var faqLoadBtn   = document.getElementById( 'rnrd-faq-load-posts' );
-	var faqPostsList = document.getElementById( 'rnrd-faq-posts-list' );
-	var faqPostsTbody = document.getElementById( 'rnrd-faq-posts-tbody' );
-	var faqPostsCount = document.getElementById( 'rnrd-faq-posts-count' );
-
-	if ( faqLoadBtn ) {
-		faqLoadBtn.addEventListener( 'click', function () {
-			faqLoadBtn.disabled    = true;
-			faqLoadBtn.textContent = t( 'loading', 'Loading…' );
-
-			rnrdFetch( '/faq/posts', 'GET' )
-				.then( function ( data ) {
-					faqLoadBtn.disabled    = false;
-					faqLoadBtn.textContent = t( 'refreshListBtn', 'Refresh List' );
-
-					if ( ! data.posts || ! data.posts.length ) {
-						faqPostsCount.textContent   = t( 'noFaqPosts', 'No posts with FAQ found.' );
-						faqPostsCount.style.display = 'inline';
-						faqPostsList.style.display  = 'none';
-						return;
-					}
-
-					faqPostsCount.textContent   = data.total === 1
-						? t( 'faqPostsOne', '1 post with FAQ' )
-						: tr( 'faqPostsMany', '%d posts with FAQ', data.total );
-					faqPostsCount.style.display = 'inline';
-
-					var html = '';
-					data.posts.forEach( function ( post ) {
-						html += '<tr>';
-						html += '<td><strong>' + escHtml( post.title ) + '</strong></td>';
-						html += '<td><code style="font-size:12px;">' + escHtml( post.type ) + '</code></td>';
-						html += '<td>' + escHtml( post.generated || '—' ) + '</td>';
-						html += '<td>';
-						html += '<a href="#" onclick="rrEditFaq(' + post.id + ',\'' + escHtml( post.title ).replace( /'/g, '\\&#39;' ) + '\');return false;" style="margin-right:8px;">' + escHtml( t( 'editFaq', 'Edit FAQ' ) ) + '</a>';
-						if ( post.edit_url ) {
-							html += '<a href="' + post.edit_url + '" target="_blank" style="margin-right:8px;">' + escHtml( t( 'editPost', 'Edit Post' ) ) + '</a>';
-						}
-						if ( post.view_url ) {
-							html += '<a href="' + post.view_url + '" target="_blank">' + escHtml( t( 'view', 'View' ) ) + '</a>';
-						}
-						html += '</td>';
-						html += '</tr>';
-					} );
-
-					faqPostsTbody.innerHTML    = html;
-					faqPostsList.style.display = 'block';
-				} )
-				.catch( function () {
-					faqLoadBtn.disabled    = false;
-					faqLoadBtn.textContent = t( 'loadFaqPosts', 'Load FAQ Posts' );
-					faqPostsCount.textContent   = t( 'failedToLoad', 'Failed to load.' );
-					faqPostsCount.style.display = 'inline';
-				} );
-		} );
-	}
-
+	/**
+	 * Escape for HTML *and* for a double-quoted attribute value.
+	 *
+	 * The textContent/innerHTML round-trip alone escapes `&`, `<` and `>` but
+	 * leaves `"` untouched, and several call sites interpolate into
+	 * `aria-label="..."`, where one quote ends the attribute. Nothing reaching
+	 * those particular call sites is user-controlled today, which is precisely
+	 * why it would have gone unnoticed until something was.
+	 */
 	function escHtml( str ) {
-		var div       = document.createElement( 'div' );
+		var div         = document.createElement( 'div' );
 		div.textContent = str || '';
-		return div.innerHTML;
+		return div.innerHTML.replace( /"/g, '&quot;' ).replace( /'/g, '&#39;' );
 	}
 
-	/* ═══════════════════════════════════════════════════════════════════════
-	 * FAQ INLINE EDIT MODAL
-	 * ═══════════════════════════════════════════════════════════════════════ */
-
-	var faqModal    = null;
-	var faqEditId   = 0;
-	var faqEditData = [];
-
-	function openFaqEditor( postId, postTitle ) {
-		faqEditId = postId;
-
-		if ( ! faqModal ) {
-			faqModal = document.createElement( 'div' );
-			faqModal.id = 'rnrd-faq-modal';
-			faqModal.style.cssText = 'position:fixed;inset:0;z-index:100000;background:rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;';
-			document.body.appendChild( faqModal );
+	/**
+	 * Write an inline status line with a CSS-drawn mark instead of a `✓`/`✗`
+	 * prefix character.
+	 *
+	 * `kind` is 'ok', 'fail' or '' for no mark. Passing an empty `msg` clears
+	 * the element and strips the classes, which is what the timeout handlers
+	 * want.
+	 *
+	 * The message goes in via createTextNode, not innerHTML, because several
+	 * callers pass a server `data.message` straight through. Prefixing a glyph
+	 * to textContent used to make that safe by accident; building markup here
+	 * would have quietly turned it into an injection point.
+	 */
+	function setStatus( el, kind, msg ) {
+		if ( ! el ) { return; }
+		el.textContent = '';
+		el.classList.remove( 'rnrd-inline-status', 'rnrd-inline-status--ok', 'rnrd-inline-status--fail' );
+		if ( ! msg ) { return; }
+		if ( kind ) {
+			el.classList.add( 'rnrd-inline-status', 'rnrd-inline-status--' + kind );
+			var mark = document.createElement( 'span' );
+			mark.className = 'rnrd-mark rnrd-mark--' + kind;
+			mark.setAttribute( 'aria-hidden', 'true' );
+			el.appendChild( mark );
 		}
-
-		faqModal.innerHTML = '<div style="background:#fff;border-radius:8px;max-width:700px;width:95%;max-height:85vh;display:flex;flex-direction:column;box-shadow:0 8px 30px rgba(0,0,0,0.2);">'
-			+ '<div style="padding:16px 20px;border-bottom:1px solid #ddd;display:flex;justify-content:space-between;align-items:center;">'
-			+ '<h3 style="margin:0;font-size:15px;">' + escHtml( tr( 'editFaqTitle', 'Edit FAQ — %s', postTitle ) ) + '</h3>'
-			+ '<button id="rnrd-faq-modal-close" type="button" style="background:none;border:none;font-size:20px;cursor:pointer;color:#666;">&times;</button>'
-			+ '</div>'
-			+ '<div id="rnrd-faq-modal-body" style="padding:20px;overflow-y:auto;flex:1;">' + escHtml( t( 'loading', 'Loading…' ) ) + '</div>'
-			+ '<div style="padding:12px 20px;border-top:1px solid #ddd;display:flex;gap:8px;justify-content:flex-end;">'
-			+ '<button id="rnrd-faq-modal-save" class="button button-primary" disabled>' + escHtml( t( 'saveChanges', 'Save Changes' ) ) + '</button>'
-			+ '<span id="rnrd-faq-modal-status" style="font-size:13px;line-height:30px;margin-right:auto;"></span>'
-			+ '</div>'
-			+ '</div>';
-		faqModal.style.display = 'flex';
-
-		document.getElementById( 'rnrd-faq-modal-close' ).addEventListener( 'click', closeFaqEditor );
-		faqModal.addEventListener( 'click', function ( e ) {
-			if ( e.target === faqModal ) closeFaqEditor();
-		} );
-
-		rnrdFetch( '/faq/get/' + postId, 'GET' ).then( function ( data ) {
-			if ( ! data || ! data.faq || ! data.faq.length ) {
-				document.getElementById( 'rnrd-faq-modal-body' ).innerHTML = '<p style="color:#999;">' + escHtml( t( 'noFaqData', 'No FAQ data found.' ) ) + '</p>';
-				return;
-			}
-			faqEditData = data.faq;
-			renderFaqEditor();
-		} );
+		el.appendChild( document.createTextNode( msg ) );
 	}
-
-	function renderFaqEditor() {
-		var body = document.getElementById( 'rnrd-faq-modal-body' );
-		if ( ! body ) return;
-
-		var html = '';
-		faqEditData.forEach( function ( item, i ) {
-			html += '<div class="rnrd-faq-edit-item" style="margin-bottom:16px;padding:12px;border:1px solid #e0e0e0;border-radius:4px;">';
-			html += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">';
-			html += '<strong style="font-size:12px;color:#666;">Q' + ( i + 1 ) + '</strong>';
-			html += '<button type="button" class="rnrd-faq-delete-btn" data-index="' + i + '" style="background:none;border:none;color:#B42318;cursor:pointer;font-size:13px;">' + escHtml( t( 'remove', 'Remove' ) ) + '</button>';
-			html += '</div>';
-			html += '<input type="text" class="rnrd-faq-q-input" data-index="' + i + '" value="' + escHtml( item.question ) + '" style="width:100%;padding:6px 8px;margin-bottom:8px;border:1px solid #ddd;border-radius:3px;font-weight:600;" />';
-			html += '<textarea class="rnrd-faq-a-input" data-index="' + i + '" rows="3" style="width:100%;padding:6px 8px;border:1px solid #ddd;border-radius:3px;resize:vertical;">' + escHtml( item.answer ) + '</textarea>';
-			html += '</div>';
-		} );
-		body.innerHTML = html;
-
-		document.getElementById( 'rnrd-faq-modal-save' ).disabled = false;
-
-		body.querySelectorAll( '.rnrd-faq-q-input' ).forEach( function ( el ) {
-			el.addEventListener( 'input', function () {
-				faqEditData[ parseInt( el.dataset.index ) ].question = el.value;
-			} );
-		} );
-		body.querySelectorAll( '.rnrd-faq-a-input' ).forEach( function ( el ) {
-			el.addEventListener( 'input', function () {
-				faqEditData[ parseInt( el.dataset.index ) ].answer = el.value;
-			} );
-		} );
-		body.querySelectorAll( '.rnrd-faq-delete-btn' ).forEach( function ( btn ) {
-			btn.addEventListener( 'click', function () {
-				faqEditData.splice( parseInt( btn.dataset.index ), 1 );
-				renderFaqEditor();
-			} );
-		} );
-
-		document.getElementById( 'rnrd-faq-modal-save' ).onclick = saveFaqEdits;
-	}
-
-	function saveFaqEdits() {
-		var saveBtn = document.getElementById( 'rnrd-faq-modal-save' );
-		var status  = document.getElementById( 'rnrd-faq-modal-status' );
-		saveBtn.disabled    = true;
-		saveBtn.textContent = t( 'saving', 'Saving…' );
-		status.textContent  = '';
-
-		rnrdFetch( '/faq/save/' + faqEditId, 'POST', { faq: faqEditData } )
-			.then( function ( data ) {
-				saveBtn.disabled    = false;
-				saveBtn.textContent = t( 'saveChanges', 'Save Changes' );
-				if ( data && data.success ) {
-					status.textContent = t( 'savedExclaim', 'Saved!' );
-					status.style.color = '#0F9C70';
-					setTimeout( closeFaqEditor, 800 );
-				} else {
-					status.textContent = t( 'saveFailed', 'Save failed' );
-					status.style.color = '#B42318';
-				}
-			} )
-			.catch( function () {
-				saveBtn.disabled    = false;
-				saveBtn.textContent = t( 'saveChanges', 'Save Changes' );
-				status.textContent  = t( 'requestFailed', 'Request failed.' );
-				status.style.color  = '#B42318';
-			} );
-	}
-
-	function closeFaqEditor() {
-		if ( faqModal ) faqModal.style.display = 'none';
-	}
-
-	// Expose for inline onclick
-	window.rrEditFaq = openFaqEditor;
 
 	/* ═══════════════════════════════════════════════════════════════════════
 	 * PER-POST TOKEN USAGE
@@ -537,6 +433,14 @@
 				errorsLoad.disabled    = false;
 				errorsLoad.textContent = t( 'refreshLog', 'Refresh Log' );
 
+				if ( isApiError( data ) ) {
+					errorsStatus.textContent   = String( data.message || '' );
+					errorsStatus.style.color   = '#B42318';
+					errorsStatus.style.display = 'inline';
+					errorsList.style.display   = 'none';
+					return;
+				}
+
 				if ( ! data.errors || ! data.errors.length ) {
 					errorsStatus.textContent   = t( 'noErrorsLogged', 'No errors logged.' );
 					errorsStatus.style.color   = '#0F9C70';
@@ -569,7 +473,13 @@
 		} );
 
 		errorsClear.addEventListener( 'click', function () {
-			rnrdFetch( '/errors/clear', 'POST' ).then( function () {
+			rnrdFetch( '/errors/clear', 'POST' ).then( function ( data ) {
+				if ( isApiError( data ) ) {
+					errorsStatus.textContent   = String( data.message || '' );
+					errorsStatus.style.color   = '#B42318';
+					errorsStatus.style.display = 'inline';
+					return;
+				}
 				errorsTbody.innerHTML  = '';
 				errorsList.style.display   = 'none';
 				errorsStatus.textContent   = t( 'logCleared', 'Log cleared.' );
@@ -610,24 +520,18 @@
 					dfsVerifyBtn.textContent = t( 'verifyDfs', 'Verify DataForSEO' );
 
 					if ( data.valid ) {
-						dfsVerifyStatus.textContent   = '\u2713 ' + data.message;
+						setStatus( dfsVerifyStatus, 'ok', data.message );
 						dfsVerifyStatus.style.color   = '#0F9C70';
 					} else {
-						dfsVerifyStatus.textContent   = '\u2717 ' + data.message;
+						setStatus( dfsVerifyStatus, 'fail', String( data.message || '' ) + ( data.debug ? ' [' + data.debug + ']' : '' ) );
 						dfsVerifyStatus.style.color   = '#B42318';
-						if ( data.login ) {
-							dfsVerifyStatus.textContent += ' (login: ' + data.login + ')';
-						}
-						if ( data.debug ) {
-							dfsVerifyStatus.textContent += ' [' + data.debug + ']';
-						}
 					}
 					dfsVerifyStatus.style.display = 'inline';
 				} )
 				.catch( function () {
 					dfsVerifyBtn.disabled    = false;
 					dfsVerifyBtn.textContent = t( 'verifyDfs', 'Verify DataForSEO' );
-					dfsVerifyStatus.textContent   = '\u2717 ' + t( 'requestFailed', 'Request failed.' );
+					setStatus( dfsVerifyStatus, 'fail', t( 'requestFailed', 'Request failed.' ) );
 					dfsVerifyStatus.style.color   = '#B42318';
 					dfsVerifyStatus.style.display = 'inline';
 				} );
@@ -658,142 +562,6 @@
 					}
 				} );
 			} );
-		} );
-	}
-
-	/* ═══════════════════════════════════════════════════════════════════════
-	 * START OVER — BULK REGENERATE (clear + regenerate all)
-	 * ═══════════════════════════════════════════════════════════════════════ */
-
-	var soStart   = document.getElementById( 'rnrd-startover-btn' );
-	var soResume  = document.getElementById( 'rnrd-startover-resume' );
-	var soStop    = document.getElementById( 'rnrd-startover-stop' );
-	var soProg    = document.getElementById( 'rnrd-startover-progress' );
-	var soBar     = document.getElementById( 'rnrd-startover-bar' );
-	var soStat    = document.getElementById( 'rnrd-startover-status' );
-	var soRunning = false;
-
-	if ( soStart ) {
-		function soBegin( isResume ) {
-			var payload = isResume ? { resume: true } : {};
-
-			if ( ! isResume ) {
-				var types = [];
-				document.querySelectorAll( '.rnrd-startover-type:checked' ).forEach( function ( cb ) {
-					types.push( cb.value );
-				} );
-				if ( ! types.length ) {
-					alert( t( 'minOnePostType', 'Select at least one post type.' ) );
-					return;
-				}
-				payload.post_types = types;
-			}
-
-			soRunning           = true;
-			soStart.disabled    = true;
-			if ( soResume ) soResume.disabled = true;
-			soStart.textContent = t( 'running', 'Running…' );
-			soStop.style.display  = 'inline-block';
-			soProg.style.display  = 'block';
-			if ( ! isResume ) {
-				soBar.style.width = '0%';
-			}
-			soStat.textContent    = isResume ? t( 'resuming', 'Resuming…' ) : t( 'starting', 'Starting…' );
-			soStat.style.display  = 'block';
-			soStat.style.color    = '';
-
-			rnrdFetch( '/startover-bulk/start', 'POST', payload ).then( function ( data ) {
-				if ( data.code ) {
-					soStat.textContent = t( 'errorPrefix', 'Error:' ) + ' ' + ( data.message || t( 'unknownError', 'Unknown error' ) );
-					soFinish();
-					return;
-				}
-				soUpdate( data );
-				if ( data.total === 0 ) {
-					soStat.textContent = t( 'noPublishedPosts', 'No published posts found.' );
-					soFinish();
-				} else {
-					soNext();
-				}
-			} ).catch( function () {
-				soStat.textContent = t( 'requestFailed', 'Request failed.' );
-				soFinish();
-			} );
-		}
-
-		function soNext() {
-			if ( ! soRunning ) return;
-			rnrdFetch( '/startover-bulk/process', 'POST' ).then( function ( data ) {
-				if ( data.code ) {
-					soStat.textContent = t( 'errorPrefix', 'Error:' ) + ' ' + ( data.message || t( 'unknownError', 'Unknown error' ) );
-					soFinish();
-					return;
-				}
-				soUpdate( data );
-
-				// Append log entries.
-				if ( data.log && data.log.length ) {
-					var log = document.getElementById( 'rnrd-startover-log' );
-					if ( ! log ) {
-						log = document.createElement( 'div' );
-						log.id = 'rnrd-startover-log';
-						log.style.cssText = 'margin-top:12px;max-height:300px;overflow-y:auto;font-size:13px;border:1px solid #ddd;border-radius:4px;padding:8px;background:#fafafa;';
-						soProg.parentNode.insertBefore( log, soProg.nextSibling );
-					}
-					data.log.forEach( function ( entry ) {
-						var p = document.createElement( 'p' );
-						p.style.margin = '2px 0';
-						var color = entry.summary === 'generated' ? '#0F9C70' : '#dba617';
-						p.innerHTML = '<a href="' + entry.edit_link + '" target="_blank">' + entry.title + '</a> '
-							+ '<span style="color:' + color + '">Summary: ' + entry.summary + '</span>'
-							+ ' | <span>FAQ: ' + entry.faq + '</span>';
-						log.appendChild( p );
-						log.scrollTop = log.scrollHeight;
-					} );
-				}
-
-				if ( data.done >= data.total ) {
-					soStat.textContent = tr( 'bulkRegenDone', 'Done! %1$d/%2$d posts regenerated.', data.done, data.total );
-					soStat.style.color = '#0F9C70';
-					soFinish();
-				} else {
-					setTimeout( soNext, 500 );
-				}
-			} ).catch( function () {
-				soStat.textContent = t( 'retryIn5s', 'Request failed — retrying in 5s…' );
-				if ( soRunning ) setTimeout( soNext, 5000 );
-			} );
-		}
-
-		function soUpdate( data ) {
-			var pct = data.total > 0 ? Math.round( ( data.done / data.total ) * 100 ) : 0;
-			soBar.style.width  = pct + '%';
-			soStat.textContent = tr( 'bulkProgress', '%1$d / %2$d (%3$d%%)', data.done, data.total, pct );
-		}
-
-		function soFinish() {
-			soRunning           = false;
-			soStart.disabled    = false;
-			soStart.textContent = t( 'startOverBulk', 'Start Over — Bulk Regenerate' );
-			soStop.style.display = 'none';
-			if ( soResume ) soResume.disabled = false;
-		}
-
-		soStart.addEventListener( 'click', function () { soBegin( false ); } );
-		if ( soResume ) {
-			soResume.addEventListener( 'click', function () { soBegin( true ); } );
-		}
-
-		soStop.addEventListener( 'click', function () {
-			soRunning = false;
-			rnrdFetch( '/startover-bulk/stop', 'POST' ).then( function ( data ) {
-				var msg = tr( 'stoppedAtProgress', 'Stopped at %1$d / %2$d.', data.done, data.total );
-				if ( data.queue_remaining > 0 ) {
-					msg += ' ' + tr( 'queueRemainingResume', '%d remaining — click Resume to continue.', data.queue_remaining );
-				}
-				soStat.textContent = msg;
-			} );
-			soFinish();
 		} );
 	}
 
@@ -845,28 +613,40 @@
 				var totals = data.totals || { pass: 0, warn: 0, fail: 0, info: 0 };
 
 				// Summary chips
+				// The counts carry a WORD ("5 pass"), never a bare number next to a
+				// mark, so the mark can stay decorative and aria-hidden.
+				var totalChip = function ( kind, n, word ) {
+					if ( ! n ) { return ''; }
+					return '<span class="rnrd-diag-total rnrd-diag-total--' + kind + '">' +
+						'<span class="rnrd-mark rnrd-mark--' + kind + '" aria-hidden="true"></span>' +
+						n + ' ' + word + '</span>';
+				};
 				diagSummary.innerHTML =
-					'<span style="display:inline-block;padding:4px 12px;background:#d1ecdf;color:#0a6c39;border-radius:12px;font-weight:600;margin-right:8px;">✓ ' + totals.pass + ' pass</span>' +
-					( totals.warn ? '<span style="display:inline-block;padding:4px 12px;background:#fcf4d6;color:#7a5d00;border-radius:12px;font-weight:600;margin-right:8px;">⚠ ' + totals.warn + ' warn</span>' : '' ) +
-					( totals.fail ? '<span style="display:inline-block;padding:4px 12px;background:#f9d7d8;color:#8a1f1f;border-radius:12px;font-weight:600;margin-right:8px;">✗ ' + totals.fail + ' fail</span>' : '' ) +
-					( totals.info ? '<span style="display:inline-block;padding:4px 12px;background:#e5f1f9;color:#0b4b75;border-radius:12px;font-weight:600;margin-right:8px;">ℹ ' + totals.info + ' info</span>' : '' );
+					'<span class="rnrd-diag-total rnrd-diag-total--ok">' +
+						'<span class="rnrd-mark rnrd-mark--ok" aria-hidden="true"></span>' +
+						totals.pass + ' ' + t( 'diagPass', 'pass' ) + '</span>' +
+					totalChip( 'warn', totals.warn, t( 'diagWarn', 'warn' ) ) +
+					totalChip( 'fail', totals.fail, t( 'diagFail', 'fail' ) ) +
+					totalChip( 'info', totals.info, t( 'diagInfo', 'info' ) );
 				diagSummary.style.display = 'block';
 
 				// Results table
 				var rows = '';
 				data.checks.forEach( function ( c ) {
-					var icon, rowStyle = '';
+					// The icon is decorative; the status word is already in the row's
+					// label and detail text, so screen readers lose nothing by
+					// skipping it. Colour alone never carries the meaning here.
+					var icon, rowStyle = '', iconKind = 'info';
 					if ( c.status === 'pass' ) {
-						icon = '<span style="color:#0F9C70;font-size:18px;">✓</span>';
+						iconKind = 'ok';
 					} else if ( c.status === 'warn' ) {
-						icon = '<span style="color:#dba617;font-size:18px;">⚠</span>';
+						iconKind = 'warn';
 						rowStyle = 'background:#fffbe6;';
 					} else if ( c.status === 'fail' ) {
-						icon = '<span style="color:#B42318;font-size:18px;">✗</span>';
+						iconKind = 'fail';
 						rowStyle = 'background:#fef0f0;';
-					} else {
-						icon = '<span style="color:#646970;font-size:18px;">ℹ</span>';
 					}
+					icon = '<span class="rnrd-mark rnrd-diag-icon rnrd-mark--' + iconKind + '" aria-hidden="true"></span>';
 
 					rows += '<tr style="' + rowStyle + '">';
 					rows += '<td style="text-align:center;vertical-align:top;padding-top:10px;">' + icon + '</td>';
@@ -916,7 +696,7 @@
 				// Copy to clipboard. Mint-700 for success (DESIGN.md §1).
 				// Friendly message — no byte counts (engineery jargon).
 				function showOk() {
-					diagCopyStatus.textContent   = '✓ ' + t( 'copiedToClipboard', 'Copied to clipboard' );
+					setStatus( diagCopyStatus, 'ok', t( 'copiedToClipboard', 'Copied to clipboard' ) );
 					diagCopyStatus.style.color   = '#0F9C70'; // mint-700
 					diagCopyStatus.style.display = 'inline';
 					// Auto-dismiss after 4s — copy feedback shouldn't linger.
@@ -976,7 +756,15 @@
 
 			var days = freshDays ? freshDays.value : 90;
 
-			wp.apiFetch( { path: '/rankready/v1/freshness?days=' + days } )
+			// rnrdFetch, not wp.apiFetch. This script's only dependency is
+			// 'rnrd-i18n' (class-rnrd-admin.php), so `wp-api-fetch` is never
+			// enqueued on RankReady's own admin pages — it is registered for the
+			// block editor only. `wp.apiFetch` was therefore undefined here and
+			// threw a TypeError synchronously, before any promise existed, so
+			// even the .catch() below never ran: the button sat on "Scanning…"
+			// for ever with no error. Every other request in this file already
+			// goes through rnrdFetch, which also handles plain permalinks.
+			rnrdFetch( '/freshness?days=' + days, 'GET' )
 				.then( function ( data ) {
 					freshBtn.disabled    = false;
 					freshBtn.textContent = t( 'scanContentFreshness', 'Scan Content Freshness' );
@@ -996,7 +784,7 @@
 						'<div class="rnrd-kpi__label">' + escHtml( t( 'stalePostsLabel', 'Stale posts' ) ) + '</div>' +
 						'<div class="rnrd-kpi__period">' + escHtml( tr( 'stalePostsPeriod', 'Over %d days old', s.threshold_days ) ) + '</div>' +
 						'<div class="rnrd-kpi__value">' + s.total_stale + '</div>' +
-						'<div class="rnrd-kpi__foot">' + escHtml( t( 'stalePostsFoot', 'needs a refresh for AI citations' ) ) + '</div>' +
+						'<div class="rnrd-kpi__foot">' + escHtml( t( 'stalePostsFoot', 'stale last-modified date' ) ) + '</div>' +
 						'</div>' +
 						'<div class="rnrd-kpi">' +
 						'<div class="rnrd-kpi__label">' + escHtml( t( 'totalPublishedLabel', 'Total published' ) ) + '</div>' +
@@ -1015,18 +803,38 @@
 
 					var html = '';
 					data.stale.forEach( function ( p ) {
-						var urgIcon  = p.urgency === 'critical' ? '\u26d4' : ( p.urgency === 'high' ? '\u26a0\ufe0f' : '\u23f3' );
+						// Marks, not emoji. `\u2705` and `\u274c` in particular are
+						// COLOUR emoji, and `\u26a0\ufe0f` carries VS16 to force
+						// emoji presentation, so three of these rendered as little
+						// pictures inside an otherwise flat admin table.
+						var urgKind  = p.urgency === 'critical' ? 'fail' : ( p.urgency === 'high' ? 'warn' : 'off' );
+						var urgLabel = p.urgency === 'critical'
+							? t( 'urgencyCritical', 'Critical' )
+							: ( p.urgency === 'high' ? t( 'urgencyHigh', 'High' ) : t( 'urgencyModerate', 'Moderate' ) );
 						var urgColor = p.urgency === 'critical' ? '#B42318' : ( p.urgency === 'high' ? '#dba617' : '#646970' );
 						var modDate  = p.modified.substring( 0, 10 );
 
+						// A bare mark in a cell has no text beside it, so the cell
+						// itself carries the label. aria-label rather than a
+						// .screen-reader-text span on purpose: that class is
+						// absolutely positioned and widens any overflow-x wrapper
+						// that is not position:relative.
+						var cellMark = function ( kind, label ) {
+							return '<td style="text-align:center;" aria-label="' + escHtml( label ) + '">' +
+								'<span class="rnrd-mark rnrd-mark--' + kind + '" aria-hidden="true"></span></td>';
+						};
+
 						html += '<tr>';
-						html += '<td style="text-align:center;color:' + urgColor + ';font-size:16px;">' + urgIcon + '</td>';
+						html += '<td style="text-align:center;color:' + urgColor + ';" aria-label="' + escHtml( urgLabel ) + '">' +
+							'<span class="rnrd-mark rnrd-mark--' + urgKind + '" aria-hidden="true"></span></td>';
 						html += '<td><strong>' + escHtml( p.title ) + '</strong></td>';
 						html += '<td>' + escHtml( p.type ) + '</td>';
 						html += '<td>' + modDate + '</td>';
 						html += '<td style="color:' + urgColor + ';font-weight:600;">' + p.days_ago + 'd</td>';
-						html += '<td>' + ( p.has_summary ? '\u2705' : '\u274c' ) + '</td>';
-						html += '<td>' + ( p.has_faq ? '\u2705' : '\u274c' ) + '</td>';
+						html += cellMark( p.has_summary ? 'ok' : 'fail',
+							t( 'colSummary', 'Summary' ) + ': ' + ( p.has_summary ? t( 'yes', 'Yes' ) : t( 'no', 'No' ) ) );
+						html += cellMark( p.has_faq ? 'ok' : 'fail',
+							t( 'colFaq', 'FAQ' ) + ': ' + ( p.has_faq ? t( 'yes', 'Yes' ) : t( 'no', 'No' ) ) );
 						html += '<td><a href="' + escHtml( p.edit_url ) + '" target="_blank" class="button button-small">' + escHtml( t( 'edit', 'Edit' ) ) + '</a></td>';
 						html += '</tr>';
 					} );
@@ -1133,12 +941,12 @@
 				if ( statusEl ) {
 					if ( data && data.ok ) {
 						statusEl.style.color = '#0F9C70';
-						statusEl.textContent = '✓ ' + ( data.count === 1
+						setStatus( statusEl, 'ok', data.count === 1
 							? t( 'modelsUpdatedOne', '1 model updated' )
 							: tr( 'modelsUpdatedMany', '%d models updated', data.count ) );
 					} else {
 						statusEl.style.color = '#B42318';
-						statusEl.textContent = '✗ ' + ( ( data && data.message ) ? data.message : t( 'couldNotRefreshModels', 'Could not refresh models.' ) );
+						setStatus( statusEl, 'fail', ( data && data.message ) ? data.message : t( 'couldNotRefreshModels', 'Could not refresh models.' ) );
 					}
 				}
 				return data;
@@ -1150,7 +958,7 @@
 				}
 				if ( statusEl ) {
 					statusEl.style.color = '#B42318';
-					statusEl.textContent = '✗ ' + t( 'requestFailed', 'Request failed.' );
+					setStatus( statusEl, 'fail', t( 'requestFailed', 'Request failed.' ) );
 				}
 			} );
 	}
@@ -1179,7 +987,7 @@
 						btn.disabled       = false;
 						btn.textContent    = label;
 						status.style.color = data.valid ? '#0F9C70' : '#B42318';
-						status.textContent = data.valid ? '✓ ' + data.message : '✗ ' + data.message;
+						setStatus( status, data.valid ? 'ok' : 'fail', data.message );
 						if ( data.valid ) {
 							var modelsStatus = document.querySelector( '[data-rnrd-models-status="' + provider + '"]' );
 							refreshModelsForProvider( provider, key, modelsStatus, null );
@@ -1189,7 +997,7 @@
 						btn.disabled       = false;
 						btn.textContent    = label;
 						status.style.color = '#B42318';
-						status.textContent = '✗ ' + t( 'requestFailed', 'Request failed.' );
+						setStatus( status, 'fail', t( 'requestFailed', 'Request failed.' ) );
 					} );
 			} );
 		} );
@@ -1216,7 +1024,7 @@
 	 *
 	 * Captures every <form action="options.php"> inside .rnrd-wrap, posts the
 	 * form data with fetch(), and updates the submit button to show:
-	 *   idle → "Saving…" (disabled + spinner) → "Saved ✓" → idle (after 2s)
+	 *   idle → "Saving…" (disabled + spinner) → "Saved" (.rnrd-saved) → idle (2s)
 	 *
 	 * WP options.php returns a 302 redirect to ?settings-updated=true on
 	 * success. With redirect:'follow' fetch resolves to a 200 final response,
@@ -1274,7 +1082,7 @@
 						}
 						// v1.2 — verify the save actually persisted (options.php adds settings-updated=true only on success; a stale nonce / admin_init fatal returns 200 without it). Fixes 'Saved but reverts to disabled' (Keith, 1/5).
 							if ( response.url && response.url.indexOf( 'settings-updated=true' ) === -1 ) { throw new Error( 'not-saved' ); }
-							setBtn( t( 'saved', 'Saved ✓' ), 'rnrd-saved' );
+							setBtn( t( 'saved', 'Saved' ), 'rnrd-saved' );
 						setTimeout( restoreBtn, 2000 );
 					} )
 					.catch( function ( err ) {
@@ -1364,6 +1172,47 @@
 			var selAll   = root.querySelector( '.rnrd-fw-select-all' );
 			var tabs     = root.querySelectorAll( '.rnrd-fw-tab' );
 			var current  = 'stale';
+			// The Stale Threshold control sits above this widget in the same
+			// card. It used to move the scan table only, while these buckets
+			// stayed on a hardcoded 60, so one card showed two thresholds.
+			// Read it here and send it with every request.
+			var daysSel    = document.getElementById( 'rnrd-freshness-days' );
+			var staleDays  = parseInt( root.getAttribute( 'data-rnrd-stale-days' ), 10 ) || 90;
+			var goingDays  = parseInt( root.getAttribute( 'data-rnrd-going-days' ), 10 ) || 45;
+
+			function currentDays() {
+				var v = daysSel ? parseInt( daysSel.value, 10 ) : staleDays;
+				return Math.max( 30, v || staleDays );
+			}
+
+			// Restate the card for the window the server just answered for.
+			function applyThresholds( data ) {
+				if ( data.stale_days ) { staleDays = parseInt( data.stale_days, 10 ) || staleDays; }
+				if ( data.going_stale_days ) { goingDays = parseInt( data.going_stale_days, 10 ) || goingDays; }
+
+				var periods = {
+					stale:       tr( 'freshnessPeriodStale', '%d+ days', staleDays ),
+					going_stale: tr( 'freshnessPeriodGoingStale', '%1$d–%2$d days', goingDays, staleDays - 1 ),
+					fresh:       tr( 'freshnessPeriodFresh', 'under %d days', goingDays )
+				};
+				Object.keys( periods ).forEach( function ( bucket ) {
+					var el = root.querySelector( '[data-rnrd-period="' + bucket + '"]' );
+					if ( el ) { el.textContent = periods[ bucket ]; }
+				} );
+				var footEl = root.querySelector( '[data-rnrd-foot="going_stale"]' );
+				if ( footEl ) {
+					footEl.textContent = tr( 'freshnessFootGoingStale', 'Approaching the %d-day mark. Plan a refresh.', staleDays );
+				}
+				if ( data.counts ) {
+					tabs.forEach( function ( tab ) {
+						var bucket = tab.getAttribute( 'data-bucket' );
+						var valEl  = tab.querySelector( '.rnrd-kpi__value' );
+						if ( valEl && typeof data.counts[ bucket ] !== 'undefined' ) {
+							valEl.textContent = String( parseInt( data.counts[ bucket ], 10 ) || 0 );
+						}
+					} );
+				}
+			}
 
 			function updateButton() {
 				var anyChecked = !! listEl.querySelector( 'input[type=checkbox]:checked' );
@@ -1398,15 +1247,23 @@
 				renderEmpty( t( 'loading', 'Loading…' ) );
 				selAll.checked = false;
 				btnRefr.disabled = true;
-				fetch( api + '/freshness/list?bucket=' + encodeURIComponent( current ), {
+				fetch( api + '/freshness/list' + ( api.indexOf( '?' ) >= 0 ? '&' : '?' ) + 'bucket=' + encodeURIComponent( current ) + '&days=' + currentDays(), {
 					headers: { 'X-WP-Nonce': nonce, Accept: 'application/json' },
 					credentials: 'same-origin'
 				} ).then( function ( r ) { return r.json(); } ).then( function ( data ) {
-					if ( ! data || ! data.posts || ! data.posts.length ) {
+					if ( ! data || isApiError( data ) ) {
+						renderError( t( 'failedToLoad', 'Failed to load.' ) );
+						return;
+					}
+					applyThresholds( data );
+					if ( ! data.posts || ! data.posts.length ) {
+						// These strings used to assert 60 and "30–60" no matter
+						// what the threshold was set to, which is the same
+						// two-thresholds-on-one-card bug in words.
 						var msg = current === 'stale'
-							? t( 'freshnessStaleEmpty', 'No stale posts. Every published post has been touched within the last 60 days.' )
+							? tr( 'freshnessStaleEmpty', 'No stale posts. Every published post has been touched within the last %d days.', staleDays )
 							: ( current === 'going_stale'
-								? t( 'freshnessGoingStaleEmpty', 'Nothing in the 30–60 day window. Plenty of time before any post goes stale.' )
+								? tr( 'freshnessGoingStaleEmpty', 'Nothing in the %1$d–%2$d day window. Plenty of time before any post goes stale.', goingDays, staleDays )
 								: t( 'freshnessFreshEmpty', 'Newly published or refreshed content shows up here.' ) );
 						renderEmpty( msg );
 						return;
@@ -1441,12 +1298,29 @@
 						ul.appendChild( li );
 					} );
 					listEl.appendChild( ul );
+					// The list is capped server-side. Say so rather than letting the
+					// tab count and the visible rows quietly disagree.
+					var total = parseInt( data.total, 10 ) || 0;
+					if ( total > data.posts.length ) {
+						var note = document.createElement( 'p' );
+						note.className = 'rnrd-fw-cap';
+						note.textContent = tr(
+							'freshnessListCapped',
+							'Showing the %1$d oldest of %2$d. Refresh these, then scan again for the rest.',
+							data.posts.length,
+							total
+						);
+						listEl.appendChild( note );
+					}
 				} ).catch( function () { renderError( t( 'failedToLoad', 'Failed to load.' ) ); } );
 			}
 
 			tabs.forEach( function ( t ) {
 				t.addEventListener( 'click', function () { setTab( t.getAttribute( 'data-bucket' ) ); } );
 			} );
+			if ( daysSel ) {
+				daysSel.addEventListener( 'change', load );
+			}
 			listEl.addEventListener( 'change', updateButton );
 			selAll.addEventListener( 'change', function () {
 				listEl.querySelectorAll( 'input[type=checkbox]' ).forEach( function ( cb ) { cb.checked = selAll.checked; } );
@@ -1465,6 +1339,7 @@
 					credentials: 'same-origin',
 					body: JSON.stringify( { post_ids: ids } )
 				} ).then( function ( r ) { return r.json(); } ).then( function ( data ) {
+					if ( isApiError( data ) ) { throw data; }
 					statusEl.textContent = tr( 'freshnessRefreshed', 'Refreshed %d post(s). Reloading…', data.refreshed || 0 );
 					setTimeout( load, 600 );
 				} ).catch( function () {

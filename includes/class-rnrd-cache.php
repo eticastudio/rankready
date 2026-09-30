@@ -79,32 +79,37 @@ class RNRD_Cache {
 			add_action( 'admin_init',    array( self::class, 'handle_swis_dismiss' ) );
 		}
 
+		// Asset optimisers match these by substring, so the paths are built from
+		// the folder this copy is actually installed in. WP.org installs live in
+		// rankready-ai-llm-seo/, older GitHub installs in rankready/; a hardcoded
+		// rankready/ never matched the WP.org folder.
+		$dir = dirname( RNRD_BASENAME );
+
 		// Autoptimize — exclude RankReady admin assets from JS/CSS combine.
 		// AJAX save handler in admin.js depends on rnrdAjax localized object,
 		// which Autoptimize's combine can break by moving the script tag.
-		add_filter( 'autoptimize_filter_js_exclude', function ( $exclude ) {
-			$exclude .= ', rankready/assets/admin.js, rankready-ai-llm-seo/assets/admin.js';
+		add_filter( 'autoptimize_filter_js_exclude', function ( $exclude ) use ( $dir ) {
+			$exclude .= ', ' . $dir . '/assets/admin.js';
 			return $exclude;
 		} );
-		add_filter( 'autoptimize_filter_css_exclude', function ( $exclude ) {
-			$exclude .= ', rankready/assets/admin.css, rankready/assets/design-tokens.css';
+		add_filter( 'autoptimize_filter_css_exclude', function ( $exclude ) use ( $dir ) {
+			$exclude .= ', ' . $dir . '/assets/admin.css, ' . $dir . '/assets/design-tokens.css';
 			return $exclude;
 		} );
 
 		// LiteSpeed CSS/JS combine — exclude RankReady admin assets.
-		add_filter( 'litespeed_optm_js_defer_exc', function ( $exc ) {
-			$exc[] = 'rankready/assets/admin.js';
+		add_filter( 'litespeed_optm_js_defer_exc', function ( $exc ) use ( $dir ) {
+			$exc[] = $dir . '/assets/admin.js';
 			return $exc;
 		} );
 
 		// WP Rocket file optimisation — exclude admin assets from combine + delay JS.
 		add_filter( 'rocket_exclude_js', function ( $exclude ) {
-			$exclude[] = '/wp-content/plugins/rankready-ai-llm-seo/assets/admin.js';
-			$exclude[] = '/wp-content/plugins/rankready/assets/admin.js';
+			$exclude[] = (string) wp_parse_url( plugins_url( 'assets/admin.js', RNRD_FILE ), PHP_URL_PATH );
 			return $exclude;
 		} );
-		add_filter( 'rocket_delay_js_exclusions', function ( $exclude ) {
-			$exclude[] = 'rankready/assets/admin.js';
+		add_filter( 'rocket_delay_js_exclusions', function ( $exclude ) use ( $dir ) {
+			$exclude[] = $dir . '/assets/admin.js';
 			return $exclude;
 		} );
 
@@ -121,17 +126,6 @@ class RNRD_Cache {
 
 	// ── Bypass headers ────────────────────────────────────────────────────────
 
-	/**
-	 * Emit response headers that instruct every known cache layer not to store
-	 * the current response.
-	 *
-	 * Call this early (before any output) on every RankReady virtual endpoint
-	 * that uses content negotiation so the correct variant (markdown vs HTML)
-	 * always reaches the client.
-	 *
-	 * Safe to call multiple times — headers_sent() and defined() guards
-	 * prevent duplicate headers and constant re-declaration errors.
-	 */
 	/**
 	 * Tell every page-cache plugin to never cache the listed URL patterns.
 	 *
@@ -388,6 +382,12 @@ class RNRD_Cache {
 	 * present consistent casing). Each layer reads a different header — every
 	 * one of the directives below points the same direction (no-cache /
 	 * no-store), so no conflicts arise even when multiple layers coexist.
+	 *
+	 * Call this early (before any output) on every RankReady virtual endpoint
+	 * that uses content negotiation so the correct variant (markdown vs HTML)
+	 * always reaches the client. Safe to call multiple times: headers_sent()
+	 * and defined() guards prevent duplicate headers and constant
+	 * re-declaration errors.
 	 */
 	public static function no_cache_headers(): void {
 		if ( headers_sent() ) {
@@ -544,8 +544,10 @@ class RNRD_Cache {
 		// phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- Hummingbird published action; integration.
 		do_action( 'wphb_clear_cache_url', $url );
 
-		// Cache Enabler — needs a post ID.
-		$post_id = url_to_postid( $url );
+		// Cache Enabler — needs a post ID. url_to_postid() dereferences
+		// $wp_rewrite, which does not exist before init; a purge that runs
+		// earlier skips this one lookup instead of taking the request down.
+		$post_id = ( isset( $GLOBALS['wp_rewrite'] ) && $GLOBALS['wp_rewrite'] instanceof WP_Rewrite ) ? url_to_postid( $url ) : 0;
 		if ( $post_id > 0 ) {
 			do_action( 'cache_enabler_clear_page_cache_by_post', $post_id );
 		}
@@ -658,6 +660,21 @@ class RNRD_Cache {
 					$urls[] = RNRD_Markdown::get_md_url( $posts_page );
 				}
 			}
+		}
+
+		/*
+		 * The OKF bundle ships the longest edge TTL in the plugin (s-maxage=3600
+		 * plus stale-while-revalidate=86400, so an edge may serve a stale bundle
+		 * for up to 25 hours) and was the one endpoint family missing from this
+		 * list, which meant a settings change that purged llms.txt left /okf/
+		 * stale at the edge for a day. Only added when the bundle is actually
+		 * enabled, so a site that never serves /okf/ does not pay for purge
+		 * calls against a 404.
+		 */
+		if ( class_exists( 'RNRD_OKF' ) && RNRD_OKF::enabled() ) {
+			$urls[] = home_url( '/okf/' );
+			$urls[] = home_url( '/okf/index.md' );
+			$urls[] = home_url( '/okf/log.md' );
 		}
 
 		$urls = (array) apply_filters( 'rankready_purge_urls', $urls );
@@ -901,9 +918,9 @@ class RNRD_Cache {
 			'# BEGIN RankReady — LiteSpeed/Apache cache bypass',
 			'<IfModule LiteSpeed>',
 			'  RewriteEngine On',
-			'  RewriteRule ^llms(-full)?\\.txt$       - [E=cache-control:no-cache,L]',
-			'  RewriteRule ^\\.well-known/mcp\\.json$  - [E=cache-control:no-cache,L]',
-			'  RewriteRule \\.md$                     - [E=cache-control:no-cache,L]',
+			'  RewriteRule ^llms(-full)?\\.txt$       - [E=cache-control:no-cache]',
+			'  RewriteRule ^\\.well-known/mcp\\.json$  - [E=cache-control:no-cache]',
+			'  RewriteRule \\.md$                     - [E=cache-control:no-cache]',
 			'</IfModule>',
 			'<IfModule mod_headers.c>',
 			'  <FilesMatch "\\.(txt|md|json)$">',

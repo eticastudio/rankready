@@ -51,6 +51,12 @@ class RNRD_Summary {
 		if ( ! $post || ! self::is_post_type_enabled( $post->post_type ) ) {
 			return '';
 		}
+		// Same opt-out and password rules as the_content, the shortcode, the
+		// Elementor widget and the author block. Without this a user who ticked
+		// "disable" on a post still got the summary wherever the block sat.
+		if ( ! RNRD_Util::can_emit( (int) $post_id, RNRD_META_DISABLE ) ) {
+			return '';
+		}
 
 		$raw = (string) get_post_meta( $post_id, RNRD_META_SUMMARY, true );
 		if ( empty( $raw ) ) {
@@ -157,10 +163,16 @@ class RNRD_Summary {
 			$label_styles[] = 'font-size:' . (int) $attrs['labelFontSize'] . 'px';
 		}
 		if ( ! empty( $attrs['labelFontFamily'] ) ) {
-			$label_styles[] = 'font-family:' . esc_attr( (string) $attrs['labelFontFamily'] );
+			$rnrd_css = RNRD_Util::sanitize_style_value( 'labelFontFamily', (string) $attrs['labelFontFamily'] );
+			if ( '' !== $rnrd_css ) {
+				$label_styles[] = 'font-family:' . $rnrd_css;
+			}
 		}
 		if ( ! empty( $attrs['labelFontWeight'] ) ) {
-			$label_styles[] = 'font-weight:' . esc_attr( (string) $attrs['labelFontWeight'] );
+			$rnrd_css = RNRD_Util::sanitize_style_value( 'labelFontWeight', (string) $attrs['labelFontWeight'] );
+			if ( '' !== $rnrd_css ) {
+				$label_styles[] = 'font-weight:' . $rnrd_css;
+			}
 		}
 		if ( ! empty( $attrs['labelLineHeight'] ) ) {
 			$label_styles[] = 'line-height:' . number_format( (float) $attrs['labelLineHeight'], 2 );
@@ -169,7 +181,10 @@ class RNRD_Summary {
 			$label_styles[] = 'letter-spacing:' . number_format( (float) $attrs['labelLetterSpacing'], 2 ) . 'px';
 		}
 		if ( ! empty( $attrs['labelTextTransform'] ) ) {
-			$label_styles[] = 'text-transform:' . esc_attr( (string) $attrs['labelTextTransform'] );
+			$rnrd_css = RNRD_Util::sanitize_style_value( 'labelTextTransform', (string) $attrs['labelTextTransform'] );
+			if ( '' !== $rnrd_css ) {
+				$label_styles[] = 'text-transform:' . $rnrd_css;
+			}
 		}
 		$label_style_attr = ! empty( $label_styles ) ? ' style="' . esc_attr( implode( ';', $label_styles ) ) . '"' : '';
 
@@ -181,10 +196,16 @@ class RNRD_Summary {
 			$bullet_styles[] = 'font-size:' . (int) $attrs['bulletFontSize'] . 'px';
 		}
 		if ( ! empty( $attrs['bulletFontFamily'] ) ) {
-			$bullet_styles[] = 'font-family:' . esc_attr( (string) $attrs['bulletFontFamily'] );
+			$rnrd_css = RNRD_Util::sanitize_style_value( 'bulletFontFamily', (string) $attrs['bulletFontFamily'] );
+			if ( '' !== $rnrd_css ) {
+				$bullet_styles[] = 'font-family:' . $rnrd_css;
+			}
 		}
 		if ( ! empty( $attrs['bulletFontWeight'] ) ) {
-			$bullet_styles[] = 'font-weight:' . esc_attr( (string) $attrs['bulletFontWeight'] );
+			$rnrd_css = RNRD_Util::sanitize_style_value( 'bulletFontWeight', (string) $attrs['bulletFontWeight'] );
+			if ( '' !== $rnrd_css ) {
+				$bullet_styles[] = 'font-weight:' . $rnrd_css;
+			}
 		}
 		if ( ! empty( $attrs['bulletLineHeight'] ) ) {
 			$bullet_styles[] = 'line-height:' . number_format( (float) $attrs['bulletLineHeight'], 2 );

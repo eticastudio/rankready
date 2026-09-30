@@ -95,7 +95,7 @@ class RNRD_LLM {
 		switch ( $provider ) {
 			case self::PROVIDER_ANTHROPIC: $saved = (string) get_option( 'rnrd_anthropic_model', 'claude-haiku-4-5' ); break;
 			case self::PROVIDER_GEMINI:    $saved = (string) get_option( 'rnrd_gemini_model',    'gemini-2.5-flash' ); break;
-			case self::PROVIDER_DEEPSEEK:  $saved = (string) get_option( 'rnrd_deepseek_model',  'deepseek-v4-flash' ); break;
+			case self::PROVIDER_DEEPSEEK:  $saved = (string) get_option( 'rnrd_deepseek_model',  'deepseek-flash' ); break;
 			case self::PROVIDER_OPENAI:
 			default:                       $saved = (string) get_option( RNRD_OPT_MODEL,         'gpt-5.4-mini' ); break;
 		}
@@ -130,29 +130,52 @@ class RNRD_LLM {
 				'gpt-4-turbo'   => 'gpt-5.4',
 				'gpt-4'         => 'gpt-5.4',
 			),
+			/*
+			 * Targets verified 2026-09-27 against Anthropic's own model
+			 * overview, because the previous ones were invented: this map
+			 * pointed the Sonnet tier at `claude-sonnet-4-6` and the Opus tier
+			 * at `claude-opus-4-8`, and neither model has ever existed. The
+			 * effect was the opposite of what a migration map is for. Someone
+			 * running the real, working `claude-sonnet-4-5` had it silently
+			 * rewritten to an ID the API answers with a 404, so generation
+			 * broke on upgrade and the settings screen showed a model name
+			 * nobody could look up. `claude-sonnet-4-6`, `claude-opus-4-7` and
+			 * `claude-opus-4-8` are therefore SOURCES here now, not targets:
+			 * 1.3.1 offered all three in its dropdown, so live installs have
+			 * them saved and need routing forward like any other dead ID.
+			 *
+			 * Tier discipline still holds, and it is why Fable 5.1 is absent.
+			 * It is the current top of Anthropic's range, but at $10/$50 per
+			 * MTok against Opus 5.5's $4/$20 it is not the Opus tier, and
+			 * moving someone onto it without asking would more than double
+			 * their bill. It is offered in the dropdown as a choice instead.
+			 */
 			self::PROVIDER_ANTHROPIC => array(
 				// Haiku tier
 				'claude-3-5-haiku-20241022'  => 'claude-haiku-4-5',
 				'claude-3-5-haiku-latest'    => 'claude-haiku-4-5',
 				'claude-3-haiku-20240307'    => 'claude-haiku-4-5',
 				// Sonnet tier
-				'claude-sonnet-4-20250514'   => 'claude-sonnet-4-6',
-				'claude-sonnet-4-0'          => 'claude-sonnet-4-6',
-				'claude-sonnet-4-5'          => 'claude-sonnet-4-6',
-				'claude-sonnet-4-5-20250929' => 'claude-sonnet-4-6',
-				'claude-3-7-sonnet-20250219' => 'claude-sonnet-4-6',
-				'claude-3-7-sonnet-latest'   => 'claude-sonnet-4-6',
-				'claude-3-5-sonnet-20241022' => 'claude-sonnet-4-6',
-				'claude-3-5-sonnet-latest'   => 'claude-sonnet-4-6',
-				// Opus tier (4-7 is still live, so NOT migrated; 4-6 and older are)
-				'claude-opus-4-20250514'     => 'claude-opus-4-8',
-				'claude-opus-4-0'            => 'claude-opus-4-8',
-				'claude-opus-4-1'            => 'claude-opus-4-8',
-				'claude-opus-4-1-20250805'   => 'claude-opus-4-8',
-				'claude-opus-4-5'            => 'claude-opus-4-8',
-				'claude-opus-4-6'            => 'claude-opus-4-8',
-				'claude-3-opus-20240229'     => 'claude-opus-4-8',
-				'claude-3-opus-latest'       => 'claude-opus-4-8',
+				'claude-sonnet-4-20250514'   => 'claude-sonnet-5',
+				'claude-sonnet-4-0'          => 'claude-sonnet-5',
+				'claude-sonnet-4-5'          => 'claude-sonnet-5',
+				'claude-sonnet-4-5-20250929' => 'claude-sonnet-5',
+				'claude-sonnet-4-6'          => 'claude-sonnet-5',
+				'claude-3-7-sonnet-20250219' => 'claude-sonnet-5',
+				'claude-3-7-sonnet-latest'   => 'claude-sonnet-5',
+				'claude-3-5-sonnet-20241022' => 'claude-sonnet-5',
+				'claude-3-5-sonnet-latest'   => 'claude-sonnet-5',
+				// Opus tier
+				'claude-opus-4-20250514'     => 'claude-opus-5-5',
+				'claude-opus-4-0'            => 'claude-opus-5-5',
+				'claude-opus-4-1'            => 'claude-opus-5-5',
+				'claude-opus-4-1-20250805'   => 'claude-opus-5-5',
+				'claude-opus-4-5'            => 'claude-opus-5-5',
+				'claude-opus-4-6'            => 'claude-opus-5-5',
+				'claude-opus-4-7'            => 'claude-opus-5-5',
+				'claude-opus-4-8'            => 'claude-opus-5-5',
+				'claude-3-opus-20240229'     => 'claude-opus-5-5',
+				'claude-3-opus-latest'       => 'claude-opus-5-5',
 			),
 			self::PROVIDER_GEMINI => array(
 				'gemini-1.5-flash'        => 'gemini-2.5-flash',
@@ -163,8 +186,15 @@ class RNRD_LLM {
 				'gemini-1.5-pro'          => 'gemini-2.5-pro',
 				'gemini-1.5-pro-latest'   => 'gemini-2.5-pro',
 			),
+			/*
+			 * `deepseek-v4-flash` is still accepted by DeepSeek but their docs
+			 * now call it a legacy name served by DeepSeek-V4.1-Flash, so the
+			 * canonical ID is `deepseek-flash`. Nothing breaks either way; this
+			 * keeps the dropdown showing the name their pricing page shows.
+			 */
 			self::PROVIDER_DEEPSEEK => array(
-				'deepseek-chat'     => 'deepseek-v4-flash',
+				'deepseek-chat'     => 'deepseek-flash',
+				'deepseek-v4-flash' => 'deepseek-flash',
 				'deepseek-reasoner' => 'deepseek-v4-pro',
 			),
 		);
@@ -373,14 +403,6 @@ class RNRD_LLM {
 	}
 
 	/**
-	 * Live model list from the provider's /models endpoint. Returns id => id.
-	 * Empty array on any failure (caller uses fallback list).
-	 */
-	private static function fetch_remote_models( string $provider, string $key ): array {
-		return self::fetch_remote_models_result( $provider, $key )['models'];
-	}
-
-	/**
 	 * Live model list plus a coarse error bucket for user-facing messages.
 	 *
 	 * @return array{models:array<string,string>,error:string} error: '' | 'auth' | 'remote'
@@ -438,8 +460,10 @@ class RNRD_LLM {
 					'headers' => array( 'x-api-key' => $key, 'anthropic-version' => '2023-06-01' ),
 				) );
 			case self::PROVIDER_GEMINI:
-				return wp_remote_get( 'https://generativelanguage.googleapis.com/v1beta/models?key=' . rawurlencode( $key ), array(
+				// Key in a header, never in the query string — see RNRD_LLM_Gemini.
+				return wp_remote_get( 'https://generativelanguage.googleapis.com/v1beta/models', array(
 					'timeout' => 8,
+					'headers' => array( 'x-goog-api-key' => $key ),
 				) );
 		}
 		return null;
@@ -592,16 +616,16 @@ class RNRD_LLM {
 		$ids = array();
 		switch ( $provider ) {
 			case self::PROVIDER_OPENAI:
-				$ids = array( 'gpt-5.4-nano', 'gpt-5.4-mini', 'gpt-5.4', 'gpt-5.5' );
+				$ids = array( 'gpt-5.4-nano', 'gpt-5.4-mini', 'gpt-5.4', 'gpt-5.5', 'gpt-5.6-luna', 'gpt-5.6-terra', 'gpt-6-astra' );
 				break;
 			case self::PROVIDER_ANTHROPIC:
-				$ids = array( 'claude-haiku-4-5', 'claude-sonnet-4-6', 'claude-opus-4-7', 'claude-opus-4-8' );
+				$ids = array( 'claude-haiku-4-5', 'claude-sonnet-5', 'claude-opus-5-5', 'claude-fable-5-1' );
 				break;
 			case self::PROVIDER_GEMINI:
-				$ids = array( 'gemini-3.1-flash-lite', 'gemini-2.5-flash', 'gemini-3.5-flash', 'gemini-2.5-pro' );
+				$ids = array( 'gemini-3.1-flash-lite', 'gemini-2.5-flash', 'gemini-3.5-flash', 'gemini-2.5-pro', 'gemini-3.8-flash' );
 				break;
 			case self::PROVIDER_DEEPSEEK:
-				$ids = array( 'deepseek-v4-flash', 'deepseek-v4-pro' );
+				$ids = array( 'deepseek-flash', 'deepseek-v4-pro' );
 				break;
 		}
 		$out = array();
@@ -673,6 +697,55 @@ class RNRD_LLM {
 	/**
 	 * Builds the standardized success response shape.
 	 */
+	/**
+	 * Did the model stop because it ran out of room rather than because it
+	 * finished?
+	 *
+	 * Every provider reports this and, until 1.4.0, nothing read it. The
+	 * response still carries text, so a cut-off answer looked exactly like a
+	 * complete one: `'' === $content` was the only failure any provider
+	 * checked. That text then went straight into a saved AI summary, or into
+	 * FAQPage schema as a published answer ending mid-sentence. Structured data
+	 * is a claim to a search engine that this IS the answer, so shipping half
+	 * of one is worse than failing, and failing is recoverable: the user
+	 * shortens the target length or raises the token cap and generates again.
+	 *
+	 * Each provider's own signal, since they do not agree:
+	 *   OpenAI + DeepSeek  choices[0].finish_reason === 'length'
+	 *   Anthropic          stop_reason === 'max_tokens'
+	 *   Gemini             candidates[0].finishReason === 'MAX_TOKENS'
+	 *
+	 * @param string $reason The provider's raw stop/finish reason.
+	 * @return bool True when the reason means "truncated", not "done".
+	 */
+	public static function is_truncated_reason( string $reason ): bool {
+		$reason = strtolower( trim( $reason ) );
+		return in_array( $reason, array( 'length', 'max_tokens', 'maxtokens', 'max_output_tokens' ), true );
+	}
+
+	/**
+	 * The error a provider returns when its answer was cut off. One wording, so
+	 * the four providers cannot drift into four different explanations of the
+	 * same thing, and the fix is in the message because the user is the only
+	 * one who can apply it.
+	 *
+	 * @param string $provider Provider slug.
+	 * @param string $model    Model id.
+	 * @param string $reason   Raw provider reason, for the log.
+	 * @return array Error response.
+	 */
+	public static function truncated_response( string $provider, string $model, string $reason ): array {
+		return self::error_response(
+			$provider,
+			sprintf(
+				/* translators: 1: provider stop reason. */
+				__( 'The model ran out of output length and stopped mid-answer (stop reason: %1$s). Nothing was saved, because a half-finished answer would have been published as though it were complete. Shorten the target length for this content type, or pick a model with more output room, and generate again.', 'rankready-ai-llm-seo' ),
+				'' === $reason ? 'length' : $reason
+			),
+			$model
+		);
+	}
+
 	public static function success_response( string $provider, string $model, string $content, int $tokens_in = 0, int $tokens_out = 0 ): array {
 		return array(
 			'ok'           => true,
@@ -695,13 +768,24 @@ class RNRD_LLM {
 	 * @return array e.g. array( 'code' => 'de', 'name' => 'German' ). 'name' may be ''.
 	 */
 	public static function detect_content_language( int $post_id ): array {
-		$locale = '';
+		$locale   = '';
+		// Issue #27: true only when a per-post source (WPML/Polylang) actually
+		// declared this post's language. The site-wide fallback below is a
+		// guess, not a fact — a post can legitimately be in a different
+		// language than Settings > General (a guest post, a quoted excerpt,
+		// any multilingual site not running WPML/Polylang). Callers that
+		// assert the language as fact (the LLM prompt directive) must check
+		// this before doing so; callers that just need a best-effort locale
+		// for standard metadata (schema inLanguage, markdown lang:
+		// frontmatter, DataForSEO geo-targeting) are fine using the fallback.
+		$declared = false;
 
 		// WPML per-post language.
 		if ( has_filter( 'wpml_post_language_details' ) ) {
 			$details = apply_filters( 'wpml_post_language_details', null, $post_id );
 			if ( is_array( $details ) && ! empty( $details['language_code'] ) ) {
-				$locale = (string) $details['language_code'];
+				$locale   = (string) $details['language_code'];
+				$declared = true;
 			}
 		}
 
@@ -709,7 +793,8 @@ class RNRD_LLM {
 		if ( '' === $locale && function_exists( 'pll_get_post_language' ) ) {
 			$pll = pll_get_post_language( $post_id, 'locale' );
 			if ( ! empty( $pll ) ) {
-				$locale = (string) $pll;
+				$locale   = (string) $pll;
+				$declared = true;
 			}
 		}
 
@@ -749,9 +834,10 @@ class RNRD_LLM {
 		}
 
 		return array(
-			'code'   => '' !== $code ? $code : 'en',
-			'name'   => $name,
-			'locale' => $locale,
+			'code'     => '' !== $code ? $code : 'en',
+			'name'     => $name,
+			'locale'   => $locale,
+			'declared' => $declared,
 		);
 	}
 
@@ -819,7 +905,14 @@ class RNRD_LLM {
 
 		$out  = "LANGUAGE RULE (highest priority - overrides every formatting rule below):\n";
 		$out .= "- Detect the language of the page CONTENT provided below and write EVERY word of your output in that SAME language.\n";
-		if ( '' !== $lang['name'] && 'English' !== $lang['name'] ) {
+		// Issue #27: only assert a specific language as fact when a per-post
+		// source (WPML/Polylang) actually declared it. Without that, $lang
+		// is a guess from the SITE'S locale, which can be wrong for this
+		// specific post (guest post, quoted excerpt, any multilingual site
+		// without WPML/Polylang) — asserting it as fact told the model to
+		// mistranslate correct content into the wrong language. The generic
+		// "detect from content" line above still does the real work.
+		if ( ! empty( $lang['declared'] ) && '' !== $lang['name'] && 'English' !== $lang['name'] ) {
 			$out .= "- This page is in {$lang['name']}. Write your entire response in {$lang['name']}.\n";
 		}
 		$out .= "- Never default to English. If the page is not in English, your output must not be in English.\n";

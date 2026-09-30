@@ -61,8 +61,10 @@ class RNRD_Diagnostics {
 			'option' => 'rnrd_anthropic_api_key',
 		),
 		'gemini'    => array(
-			'url'    => 'https://generativelanguage.googleapis.com/v1beta/models?key=%s',
-			'header' => '',
+			// Header auth, not ?key= — a key in a query string is logged by
+			// every proxy on the path. See RNRD_LLM_Gemini.
+			'url'    => 'https://generativelanguage.googleapis.com/v1beta/models',
+			'header' => 'x-goog-api-key: %s',
 			'option' => 'rnrd_gemini_api_key',
 		),
 		'deepseek'  => array(
@@ -99,6 +101,15 @@ class RNRD_Diagnostics {
 			'permission_callback' => array( self::class, 'permission_check' ),
 			'args'                => array(
 				'include_api' => array( 'type' => 'boolean', 'default' => false ),
+				// Default true — this report gets pasted into public WP.org
+				// support threads. The full forensic report (versioned plugin
+				// inventory, mu-plugins, exact server/PHP/MySQL strings, debug
+				// flags) is opt-in via redacted=false, never the default.
+				'redacted'    => array(
+					'type'        => 'boolean',
+					'default'     => true,
+					'description' => 'Return the public/support-safe report. Set false for the full forensic report.',
+				),
 			),
 		) );
 	}
@@ -118,13 +129,15 @@ class RNRD_Diagnostics {
 
 	public static function rest_report( WP_REST_Request $request ) {
 		$include_api = (bool) $request->get_param( 'include_api' );
+		$redacted    = (bool) $request->get_param( 'redacted' );
 		$result      = self::run( $include_api );
 
-		$report = self::format_plaintext_report( $result );
+		$report = self::format_plaintext_report( $result, $redacted );
 
 		return rest_ensure_response( array(
-			'report' => $report,
-			'length' => strlen( $report ),
+			'report'   => $report,
+			'length'   => strlen( $report ),
+			'redacted' => $redacted,
 		) );
 	}
 
@@ -162,6 +175,7 @@ class RNRD_Diagnostics {
 
 		// Group 4 — Site configuration
 		$checks[] = self::probe_brand_identity();
+		$checks[] = self::probe_secret_encryption();  // 1.4.0 — the only security property with no check
 		$checks[] = self::probe_php_version();
 		$checks[] = self::probe_wp_version();
 
@@ -202,15 +216,44 @@ class RNRD_Diagnostics {
 	// ═════════════════════════════════════════════════════════════════════════
 
 	private static function probe_llms_txt(): array {
-		if ( 'on' !== get_option( 'rnrd_llms_enable', 'off' ) ) {
+		$enabled = 'on' === get_option( 'rnrd_llms_enable', 'off' );
+		$url     = home_url( '/llms.txt' );
+
+		/*
+		 * IMPORTANT: ALWAYS fetch, even when our own toggle is off.
+		 *
+		 * This used to return "Toggle is OFF" without ever requesting the URL,
+		 * which meant the one question the tool exists to answer — what does
+		 * /llms.txt actually serve right now — went unasked. A site can serve
+		 * /llms.txt from a rival plugin, a theme snippet, an nginx location or a
+		 * static file, and reporting "off" in that case is not just incomplete,
+		 * it points the user at the wrong cause. That is the exact shape of the
+		 * support thread this plugin keeps getting: a real file served by
+		 * something else, read as a RankReady conflict.
+		 *
+		 * The toggle now only decides the WORDING, never whether we look.
+		 */
+		$response = self::fetch( $url );
+
+		if ( ! $enabled ) {
+			$code = is_wp_error( $response ) ? 0 : (int) wp_remote_retrieve_response_code( $response );
+			$body = is_wp_error( $response ) ? '' : (string) wp_remote_retrieve_body( $response );
+			$html = '' !== $body && preg_match( '#<(html|body|head|!doctype)#i', substr( $body, 0, 500 ) );
+
+			if ( 200 === $code && '' !== trim( $body ) && ! $html ) {
+				return self::result( 'llms_txt', '/llms.txt loads', 'warn',
+					'RankReady\'s LLMs.txt toggle is OFF, but something else on this site is already serving /llms.txt.',
+					'Another plugin, a theme snippet or a server rule is serving this file. Turn RankReady\'s LLMs.txt on to take it over, or leave it with whatever owns it — but do not run both.',
+					array( 'url' => $url, 'http_code' => $code, 'bytes' => strlen( $body ) )
+				);
+			}
+
 			return self::result( 'llms_txt', '/llms.txt loads', 'info',
-				'Toggle is OFF in AI Visibility → LLMs.txt.',
-				'Enable LLMs.txt to expose your site index to AI engines.'
+				'Toggle is OFF in AI Visibility → LLMs.txt, and nothing else is serving /llms.txt.',
+				'Enable LLMs.txt to expose your site index to AI engines.',
+				array( 'url' => $url, 'http_code' => $code )
 			);
 		}
-
-		$url      = home_url( '/llms.txt' );
-		$response = self::fetch( $url );
 
 		if ( is_wp_error( $response ) ) {
 			return self::loopback_aware_result( 'llms_txt', '/llms.txt loads', $response, $url,
@@ -224,7 +267,11 @@ class RNRD_Diagnostics {
 		if ( 404 === $code ) {
 			return self::result( 'llms_txt', '/llms.txt loads', 'fail',
 				'HTTP 404 — endpoint not registered with WordPress.',
-				'Visit Settings → Permalinks → Save (no changes). This re-flushes rewrite rules.',
+				// issue #42 — a rewrite-rule flush alone does not clear a 404 a
+				// host-level or CDN cache already stored for this URL; without
+				// this line the remedy looked complete but silently failed for
+				// anyone in front of Cloudflare/LiteSpeed/Varnish/etc.
+				'Visit Settings → Permalinks → Save (no changes) to re-flush rewrite rules. If a host-level or CDN cache (Cloudflare, LiteSpeed, Varnish, a hosting panel\'s cache, etc.) is in front of this site, also purge that cache for this URL — it will keep serving the cached 404 until you do, even after the rewrite rule is fixed.',
 				array( 'url' => $url, 'http_code' => 404 )
 			);
 		}
@@ -241,7 +288,11 @@ class RNRD_Diagnostics {
 		if ( preg_match( '#<(html|body|head|!doctype)#i', substr( $body, 0, 500 ) ) ) {
 			$builder = self::detect_active_page_builder();
 			$cause   = $builder
-				? "Page builder ($builder) is intercepting the request despite our priority 1 hook."
+				// Print the real priority. RankReady has not used priority 1 since
+				// `rnrd_template_redirect_priority()` landed, and the filter means
+				// even the default can be changed on this site. A wrong number here
+				// sends the reader looking for a hook that does not exist.
+				? sprintf( 'Page builder (%s) is intercepting the request despite our template_redirect priority %d hook.', $builder, rnrd_template_redirect_priority( 0 ) )
 				: 'A theme template or plugin is intercepting the request.';
 
 			return self::result( 'llms_txt', '/llms.txt loads', 'fail',
@@ -343,8 +394,10 @@ class RNRD_Diagnostics {
 				'Loopback request blocked.',
 				array( 'Accept' => 'text/markdown' ),
 				function ( $body, $resp ) {
-					$ctype = strtolower( (string) wp_remote_retrieve_header( $resp, 'content-type' ) );
-					return strpos( $ctype, 'markdown' ) !== false || ! preg_match( '#<(html|body|head)#i', substr( $body, 0, 200 ) );
+					return self::response_is_markdown(
+						(string) wp_remote_retrieve_header( $resp, 'content-type' ),
+						(string) $body
+					);
 				}
 			);
 		}
@@ -361,14 +414,23 @@ class RNRD_Diagnostics {
 			);
 		}
 
-		// Either Content-Type negotiation worked, or the page builder won
-		if ( false === stripos( $ctype, 'markdown' ) && preg_match( '#<(html|body|head)#i', substr( $body, 0, 200 ) ) ) {
+		// Assert on what markdown IS, not on the absence of one HTML tag in the
+		// first 200 bytes. The old test passed a `text/plain` body, a JSON error
+		// document, and any HTML whose first tag sat past byte 200 — a green row
+		// on a route that is not serving markdown at all.
+		if ( ! self::response_is_markdown( $ctype, $body ) ) {
 			$builder = self::detect_active_page_builder();
+			$is_html = (bool) preg_match( '#<(html|body|head|!doctype)#i', substr( $body, 0, 2000 ) );
+
 			return self::result( 'homepage_md', 'Homepage .md route', 'fail',
-				sprintf( 'HTTP 200 but Content-Type is %s (HTML returned).', $ctype ?: 'unknown' ),
-				$builder
-					? "Page builder ($builder) is rendering before our Markdown handler. RankReady uses priority 1; check for mu-plugins overriding template_redirect."
-					: 'Theme template is winning. Add ?format=md to URL as a workaround.',
+				sprintf(
+					'HTTP 200 but Content-Type is %s%s.',
+					$ctype ?: 'unknown',
+					$is_html ? ' (HTML returned)' : ' and the body does not open as Markdown'
+				),
+				$builder && $is_html
+					? "Page builder ($builder) is rendering before our Markdown handler despite RankReady's low template_redirect priority. Use the `rnrd_template_redirect_priority` filter to push RankReady even earlier, e.g. `add_filter( 'rnrd_template_redirect_priority', fn( \$p ) => \$p - 1000 );`."
+					: 'Something between RankReady and the response is replacing the body. Check for a page cache, a security or optimisation plugin rewriting Content-Type, and try the distinct URL /index.md.',
 				array( 'url' => $url, 'content_type' => $ctype )
 			);
 		}
@@ -410,8 +472,10 @@ class RNRD_Diagnostics {
 				'Loopback request blocked.',
 				array( 'Accept' => 'text/markdown' ),
 				function ( $body, $resp ) {
-					$ctype = strtolower( (string) wp_remote_retrieve_header( $resp, 'content-type' ) );
-					return strpos( $ctype, 'markdown' ) !== false || ! preg_match( '#<(html|body|head)#i', substr( $body, 0, 200 ) );
+					return self::response_is_markdown(
+						(string) wp_remote_retrieve_header( $resp, 'content-type' ),
+						(string) $body
+					);
 				}
 			);
 		}
@@ -428,10 +492,21 @@ class RNRD_Diagnostics {
 			);
 		}
 
-		if ( false === stripos( $ctype, 'markdown' ) && preg_match( '#<(html|body|head)#i', substr( $body, 0, 200 ) ) ) {
+		// Same assertion as the homepage probe: what Markdown IS, not the absence
+		// of one HTML tag in the first 200 bytes. Both probes share one validator
+		// so they cannot disagree about whether a route is serving Markdown.
+		if ( ! self::response_is_markdown( $ctype, $body ) ) {
+			$is_html = (bool) preg_match( '#<(html|body|head|!doctype)#i', substr( $body, 0, 2000 ) );
+
 			return self::result( 'post_md', 'Post .md route', 'fail',
-				'HTML returned instead of Markdown.',
-				'Page builder intercepting. Check template_redirect priority conflicts.',
+				sprintf(
+					'HTTP 200 but Content-Type is %s%s.',
+					$ctype ?: 'unknown',
+					$is_html ? ' (HTML returned)' : ' and the body does not open as Markdown'
+				),
+				$is_html
+					? "A page builder or theme template is intercepting this route before RankReady runs. Use the `rnrd_template_redirect_priority` filter to push RankReady earlier, e.g. `add_filter( 'rnrd_template_redirect_priority', fn( \$p ) => \$p - 1000 );`."
+					: 'Something between RankReady and the response is replacing the body. Check for a page cache, or a security or optimisation plugin rewriting Content-Type.',
 				array( 'url' => $post_url, 'content_type' => $ctype )
 			);
 		}
@@ -490,7 +565,12 @@ class RNRD_Diagnostics {
 			// rc.9 — Detect SEO plugins that intercept /robots.txt via
 			// custom rewrite (bypasses WP's robots_txt filter entirely).
 			$interceptor = '';
-			if ( class_exists( 'RNRD_Llms_Txt' ) && method_exists( 'RNRD_Llms_Txt', 'detect_robots_txt_interceptor' ) ) {
+			// Guard the class the method is actually on. This read RNRD_Llms_Txt,
+			// where detect_robots_txt_interceptor() has never existed, so the
+			// condition was always false and the whole interceptor diagnosis was
+			// unreachable: every affected site got the generic "re-save" remedy
+			// instead of being told which plugin is serving /robots.txt.
+			if ( class_exists( 'RNRD_Robots' ) && method_exists( 'RNRD_Robots', 'detect_robots_txt_interceptor' ) ) {
 				$interceptor = RNRD_Robots::detect_robots_txt_interceptor();
 			}
 			$has_physical = file_exists( ABSPATH . 'robots.txt' );
@@ -504,7 +584,7 @@ class RNRD_Diagnostics {
 					? "Disable {$interceptor}'s robots.txt feature, OR delete the physical robots.txt at /robots.txt — RankReady's filter (priority PHP_INT_MAX) will then win."
 					: "Disable {$interceptor}'s robots.txt feature in its settings — RankReady will then take over via filter, OR re-save AI Visibility → LLM Crawler Access to write a physical robots.txt that wins at the webserver level.";
 			} elseif ( $has_physical ) {
-				$detail = 'RankReady block missing from physical robots.txt at ' . ABSPATH . 'robots.txt.';
+				$detail = 'RankReady block missing from physical robots.txt at ' . self::relative_to_root( ABSPATH . 'robots.txt' ) . '.';
 				$fix    = 'Re-save AI Visibility → LLM Crawler Access — sync_physical_robots_txt() will rewrite the file with the RankReady block appended.';
 			}
 
@@ -548,6 +628,17 @@ class RNRD_Diagnostics {
 
 		$code = (int) wp_remote_retrieve_response_code( $response );
 		$body = (string) wp_remote_retrieve_body( $response );
+
+		// The handler answers 404 when the toggle is off. 503 is still matched
+		// because a site running an older RankReady, or a cached response from
+		// one, can return it and the advice is identical.
+		if ( 404 === $code && false !== strpos( $body, 'WebMCP is disabled' ) ) {
+			return self::result( 'mcp_manifest', '/.well-known/mcp.json loads', 'warn',
+				'HTTP 404 — the WebMCP toggle is OFF at request time.',
+				'Confirm AI Visibility → WebMCP toggle is actually saved as ON.',
+				array( 'url' => $url, 'http_code' => 404 )
+			);
+		}
 
 		if ( 503 === $code ) {
 			return self::result( 'mcp_manifest', '/.well-known/mcp.json loads', 'warn',
@@ -625,11 +716,22 @@ class RNRD_Diagnostics {
 
 		$rules_string = is_array( $rules ) ? implode( "\n", array_keys( $rules ) ) : (string) $rules;
 		$has_llms     = false !== strpos( $rules_string, 'llms' );
-		$has_md       = false !== strpos( $rules_string, '\\.md' ) || false !== strpos( $rules_string, '.md' );
+		// Match the Markdown rule by its query var, not by '.md': the OKF
+		// rules (okf/index.md etc.) also contain '.md' and would mask a
+		// missing Markdown rule.
+		$has_md       = is_array( $rules ) && false !== strpos( implode( "\n", array_values( $rules ) ), 'rnrd_md_path=' );
 
 		if ( ! $has_llms && 'on' === get_option( 'rnrd_llms_enable', 'off' ) ) {
 			return self::result( 'rewrite_rules', 'Rewrite rules flushed', 'fail',
 				'LLMs.txt enabled but rewrite rule missing.',
+				'Settings → Permalinks → Save (no changes) — re-flushes rules.'
+			);
+		}
+
+		// Same check for the Markdown endpoints.
+		if ( ! $has_md && 'on' === get_option( RNRD_OPT_MD_ENABLE, 'off' ) ) {
+			return self::result( 'rewrite_rules', 'Rewrite rules flushed', 'fail',
+				'Markdown endpoints enabled but the .md rewrite rule is missing.',
 				'Settings → Permalinks → Save (no changes) — re-flushes rules.'
 			);
 		}
@@ -768,10 +870,22 @@ class RNRD_Diagnostics {
 		$mechanism  = $disabled ? 'external cron' : 'WP-Cron';
 
 		if ( 0 === $count ) {
-			// Fresh install or freshly-cleared queue — nothing to measure yet.
-			return self::result( 'wp_cron', 'Cron firing', 'pass',
-				sprintf( 'No events scheduled (%s).', $mechanism ),
-				null
+			/*
+			 * Not a pass, which is what this returned until 1.4.0.
+			 *
+			 * WordPress schedules its own maintenance events (wp_version_check,
+			 * wp_update_plugins, wp_scheduled_delete) during install, so a live
+			 * site with an EMPTY cron array is not a fresh install with nothing
+			 * to measure — it is a site whose queue is being wiped, or whose
+			 * cron option cannot be read. Reporting "pass, no events scheduled"
+			 * on exactly the sites where nothing RankReady schedules will ever
+			 * run is the probe reporting the opposite of what it found. Warn,
+			 * and say what to look at.
+			 */
+			return self::result( 'wp_cron', 'Cron firing', 'warn',
+				sprintf( 'No scheduled events at all (%s). WordPress schedules its own on install, so an empty queue is unusual.', $mechanism ),
+				'Check for a plugin or host feature that clears the cron queue, and confirm the cron option is readable. RankReady schedules its own events, and none of them can run while the queue stays empty.',
+				array( 'event_count' => 0 )
 			);
 		}
 
@@ -862,8 +976,30 @@ class RNRD_Diagnostics {
 	// Environment conflict detection
 	// ═════════════════════════════════════════════════════════════════════════
 
+	/**
+	 * Does RankReady actually keep its dynamic endpoints out of the caches on
+	 * this site, or does it only detect them?
+	 *
+	 * Until 1.4.0 this probe built a $known_with_bypass map and then never read
+	 * it: every detected plugin was reported as "RankReady bypass rules applied"
+	 * and the whole probe returned PASS. So a site running NitroPack or
+	 * Cloudflare APO, which serve finished HTML from their own edge and cannot
+	 * be stopped by a PHP constant set inside WordPress, was told its bypass was
+	 * in place. That is the worst kind of diagnostic: a green check is what stops
+	 * somebody looking, so it actively hid the one configuration that needs a
+	 * human. A probe that cannot verify a thing must say so rather than assert it.
+	 *
+	 * Detection also comes from RNRD_Cache::detect_active() now instead of this
+	 * file's own shorter list, so the two cannot drift apart again.
+	 */
 	private static function probe_cache_plugin(): array {
-		$detected = self::detect_active_cache_plugins();
+		$detected = array();
+		if ( class_exists( 'RNRD_Cache' ) && method_exists( 'RNRD_Cache', 'detect_active' ) ) {
+			$detected = array_values( RNRD_Cache::detect_active() );
+		}
+		if ( ! $detected ) {
+			$detected = self::detect_active_cache_plugins();
+		}
 
 		if ( empty( $detected ) ) {
 			return self::result( 'cache_plugin', 'Page cache plugin', 'info',
@@ -872,27 +1008,68 @@ class RNRD_Diagnostics {
 			);
 		}
 
-		// RNRD_Cache::exclude_url_patterns() ships exclusions for these. Verify the filter ran.
-		$known_with_bypass = array(
-			'LiteSpeed Cache' => 'LITESPEED_VERSION',
-			'WP Rocket'       => 'WP_ROCKET_VERSION',
-			'W3 Total Cache'  => 'W3TC',
-			'WP Super Cache'  => 'WPSC_VERSION',
-			'Autoptimize'     => 'AUTOPTIMIZE_PLUGIN_DIR',
-			'WP Fastest Cache'=> 'WPFC_WP_PLUGIN_DIR',
-			'SG Optimizer'    => 'SiteGround_Optimizer\\VERSION',
-			'Hummingbird'     => 'WPHB_VERSION',
-		);
+		/*
+		 * Bypassed: RankReady sets DONOTCACHEPAGE (and LSCWP_NO_CACHE for
+		 * LiteSpeed) on its dynamic responses, and these read it as an early
+		 * bail-out. For WP Rocket, W3TC and WP Super Cache the exclusion is
+		 * also persisted into the plugin's own settings, see
+		 * RNRD_Cache::persist_*_exclusions().
+		 */
+		$bypassed = array( 'LiteSpeed Cache', 'WP Rocket', 'W3 Total Cache', 'WP Super Cache', 'WP Fastest Cache' );
+
+		/*
+		 * Edge and static-file caches. These serve a stored copy of the HTML
+		 * before PHP runs, or from a CDN, so no constant set inside WordPress
+		 * reaches them. Each needs an exclusion in ITS own configuration, which
+		 * a plugin cannot write. Named individually because claiming coverage
+		 * here is exactly the bug being fixed.
+		 */
+		$edge = array( 'NitroPack', 'Cloudflare APO', 'Kinsta Edge', 'WP Engine Edge', 'SWIS Performance', 'Pantheon Edge', 'Nginx Helper', 'Perfmatters' );
+
+		$covered   = array_values( array_intersect( $detected, $bypassed ) );
+		$at_edge   = array_values( array_intersect( $detected, $edge ) );
+		$unchecked = array_values( array_diff( $detected, $bypassed, $edge ) );
 
 		$reports = array();
-		foreach ( $detected as $name ) {
-			$reports[] = $name . ' — RankReady bypass rules applied';
+		if ( $covered ) {
+			$reports[] = implode( ', ', $covered ) . ' — RankReady bypass rules applied';
+		}
+		if ( $at_edge ) {
+			$reports[] = implode( ', ', $at_edge ) . ' — caches ahead of PHP, RankReady cannot exclude itself';
+		}
+		if ( $unchecked ) {
+			$reports[] = implode( ', ', $unchecked ) . ' — bypass not verified by RankReady';
 		}
 
-		return self::result( 'cache_plugin', 'Page cache plugin', 'pass',
+		$detail = array(
+			'detected'      => $detected,
+			'bypassed'      => $covered,
+			'edge'          => $at_edge,
+			'not_verified'  => $unchecked,
+		);
+
+		if ( ! $at_edge && ! $unchecked ) {
+			return self::result( 'cache_plugin', 'Page cache plugin', 'pass',
+				implode( '; ', $reports ),
+				null,
+				$detail
+			);
+		}
+
+		$fix = $at_edge
+			? sprintf(
+				'Exclude /llms.txt, /llms-full.txt and any URL ending in .md from %s in its own settings or dashboard. A cache that runs before WordPress cannot be told to skip a page from inside WordPress.',
+				implode( ' and ', $at_edge )
+			)
+			: sprintf(
+				'RankReady sets DONOTCACHEPAGE on its dynamic responses, which most caches honour, but it has not been confirmed for %s. Request /llms.txt twice and check the response is not served from cache; if it is, add an exclusion there.',
+				implode( ', ', $unchecked )
+			);
+
+		return self::result( 'cache_plugin', 'Page cache plugin', 'warn',
 			implode( '; ', $reports ),
-			null,
-			array( 'detected' => $detected )
+			$fix,
+			$detail
 		);
 	}
 
@@ -969,7 +1146,7 @@ class RNRD_Diagnostics {
 			}
 			return self::result( 'md_negotiation', 'Markdown endpoint (/index.md)', 'warn',
 				'/index.md returned Content-Type: ' . $ctype . ' instead of text/markdown.',
-				'Flush rewrite rules (Settings → Permalinks → Save). If a page builder intercepts template_redirect before priority 1, ask it to lower its priority.',
+				"Flush rewrite rules (Settings → Permalinks → Save). If a page builder still intercepts this route, use the `rnrd_template_redirect_priority` filter to push RankReady earlier, e.g. `add_filter( 'rnrd_template_redirect_priority', fn( \$p ) => \$p - 1000 );`.",
 				array( 'content-type' => $ctype ) );
 		}
 
@@ -1026,10 +1203,14 @@ class RNRD_Diagnostics {
 			return self::result( 'edge_cache_hit', 'Edge cache HIT scan', 'info',
 				'RNRD_Cache unavailable; skipped.', null );
 		}
-		if ( 'on' !== get_option( RNRD_OPT_LLMS_ENABLE, 'off' ) ) {
-			return self::result( 'edge_cache_hit', 'Edge cache HIT scan', 'info',
-				'/llms.txt is disabled; skipped.', null );
-		}
+
+		// issue #42 — ALWAYS scan /llms.txt for an edge-cache HIT, even when
+		// RankReady's own toggle is off. A stale cached 404 (or a stale cached
+		// response from whatever else is serving the URL) is invisible unless
+		// this probe actually looks — the toggle now only changes who is
+		// presumed to own the content, never whether we look.
+		$owned      = 'on' === get_option( RNRD_OPT_LLMS_ENABLE, 'off' );
+		$owner_note = $owned ? '' : ' RankReady\'s LLMs.txt toggle is OFF — this reflects whatever is currently serving /llms.txt, not necessarily RankReady.';
 
 		$probe = RNRD_Cache::probe_edge_cache_status( home_url( '/llms.txt' ) );
 
@@ -1045,30 +1226,56 @@ class RNRD_Diagnostics {
 				? 'Server-level cache is serving /llms.txt before PHP runs. Apply the LiteSpeed/Apache .htaccess snippet (Diagnostics → Server bypass snippet) or rebuild your edge cache.'
 				: 'Edge cache (' . $layer . ') is holding /llms.txt. Purge the edge cache for this URL and verify Cache-Control: no-store reaches your CDN.';
 			return self::result( 'edge_cache_hit', 'Edge cache HIT scan', 'warn',
-				$probe['detail'] . ' — ' . $layer . ' is caching this endpoint.',
+				$probe['detail'] . ' — ' . $layer . ' is caching this endpoint.' . $owner_note,
 				$fix,
-				array( 'probe' => $probe ) );
+				array( 'probe' => $probe, 'rankready_owns_endpoint' => $owned ) );
 		}
 
 		if ( 'miss' === $probe['status'] ) {
 			return self::result( 'edge_cache_hit', 'Edge cache HIT scan', 'pass',
-				$probe['detail'] . ' — edge layer correctly bypasses /llms.txt.',
+				$probe['detail'] . ' — edge layer correctly bypasses /llms.txt.' . $owner_note,
 				null,
-				array( 'probe' => $probe ) );
+				array( 'probe' => $probe, 'rankready_owns_endpoint' => $owned ) );
 		}
 
 		return self::result( 'edge_cache_hit', 'Edge cache HIT scan', 'pass',
-			'No edge-cache indicator headers detected. Either no CDN/proxy in front, or it is correctly bypassing this URL.',
+			'No edge-cache indicator headers detected. Either no CDN/proxy in front, or it is correctly bypassing this URL.' . $owner_note,
 			null,
-			array( 'probe' => $probe ) );
+			array( 'probe' => $probe, 'rankready_owns_endpoint' => $owned ) );
 	}
 
 	/**
-	 * FREE-99 — Detect third-party `template_redirect` callbacks that may
-	 * race RankReady's priority 1 handlers (Bricks Builder, Oxygen, Cwicly).
+	 * issue #41 — Detect third-party `template_redirect` callbacks that may
+	 * race RankReady's handlers (Bricks Builder, Oxygen, Cwicly).
+	 *
+	 * RankReady's own baseline moved from a fixed low priority to
+	 * `rnrd_template_redirect_priority( 0 )` (default -9999, filterable via
+	 * `rnrd_template_redirect_priority`), so this probe now compares against
+	 * that real band (offset 0 through offset 2) instead of a hardcoded `5`,
+	 * and against its LAST hook rather than its first, so a callback sitting
+	 * on the Markdown handler's or the Accept negotiator's own priority is
+	 * still reported. Almost nothing in a
+	 * normal install registers at or below -9999 — WordPress core's own
+	 * `_wp_admin_bar_init` sits at priority 0 — so callback counting against
+	 * the real baseline is no longer a guess: a hit here is a genuine
+	 * pre-empting registration, not core noise. We additionally cross-check
+	 * against a live fetch of /llms.txt so the warning reflects an actual
+	 * observed symptom (HTML instead of the expected plain-text response)
+	 * rather than callback counting alone.
 	 */
 	private static function probe_template_redirect_race(): array {
 		global $wp_filter;
+
+		// RankReady does not occupy one priority, it occupies a small band: the
+		// /okf/ router at offset 0, the Markdown and llms.txt handlers at offset 1,
+		// and the Accept negotiator at offset 2. Comparing against offset 0 alone
+		// skipped every callback sitting at offset 1 or 2, which are exactly the
+		// priorities that can pre-empt the Markdown handler and the Accept
+		// negotiator. The cutoff is therefore our LAST hook, not our first.
+		$baseline = rnrd_template_redirect_priority( 0 );
+		$latest   = rnrd_template_redirect_priority( 2 );
+		$band     = $baseline === $latest ? (string) $baseline : $baseline . ' to ' . $latest;
+
 		if ( ! isset( $wp_filter['template_redirect'] ) ) {
 			return self::result( 'tpl_redirect_race', 'template_redirect priority race', 'pass',
 				'No competing template_redirect hooks registered.', null );
@@ -1077,8 +1284,8 @@ class RNRD_Diagnostics {
 		$callbacks = $wp_filter['template_redirect']->callbacks ?? array();
 		$racers    = array();
 		foreach ( $callbacks as $priority => $cbs ) {
-			if ( $priority > 5 ) {
-				continue; // RankReady runs at 1; anything > 5 cannot race us.
+			if ( $priority > $latest ) {
+				continue; // Anything registered after our last hook cannot race us.
 			}
 			foreach ( (array) $cbs as $cb ) {
 				$fn = $cb['function'] ?? null;
@@ -1088,9 +1295,21 @@ class RNRD_Diagnostics {
 				} elseif ( is_array( $fn ) && isset( $fn[0], $fn[1] ) ) {
 					$class = is_object( $fn[0] ) ? get_class( $fn[0] ) : (string) $fn[0];
 					$name  = $class . '::' . (string) $fn[1];
+				} elseif ( $fn instanceof Closure ) {
+					// Named, not skipped. A bare closure on template_redirect is a
+					// perfectly ordinary way for a plugin to race us, and dropping
+					// every unnameable callback made exactly that case invisible to
+					// the probe. The declaring file is what the user can act on.
+					$name = self::describe_closure( $fn );
+				} elseif ( is_object( $fn ) && method_exists( $fn, '__invoke' ) ) {
+					$name = get_class( $fn ) . '::__invoke';
+					$fn   = array( $fn, '__invoke' ); // so is_core_callback() can reflect it
 				}
 				if ( '' === $name || false !== stripos( $name, 'RNRD_' ) || false !== stripos( $name, 'RankReady' ) ) {
 					continue; // skip ours
+				}
+				if ( self::is_core_callback( $fn ) ) {
+					continue; // skip WordPress core's own callbacks
 				}
 				$racers[] = 'priority ' . $priority . ': ' . $name;
 			}
@@ -1098,13 +1317,211 @@ class RNRD_Diagnostics {
 
 		if ( empty( $racers ) ) {
 			return self::result( 'tpl_redirect_race', 'template_redirect priority race', 'pass',
-				'No third-party callbacks at priority ≤ 5. RankReady (priority 1) wins.', null );
+				'No third-party callbacks at or before RankReady\'s own priorities (' . $band . ').', null );
 		}
 
-		return self::result( 'tpl_redirect_race', 'template_redirect priority race', 'warn',
-			count( $racers ) . ' competing hook(s) at priority ≤ 5: ' . implode( '; ', array_slice( $racers, 0, 3 ) ),
-			'If /llms.txt or /.well-known/mcp.json returns HTML, ask the conflicting plugin to lower its template_redirect priority below 1. RankReady cannot go any earlier.',
-			array( 'racers' => $racers ) );
+		// Cross-check against a real symptom: fetch /llms.txt and see whether
+		// it actually looks pre-empted (HTML instead of plain text/markdown),
+		// so the verdict is not callback counting alone.
+		$symptom_confirmed = false;
+		$response           = wp_remote_get( home_url( '/llms.txt' ), array( 'timeout' => 5, 'redirection' => 2 ) );
+		if ( ! is_wp_error( $response ) ) {
+			$body         = (string) wp_remote_retrieve_body( $response );
+			$content_type = (string) wp_remote_retrieve_header( $response, 'content-type' );
+			if ( false !== stripos( $content_type, 'text/html' ) || false !== stripos( ltrim( $body ), '<!DOCTYPE' ) || false !== stripos( ltrim( $body ), '<html' ) ) {
+				$symptom_confirmed = true;
+			}
+		}
+
+		$status = $symptom_confirmed ? 'warn' : 'info';
+		$detail = count( $racers ) . ' competing hook(s) registered at or before RankReady\'s own priorities (' . $band . '): ' . implode( '; ', array_slice( $racers, 0, 3 ) )
+			. ( $symptom_confirmed ? ' — /llms.txt is currently returning HTML, confirming a real conflict.' : ' — /llms.txt currently returns as expected, so this has not caused a visible problem yet.' );
+
+		return self::result( 'tpl_redirect_race', 'template_redirect priority race', $status,
+			$detail,
+			'If /llms.txt or /.well-known/mcp.json returns HTML, use the `rnrd_template_redirect_priority` filter to push RankReady\'s priority even lower than its default (-9999 + offset), e.g. `add_filter( \'rnrd_template_redirect_priority\', fn( $p ) => $p - 1000 );`.',
+			array( 'racers' => $racers, 'baseline_priority' => $baseline, 'latest_priority' => $latest, 'symptom_confirmed' => $symptom_confirmed ) );
+	}
+
+	/**
+	 * True when a hook callback is defined by WordPress core itself.
+	 *
+	 * Core registers `_wp_admin_bar_init` on `template_redirect` at priority 0
+	 * (wp-includes/default-filters.php), so a stock install with no other
+	 * plugins active reported a "competing hook" and every single user saw the
+	 * warning. A conflict probe that fires on 100% of installs tells nobody
+	 * anything, and it trained people to ignore the one case that matters.
+	 *
+	 * Detected by where the callback is DEFINED, not by its name. A name list
+	 * would rot the moment core adds another early callback, and a name match
+	 * would also swallow a third-party function that happened to be called
+	 * something similar.
+	 *
+	 * @param mixed $fn Raw callback from $wp_filter.
+	 */
+	private static function is_core_callback( $fn ): bool {
+		try {
+			if ( $fn instanceof Closure ) {
+				$ref = new ReflectionFunction( $fn );
+			} elseif ( is_string( $fn ) && function_exists( $fn ) ) {
+				$ref = new ReflectionFunction( $fn );
+			} elseif ( is_string( $fn ) && false !== strpos( $fn, '::' ) ) {
+				// 'Class::method' string form. Without this branch it fell through
+				// to "not core", which is the safe direction but would resurface
+				// the false positive if core ever registered a hook this way.
+				list( $rnrd_cls, $rnrd_mth ) = explode( '::', $fn, 2 );
+				$ref = new ReflectionMethod( $rnrd_cls, $rnrd_mth );
+			} elseif ( is_array( $fn ) && isset( $fn[0], $fn[1] ) ) {
+				$ref = new ReflectionMethod(
+					is_object( $fn[0] ) ? get_class( $fn[0] ) : (string) $fn[0],
+					(string) $fn[1]
+				);
+			} else {
+				return false;
+			}
+		} catch ( ReflectionException $e ) {
+			return false; // cannot prove it is core, so treat it as third-party.
+		}
+
+		// Internal PHP functions have no file. They are not core WordPress.
+		$file = (string) $ref->getFileName();
+		if ( '' === $file ) {
+			return false;
+		}
+
+		$file = self::canonical_path( $file );
+		foreach ( array( WPINC, 'wp-admin' ) as $rnrd_core_dir ) {
+			if ( 0 === strpos( $file, self::canonical_path( ABSPATH . $rnrd_core_dir ) . '/' ) ) {
+				return true;
+			}
+		}
+
+		return false;
+	}
+
+	/**
+	 * Normalise a path AND resolve symlinks, for prefix comparison.
+	 *
+	 * Reflection reports a file's real, symlink-resolved path. ABSPATH on
+	 * WP Engine, Pantheon and any Capistrano-style atomic deploy is a symlink
+	 * (`current` -> `releases/N`), so comparing a resolved path against an
+	 * unresolved prefix never matches and every core callback reads as
+	 * third-party — which is the exact 100%-of-installs false positive this
+	 * probe was fixed for, just narrowed to the hosts most likely to hit it.
+	 * realpath() returns false for a path that no longer exists; fall back to
+	 * the normalised string rather than comparing against an empty prefix.
+	 */
+	private static function canonical_path( string $path ): string {
+		$real = realpath( $path );
+		return wp_normalize_path( false === $real ? $path : $real );
+	}
+
+	/**
+	 * Replace the site's absolute paths anywhere in a block of report text.
+	 *
+	 * Runs longest-prefix-first so the deeper root wins when ABSPATH and its
+	 * symlink-resolved twin share a prefix, and covers WP_CONTENT_DIR when a
+	 * site keeps wp-content outside the WordPress root.
+	 */
+	public static function redact_paths( string $text ): string {
+		$roots = array( wp_normalize_path( ABSPATH ) );
+		$real  = self::canonical_path( ABSPATH );
+		if ( ! in_array( $real, $roots, true ) ) {
+			$roots[] = $real;
+		}
+		if ( defined( 'WP_CONTENT_DIR' ) ) {
+			foreach ( array( wp_normalize_path( WP_CONTENT_DIR ), self::canonical_path( WP_CONTENT_DIR ) ) as $rnrd_cd ) {
+				if ( ! in_array( $rnrd_cd, $roots, true ) ) {
+					$roots[] = $rnrd_cd;
+				}
+			}
+		}
+		// Longest first: WP_CONTENT_DIR is usually inside ABSPATH, and replacing
+		// the shorter root first would leave the tail of the longer one behind.
+		usort( $roots, static function ( $a, $b ) { return strlen( $b ) - strlen( $a ); } );
+
+		foreach ( $roots as $root ) {
+			$root = rtrim( $root, '/' );
+			if ( '' === $root || '/' === $root ) {
+				continue;
+			}
+			// Both separator styles: the report can carry Windows paths verbatim
+			// from a PHP warning even though wp_normalize_path() gives forward slashes.
+			$text = str_replace( array( $root, str_replace( '/', '\\', $root ) ), '<site-root>', $text );
+		}
+		return $text;
+	}
+
+	/**
+	 * A filesystem path with the WordPress root replaced by a marker.
+	 *
+	 * The copyable Support Bundle is built to be pasted into a public
+	 * WordPress.org forum thread, and the site's absolute server path is not
+	 * something a user should have to notice and strip by hand before doing
+	 * that. On shared hosting it carries the account name; on managed hosts it
+	 * carries the site slug and release number. The part that actually helps a
+	 * supporter is which file it is, not where the server keeps it.
+	 *
+	 * Falls back to the basename when the path is outside the WordPress root,
+	 * so nothing upstream of ABSPATH leaks either.
+	 */
+	public static function relative_to_root( string $path ): string {
+		$path = wp_normalize_path( $path );
+		$root = rtrim( wp_normalize_path( ABSPATH ), '/' ) . '/';
+		if ( 0 === strpos( $path, $root ) ) {
+			return '<site-root>/' . substr( $path, strlen( $root ) );
+		}
+		// Try again with symlinks resolved, for hosts where ABSPATH is a symlink.
+		$real_path = self::canonical_path( $path );
+		$real_root = rtrim( self::canonical_path( ABSPATH ), '/' ) . '/';
+		if ( 0 === strpos( $real_path, $real_root ) ) {
+			return '<site-root>/' . substr( $real_path, strlen( $real_root ) );
+		}
+		return '<elsewhere>/' . basename( $path );
+	}
+
+	/**
+	 * Human-readable label for a closure: the file and line it was declared on,
+	 * relative to the WordPress root so no server path leaves the site.
+	 */
+	private static function describe_closure( Closure $fn ): string {
+		try {
+			$ref  = new ReflectionFunction( $fn );
+			$file = (string) $ref->getFileName();
+			if ( '' === $file ) {
+				return 'closure';
+			}
+			return 'closure in ' . self::relative_to_root( $file ) . ':' . (int) $ref->getStartLine();
+		} catch ( ReflectionException $e ) {
+			return 'closure';
+		}
+	}
+
+	/**
+	 * Is this response actually a Markdown document?
+	 *
+	 * Two positive signals, both required:
+	 *   1. Content-Type names markdown. RNRD_Markdown::serve_markdown() always
+	 *      sends `text/markdown; charset=utf-8`, so anything else means the
+	 *      response did not come from our handler (or was rewritten after it).
+	 *   2. The body opens as Markdown: either YAML frontmatter (`---`, emitted by
+	 *      post_to_markdown() when Include metadata is on) or an ATX heading
+	 *      (`# `, which build_homepage_overview_markdown() always emits and which
+	 *      is also what a post looks like with metadata turned off).
+	 *
+	 * Checking the Content-Type alone would pass a page cache that kept our
+	 * header and swapped the body; checking the body alone would pass an HTML
+	 * document whose first 200 bytes happened to hold a comment or a BOM.
+	 */
+	private static function response_is_markdown( string $ctype, string $body ): bool {
+		if ( false === stripos( $ctype, 'markdown' ) ) {
+			return false;
+		}
+
+		// Tolerate a UTF-8 BOM and leading blank lines; nothing else.
+		$head = ltrim( preg_replace( '/^\xEF\xBB\xBF/', '', substr( $body, 0, 512 ) ) );
+
+		return 0 === strpos( $head, '---' ) || (bool) preg_match( '/^#{1,6}\s/', $head );
 	}
 
 	private static function probe_page_builder(): array {
@@ -1118,7 +1535,11 @@ class RNRD_Diagnostics {
 		}
 
 		return self::result( 'page_builder', 'Page builder', 'pass',
-			"$builder detected — RankReady uses template_redirect priority 1 to beat default builder hooks.",
+			sprintf(
+				'%1$s detected — RankReady uses template_redirect priority %2$d to beat default builder hooks.',
+				$builder,
+				rnrd_template_redirect_priority( 0 )
+			),
 			null,
 			array( 'builder' => $builder )
 		);
@@ -1134,13 +1555,20 @@ class RNRD_Diagnostics {
 
 		if ( '' === $plugin ) {
 			return self::result( 'seo_plugin', 'SEO plugin', 'info',
-				'No SEO plugin detected — RankReady will emit standalone Article + Speakable schema.',
+				'No SEO plugin detected — RankReady will emit standalone Article, Speakable and FAQ schema.',
 				null
 			);
 		}
 
 		return self::result( 'seo_plugin', 'SEO plugin', 'pass',
-			"$plugin detected. Schema merging active, double meta-robots tag prevented.",
+			// Detecting the plugin proves the integration is loaded, not that the
+			// rendered page ended up with exactly one meta-robots tag. Claiming the
+			// outcome from the precondition is how a report tells a user something
+			// is fixed when it is not. State the mechanism, which IS established by
+			// detection: RankReady never echoes a robots meta of its own (see
+			// RNRD_Snippet::init(), which only ever filters someone else's tag), so
+			// no duplicate can originate here.
+			"$plugin detected. Schema merging active; RankReady never emits a robots meta of its own, so it cannot add a second one.",
 			null,
 			array( 'plugin' => $plugin )
 		);
@@ -1190,6 +1618,52 @@ class RNRD_Diagnostics {
 		);
 	}
 
+	/**
+	 * Are the saved API keys actually encrypted on this host?
+	 *
+	 * Encryption at rest was the one security property in this plugin with no
+	 * check behind it. `RNRD_Crypto::encrypt()` falls back to storing the raw
+	 * value when OpenSSL is missing or the cipher call fails, which is the right
+	 * trade (losing somebody's key is worse) but was invisible: no notice, no
+	 * log, deliberately, because a log line is where a leaked key ends up.
+	 *
+	 * So this reports the state instead. It names the affected options and never
+	 * touches a value, and the cipher test runs against a canary string.
+	 */
+	private static function probe_secret_encryption(): array {
+		if ( ! class_exists( 'RNRD_Crypto' ) ) {
+			return self::result( 'secret_encryption', 'API key encryption', 'info',
+				'Not available on this install.', null );
+		}
+
+		$works = method_exists( 'RNRD_Crypto', 'self_test' ) ? RNRD_Crypto::self_test() : true;
+		$plain = method_exists( 'RNRD_Crypto', 'unencrypted_secrets' ) ? RNRD_Crypto::unencrypted_secrets() : array();
+		$count = count( $plain );
+
+		if ( ! $works ) {
+			return self::result( 'secret_encryption', 'API key encryption', 'fail',
+				'This server cannot encrypt: AES-256-GCM is unavailable, so saved keys are stored as plain text like any other WordPress setting.',
+				'Ask your host to enable PHP\'s OpenSSL extension with AES-256-GCM. Until then, use keys scoped to only what RankReady needs.',
+				array( 'unencrypted' => $plain )
+			);
+		}
+
+		if ( $count > 0 ) {
+			return self::result( 'secret_encryption', 'API key encryption', 'warn',
+				sprintf(
+					/* translators: %d: number of stored keys. */
+					_n( '%d saved key is stored as plain text. Encryption works here, so it was saved before it was available.', '%d saved keys are stored as plain text. Encryption works here, so they were saved before it was available.', $count, 'rankready-ai-llm-seo' ),
+					$count
+				),
+				'Open the API Keys tab and press Save on each key. Re-saving stores it encrypted.',
+				array( 'unencrypted' => $plain )
+			);
+		}
+
+		return self::result( 'secret_encryption', 'API key encryption', 'pass',
+			'AES-256-GCM verified, and no saved key is stored in the clear.', null );
+	}
+
 	private static function probe_php_version(): array {
 		$v  = PHP_VERSION;
 		$ok = version_compare( $v, '7.4', '>=' );
@@ -1221,6 +1695,38 @@ class RNRD_Diagnostics {
 		);
 	}
 
+	/**
+	 * Strip secrets out of a raw WP_Error message before it goes into a
+	 * report a user may paste into a public WP.org support thread.
+	 *
+	 * Gemini's probe URL embeds the API key as a query-string parameter
+	 * (`?key=...`), so a network-layer WP_Error (cURL error 6, a redirect
+	 * message, etc.) can echo the full request URL — key included — back
+	 * into `get_error_message()`. Every other provider passes its key via
+	 * an Authorization header, which cURL error text does not normally
+	 * quote, but this still runs for all of them as defense-in-depth:
+	 * a proxy or firewall block page could echo the request line either
+	 * way, and this must never be the one probe that gets it wrong.
+	 *
+	 * @param string $message Raw WP_Error message.
+	 * @param string ...$secrets Known secret values in scope for this probe
+	 *                           (API key, login, password). Empty values
+	 *                           are skipped so str_replace never matches ''.
+	 */
+	private static function sanitize_provider_error( string $message, string ...$secrets ): string {
+		foreach ( $secrets as $secret ) {
+			if ( '' !== $secret ) {
+				$message = str_replace( $secret, '[REDACTED]', $message );
+			}
+		}
+		// Defense-in-depth: strip any URL's query string (a key we did not
+		// already know about, e.g. one echoed via a redirect chain) and any
+		// bare 20+-char alnum token (the general shape of an API key).
+		$message = preg_replace( '#(https?://[^\s?]+)\?[^\s]*#i', '$1?[REDACTED]', $message );
+		$message = preg_replace( '/\b[A-Za-z0-9_-]{20,}\b/', '[REDACTED]', $message );
+		return $message;
+	}
+
 	private static function probe_provider( string $provider ): array {
 		$cfg = self::PROVIDER_PROBES[ $provider ] ?? null;
 		if ( ! $cfg ) {
@@ -1233,7 +1739,7 @@ class RNRD_Diagnostics {
 		if ( '' === $key ) {
 			return self::result( "provider_$provider", "Provider: $provider", 'info',
 				'No API key configured.',
-				"Add key in Settings → AI Provider → $provider."
+				"Add the key under RankReady → Settings → API Keys → $provider."
 			);
 		}
 
@@ -1258,7 +1764,7 @@ class RNRD_Diagnostics {
 
 		if ( is_wp_error( $response ) ) {
 			return self::result( "provider_$provider", "Provider: $provider", 'fail',
-				'Network error: ' . $response->get_error_message(),
+				'Network error: ' . self::sanitize_provider_error( $response->get_error_message(), $key ),
 				'Server can\'t reach provider. Check firewall / outbound HTTPS.'
 			);
 		}
@@ -1318,7 +1824,7 @@ class RNRD_Diagnostics {
 
 		if ( is_wp_error( $response ) ) {
 			return self::result( 'provider_dataforseo', 'Provider: DataForSEO', 'fail',
-				'Network error: ' . $response->get_error_message(),
+				'Network error: ' . self::sanitize_provider_error( $response->get_error_message(), $login, $password ),
 				'Check outbound HTTPS to api.dataforseo.com.'
 			);
 		}
@@ -1426,9 +1932,25 @@ class RNRD_Diagnostics {
 
 		if ( ! is_wp_error( $internal ) ) {
 			$code = (int) wp_remote_retrieve_response_code( $internal );
-			// 200/204 = direct serve. 301/302 = WP recognised the route and
-			// canonicalises — proves the handler is registered.
-			if ( ( $code >= 200 && $code < 300 ) || $code === 301 || $code === 302 ) {
+			/*
+			 * 200/204 = direct serve.
+			 *
+			 * A 3xx counts ONLY when it keeps the same path. The redirect this
+			 * branch exists for is WP canonicalising `http://localhost/llms.txt`
+			 * to `https://example.com/llms.txt` — host changes, path does not.
+			 * Accepting any 301/302 also accepted the redirect that means the
+			 * OPPOSITE: WordPress not recognising the route and canonicalising
+			 * the request away to the home page, which is a missing endpoint
+			 * being reported as "serving correctly".
+			 */
+			$same_path = false;
+			if ( 301 === $code || 302 === $code || 307 === $code || 308 === $code ) {
+				$location  = (string) wp_remote_retrieve_header( $internal, 'location' );
+				$want      = untrailingslashit( (string) ( wp_parse_url( $internal_url, PHP_URL_PATH ) ?: '/' ) );
+				$got       = untrailingslashit( (string) ( wp_parse_url( $location, PHP_URL_PATH ) ?: '/' ) );
+				$same_path = ( '' !== $location && $want === $got );
+			}
+			if ( ( $code >= 200 && $code < 300 ) || $same_path ) {
 				$body_ok = true;
 				if ( $body_check !== null && $code >= 200 && $code < 300 ) {
 					$body    = (string) wp_remote_retrieve_body( $internal );
@@ -1445,7 +1967,7 @@ class RNRD_Diagnostics {
 		}
 
 		return self::result( $key, $label, 'warn',
-			'Public-URL loopback failed; internal probe also did not return 2xx.',
+			'Public-URL loopback failed, and the internal probe neither returned 2xx nor redirected to the same path.',
 			'Common on Docker / local dev / reverse-proxy hosting. Open ' . $url . ' in a browser to verify it actually works for visitors.',
 			array( 'url' => $url )
 		);
@@ -1523,6 +2045,32 @@ class RNRD_Diagnostics {
 		);
 	}
 
+	/**
+	 * The subset of get_environment() that is safe to paste into a public
+	 * WP.org support thread. Deliberately excludes the versioned active-
+	 * plugins list, mu-plugins (these often name a client or agency), the
+	 * exact server_software / mysql_version strings, and WP_DEBUG state —
+	 * all of that is real attack-surface disclosure and fingerprinting
+	 * data with no support value to a public reader. Keep this in sync
+	 * with format_public_report(), which is the only consumer.
+	 */
+	public static function get_environment_for_public_sharing(): array {
+		global $wp_version;
+		$full = self::get_environment();
+
+		// Major.minor is enough for troubleshooting ("6.9.x") without
+		// fingerprinting the exact WordPress patch build.
+		$wp_mm = preg_match( '/^(\d+\.\d+)/', (string) $wp_version, $m ) ? $m[1] : (string) $wp_version;
+
+		return array(
+			'rankready_version'    => $full['rankready_version'],
+			'wordpress_version'    => $wp_mm,
+			'php_version'          => PHP_MAJOR_VERSION . '.' . PHP_MINOR_VERSION,
+			'permalink_struct'     => $full['permalink_struct'],
+			'active_plugins_count' => count( $full['active_plugins'] ),
+		);
+	}
+
 	// ═════════════════════════════════════════════════════════════════════════
 	// Forensic dumps — extra detail for support reports
 	// ═════════════════════════════════════════════════════════════════════════
@@ -1555,13 +2103,13 @@ class RNRD_Diagnostics {
 			if ( file_exists( $path ) ) {
 				$out[ $name ] = array(
 					'exists'   => true,
-					'path'     => $path,
+					'path'     => self::relative_to_root( $path ),
 					'size'     => filesize( $path ),
 					'modified' => gmdate( 'Y-m-d H:i:s', filemtime( $path ) ) . ' UTC',
 					'writable' => is_writable( $path ), // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_is_writable -- diagnostics-only check, WP_Filesystem unnecessary for read-only inspection
 				);
 			} else {
-				$out[ $name ] = array( 'exists' => false, 'path' => $path );
+				$out[ $name ] = array( 'exists' => false, 'path' => self::relative_to_root( $path ) );
 			}
 		}
 		return $out;
@@ -1710,7 +2258,10 @@ class RNRD_Diagnostics {
 		if ( ( defined( 'SEOPRESS_VERSION' ) || defined( 'SEOPRESS_PRO_VERSION' ) ) ) {
 			$sp_pro = (array) get_option( 'seopress_pro_option_name', array() );
 			$sp_tit = (array) get_option( 'seopress_titles_option_name', array() );
-			$out['SEOPress ' . SEOPRESS_VERSION] = array(
+			// Either constant can be the one defined (SEOPress Pro can load
+			// without the free core), so never read SEOPRESS_VERSION bare:
+			// an undefined constant is a fatal Error on PHP 8.
+			$out['SEOPress ' . ( defined( 'SEOPRESS_VERSION' ) ? SEOPRESS_VERSION : SEOPRESS_PRO_VERSION )] = array(
 				'pro_llms_txt'    => ! empty( $sp_pro['seopress_pro_llms_txt'] ) ? 'YES' : 'no',
 				'pro_robots'      => ! empty( $sp_pro['seopress_pro_robots'] ) ? 'YES (SEOPress overriding /robots.txt)' : 'no',
 				'schema_enabled'  => ! empty( $sp_tit['seopress_titles_single_titles'] ) ? 'managed by SEOPress (default ON)' : 'unknown',
@@ -1747,7 +2298,7 @@ class RNRD_Diagnostics {
 				foreach ( $ls as $line ) {
 					if ( false !== stripos( $line, 'llms.txt' ) || false !== stripos( $line, '.well-known/mcp' ) ) { $has = true; break; }
 				}
-				$status = $has ? 'EXCLUSION REGISTERED ✓' : 'exclusion not visible in litespeed.conf.cache-exc — RankReady uses no_cache_headers fallback';
+				$status = $has ? 'EXCLUSION REGISTERED' : 'exclusion not visible in litespeed.conf.cache-exc — RankReady uses no_cache_headers fallback';
 			}
 			if ( 'WP Rocket' === $name ) {
 				$rocket = (array) get_option( 'wp_rocket_settings', array() );
@@ -1756,7 +2307,7 @@ class RNRD_Diagnostics {
 				foreach ( $reject as $line ) {
 					if ( false !== stripos( $line, 'llms' ) || false !== stripos( $line, 'mcp' ) ) { $has = true; break; }
 				}
-				$status = $has ? 'EXCLUSION REGISTERED ✓' : 'add /llms\\.txt, /llms-full\\.txt, /.*\\.md, /\\.well-known/mcp\\.json to WP Rocket → Advanced Rules → Never Cache URLs';
+				$status = $has ? 'EXCLUSION REGISTERED' : 'add /llms\\.txt, /llms-full\\.txt, /.*\\.md, /\\.well-known/mcp\\.json to WP Rocket → Advanced Rules → Never Cache URLs';
 			}
 			$out[ $name ] = $status;
 		}
@@ -1764,27 +2315,39 @@ class RNRD_Diagnostics {
 	}
 
 	/**
-	 * Find any active page-builder mu-plugins or actions that might
-	 * still intercept template_redirect at default priority despite
-	 * our priority 1. Useful when /llms.txt returns HTML.
+	 * issue #41 — Find any active page-builder mu-plugins or actions that
+	 * might still intercept template_redirect at or before RankReady's own
+	 * priority. Useful when /llms.txt returns HTML.
+	 *
+	 * The old version matched `priority 1 ` .. `priority 5 ` as literal
+	 * string prefixes, which silently missed `priority 0` and every negative
+	 * priority — exactly the range RankReady's own handlers now live in
+	 * (`rnrd_template_redirect_priority()` defaults to -9999 plus a small
+	 * per-handler offset). Parse the priority numerically instead so 0 and
+	 * negative values are handled correctly.
 	 */
 	public static function dump_template_redirect_competitors(): array {
 		$hooks = self::dump_hooks_on( 'template_redirect', 80 );
 		$out   = array();
+
+		// RankReady registers its five template_redirect handlers at offsets
+		// 0-2 above the base priority; anything at or before the highest of
+		// those offsets could plausibly run before, at the same time as, or
+		// interleaved with one of them.
+		$our_max_priority = rnrd_template_redirect_priority( 2 );
+
 		foreach ( $hooks as $line ) {
-			// Surface only non-RankReady callbacks at priority < 10 (could race us).
-			if ( false === strpos( $line, 'RNRD_' )
-			  && ( 0 === strpos( $line, 'priority 1 ' )
-			    || 0 === strpos( $line, 'priority 2 ' )
-			    || 0 === strpos( $line, 'priority 3 ' )
-			    || 0 === strpos( $line, 'priority 4 ' )
-			    || 0 === strpos( $line, 'priority 5 ' ) ) ) {
-				$out[] = '⚠ ' . $line;
-			} elseif ( 0 === strpos( $line, 'priority 1 ' )
-			        || 0 === strpos( $line, 'priority 2 ' )
-			        || 0 === strpos( $line, 'priority 3 ' ) ) {
-				$out[] = '✓ ' . $line;
+			if ( ! preg_match( '/^priority\s+(-?\d+)\s+(.*)$/', $line, $m ) ) {
+				continue; // e.g. "(no hooks registered)" / "... (truncated)"
 			}
+			$priority = (int) $m[1];
+			$is_ours  = false !== strpos( $line, 'RNRD_' );
+
+			if ( $priority > $our_max_priority ) {
+				continue; // registered after RankReady's own handlers; cannot race them.
+			}
+
+			$out[] = ( $is_ours ? '[ok] ' : '[!] ' ) . $line;
 		}
 		return $out;
 	}
@@ -1793,7 +2356,11 @@ class RNRD_Diagnostics {
 	// Plaintext report formatter — for 1-click copy-to-clipboard
 	// ═════════════════════════════════════════════════════════════════════════
 
-	public static function format_plaintext_report( array $result ): string {
+	public static function format_plaintext_report( array $result, bool $redacted = false ): string {
+		if ( $redacted ) {
+			return self::format_public_report( $result );
+		}
+
 		$env    = $result['environment'];
 		$checks = $result['checks'];
 		$totals = $result['totals'];
@@ -1820,7 +2387,7 @@ class RNRD_Diagnostics {
 		$L( 'Server:       ' . ( $env['server_software'] ?? 'unknown' ) );
 		$L( 'Multisite:    ' . ( $env['multisite'] ? 'yes' : 'no' ) );
 		$L( 'HTTPS:        ' . ( $env['is_https'] ? 'yes' : 'no' ) );
-		$L( 'Permalinks:   ' . ( ! empty( $env['permalink_struct'] ) ? $env['permalink_struct'] : '⚠ default/plain (this BREAKS our endpoints — switch to Post name)' ) );
+		$L( 'Permalinks:   ' . ( ! empty( $env['permalink_struct'] ) ? $env['permalink_struct'] : '[!] default/plain (this BREAKS our endpoints — switch to Post name)' ) );
 		$L( 'WP_DEBUG:     ' . ( $env['wp_debug'] ? 'true' : 'false' ) . '   WP_DEBUG_LOG: ' . ( $env['wp_debug_log'] ? 'true' : 'false' ) );
 		$L( '' );
 		$L( sprintf( 'Summary:   %d pass · %d warn · %d fail · %d info',
@@ -1830,7 +2397,7 @@ class RNRD_Diagnostics {
 		// ── PROBE RESULTS ──────────────────────────────────────────────────
 		$H( 'PROBE RESULTS' );
 		foreach ( $checks as $c ) {
-			$icon = array( 'pass' => '✓ PASS', 'warn' => '⚠ WARN', 'fail' => '✗ FAIL', 'info' => 'ℹ INFO' )[ $c['status'] ] ?? '? ' . strtoupper( $c['status'] );
+			$icon = array( 'pass' => '[PASS]', 'warn' => '[WARN]', 'fail' => '[FAIL]', 'info' => '[INFO]' )[ $c['status'] ] ?? '[?] ' . strtoupper( $c['status'] );
 			$L( '' );
 			$L( $icon . '  ' . $c['label'] );
 			$L( '       ' . $c['detail'] );
@@ -1899,7 +2466,7 @@ class RNRD_Diagnostics {
 				$L( '   ' . str_pad( $name, 16 ) . '(not present)  ' . $info['path'] );
 			} else {
 				$L( '   ' . str_pad( $name, 16 ) . sprintf( '%d bytes  modified %s  writable=%s',
-					$info['size'], $info['modified'], $info['writable'] ? 'yes' : 'NO ⚠' ) );
+					$info['size'], $info['modified'], $info['writable'] ? 'yes' : 'NO [!]' ) );
 			}
 		}
 
@@ -1907,7 +2474,7 @@ class RNRD_Diagnostics {
 		$H( 'REWRITE RULES MATCHING llms.txt / robots / .md / mcp' );
 		$rr = self::dump_matching_rewrite_rules();
 		if ( empty( $rr ) ) {
-			$L( '   ⚠ NO MATCHING RULES — flush rewrite rules: Settings → Permalinks → Save' );
+			$L( '   [!] NO MATCHING RULES — flush rewrite rules: Settings → Permalinks → Save' );
 		} else {
 			foreach ( $rr as $regex => $query ) {
 				$L( '   ' . self::truncate( $regex, 50 ) . '  →  ' . self::truncate( $query, 80 ) );
@@ -1920,16 +2487,16 @@ class RNRD_Diagnostics {
 			$L( '   ' . $line );
 		}
 
-		$H( 'HOOKS ON `template_redirect` (early priorities only — these race for /llms.txt etc.)' );
+		$H( 'HOOKS ON `template_redirect` (at or before RankReady\'s own priority — these race for /llms.txt etc.)' );
 		$comp = self::dump_template_redirect_competitors();
 		if ( empty( $comp ) ) {
-			$L( '   (none at priority ≤ 5)' );
+			$L( '   (none at or before RankReady\'s priority)' );
 		} else {
 			foreach ( $comp as $line ) {
 				$L( '   ' . $line );
 			}
 			$L( '   ' );
-			$L( '   Legend: ✓ = RankReady (expected), ⚠ = other plugin/theme racing us' );
+			$L( '   Legend: [ok] = RankReady (expected), [!] = other plugin/theme racing us' );
 		}
 
 		// ── SEO PLUGIN CONFIG ──────────────────────────────────────────────
@@ -1977,13 +2544,119 @@ class RNRD_Diagnostics {
 		$L( '  • A bug report or issue tracker' );
 		$L( '  • Your hosting provider when reporting a server issue' );
 		$L( '' );
-		$L( 'No personal data is included — only public URLs, plugin names, server' );
-		$L( 'software, and your toggle states. No API keys, no post content.' );
+		/*
+		 * Say what is actually in the report.
+		 *
+		 * This used to claim "no post content", which was not true: the
+		 * forensic section prints the first ~220 bytes of what each public
+		 * endpoint returned, and /index.md returns post content. It also
+		 * lists mu-plugins, which the Plugins screen never shows. None of
+		 * that is a leak — every byte of it is already served to any visitor
+		 * who requests those URLs — but a privacy line that overstates is
+		 * worse than none, because somebody reads it and pastes the report
+		 * into a public forum on the strength of it.
+		 */
+		$L( 'What is in here: public URLs, plugin and mu-plugin names, theme and' );
+		$L( 'server software, your RankReady settings, and the first ~220 bytes of' );
+		$L( 'what each public endpoint returns — the same bytes any visitor gets.' );
+		$L( 'What is NOT: API keys, logins, passwords, file paths, and nothing at' );
+		$L( 'all from private, draft or password-protected posts.' );
 
 		$L( '' );
 		$L( '═══════════════════ End Diagnostic Report ═══════════════════' );
 
-		return implode( "\n", $lines );
+		// Final sweep before the bundle is handed to the clipboard. Individual
+		// probes are careful, but a path can arrive inside a PHP warning, a
+		// third-party plugin's message or a future probe nobody remembered to
+		// route through relative_to_root(). Redacting the assembled text once
+		// means the guarantee holds for whatever gets added later.
+		return self::redact_paths( implode( "\n", $lines ) );
+	}
+
+	/**
+	 * The public/support-safe report — this is what "Copy Diagnostic
+	 * Report" produces by default (format_plaintext_report()'s $redacted
+	 * param defaults to true, and the REST route's `redacted` arg defaults
+	 * to true). It shares the same probe results as the full forensic
+	 * report but drops every section that discloses site attack surface:
+	 * the versioned active-plugins list, mu-plugins, live endpoint
+	 * response headers, physical webroot files, rewrite rules, hook
+	 * dumps, SEO/cache plugin config, and exact server/PHP/MySQL/debug
+	 * strings. A user pasting this into a public WP.org thread should not
+	 * be handing every reader of that thread a plugin inventory of their
+	 * site.
+	 */
+	private static function format_public_report( array $result ): string {
+		$env    = self::get_environment_for_public_sharing();
+		$checks = $result['checks'];
+		$totals = $result['totals'];
+
+		$lines = array();
+		$L = function ( string $s = '' ) use ( &$lines ) { $lines[] = $s; };
+		$H = function ( string $title ) use ( &$lines ) {
+			$lines[] = '';
+			$lines[] = '═══ ' . $title . ' ' . str_repeat( '═', max( 1, 70 - strlen( $title ) ) );
+		};
+
+		$L( '╔══════════════════════════════════════════════════════════════════════╗' );
+		$L( '║      RankReady Diagnostic Report — Public / Support-Safe             ║' );
+		$L( '╚══════════════════════════════════════════════════════════════════════╝' );
+		$L( '' );
+		$L( 'Generated:      ' . $result['generated_at'] . ' UTC' );
+		$L( 'Plugin:         RankReady ' . $env['rankready_version'] );
+		$L( 'WordPress:      ' . $env['wordpress_version'] );
+		$L( 'PHP:            ' . $env['php_version'] );
+		$L( 'Permalinks:     ' . ( ! empty( $env['permalink_struct'] ) ? $env['permalink_struct'] : '[!] default/plain (this BREAKS our endpoints — switch to Post name)' ) );
+		$L( 'Active plugins: ' . $env['active_plugins_count'] . ' (names withheld from this report)' );
+		$L( '' );
+		$L( sprintf( 'Summary:   %d pass · %d warn · %d fail · %d info',
+			$totals['pass'], $totals['warn'], $totals['fail'], $totals['info']
+		) );
+
+		// ── PROBE RESULTS ──────────────────────────────────────────────────
+		$H( 'PROBE RESULTS' );
+		foreach ( $checks as $c ) {
+			$icon = array( 'pass' => '[PASS]', 'warn' => '[WARN]', 'fail' => '[FAIL]', 'info' => '[INFO]' )[ $c['status'] ] ?? '[?] ' . strtoupper( $c['status'] );
+			$L( '' );
+			$L( $icon . '  ' . $c['label'] );
+			$L( '       ' . $c['detail'] );
+			if ( ! empty( $c['fix'] ) ) {
+				$L( '       FIX → ' . $c['fix'] );
+			}
+			// Deliberately no $c['meta'] dump here — meta can carry raw
+			// response headers, body previews or file paths meant for the
+			// forensic report only.
+		}
+
+		// ── PLAIN ENGLISH FAILURE EXPLAINER ────────────────────────────────
+		$fails = array_filter( $checks, function ( $c ) { return 'fail' === $c['status']; } );
+		if ( $fails ) {
+			$H( 'WHAT TO FIX FIRST (plain English)' );
+			$n = 1;
+			foreach ( $fails as $c ) {
+				$L( '' );
+				$L( $n . '. ' . $c['label'] );
+				$L( '   What we saw: ' . $c['detail'] );
+				if ( ! empty( $c['fix'] ) ) {
+					$L( '   What to do:  ' . $c['fix'] );
+				}
+				$L( '   Why it matters: ' . self::why_matters( $c['id'] ) );
+				$n++;
+			}
+		}
+
+		// ── ABOUT THIS REPORT ────────────────────────────────────────────
+		$H( 'ABOUT THIS REPORT' );
+		$L( 'This is the public/support-safe version: probe results and version' );
+		$L( 'numbers only. It leaves out your plugin inventory, mu-plugins, exact' );
+		$L( 'server software string, and debug flags on purpose — that detail can' );
+		$L( 'expose what this site runs to anyone reading a public thread. If a' );
+		$L( 'developer working your ticket needs it, they will ask for it directly.' );
+
+		$L( '' );
+		$L( '═══════════════════ End Diagnostic Report ═══════════════════' );
+
+		return self::redact_paths( implode( "\n", $lines ) );
 	}
 
 	private static function truncate( string $s, int $n ): string {
@@ -2000,18 +2673,18 @@ class RNRD_Diagnostics {
 	 */
 	private static function why_matters( string $probe_id ): string {
 		$map = array(
-			'llms_txt'        => 'AI engines like ChatGPT and Perplexity look at /llms.txt first to understand your site. If it 404s, they fall back to crawling your HTML — slower, less accurate citations.',
-			'llms_full_txt'   => '/llms-full.txt is your entire site as one AI-readable file. Perplexity caches it. Without it, every citation request re-crawls dozens of pages.',
-			'homepage_md'     => 'AI bots request your homepage with Accept: text/markdown. If you return HTML, they parse it inefficiently or skip you.',
+			'llms_txt'        => '/llms.txt is a plain-text map of your site for AI tools that request it. If it returns 404, those tools get nothing from that URL.',
+			'llms_full_txt'   => '/llms-full.txt is the content of your site as one AI-readable file. If it returns 404, a tool that asks for it gets nothing from that URL.',
+			'homepage_md'     => 'Some AI tools request your homepage with Accept: text/markdown. If the response is HTML, they get HTML, not Markdown.',
 			'post_md'         => 'Each post needs a .md route so AI bots can grab clean Markdown instead of parsing your full HTML/JS bundle.',
 			'robots_txt'      => 'Without the RankReady block, AI bots have no signal which crawlers you allow. Many default to blocking everything unknown.',
-			'mcp_manifest'    => 'WebMCP is how Claude Desktop / Cursor / VS Code read your site as a data source. Without /.well-known/mcp.json, those tools never discover you.',
+			'mcp_manifest'    => 'WebMCP is how Claude Desktop / Cursor / VS Code read your site as a data source. Without /.well-known/mcp.json, those tools have no manifest to read.',
 			'rewrite_rules'   => 'WordPress needs rewrite rules registered before any of our /llms.txt or /.md URLs can resolve. Without them, every endpoint returns 404.',
 			'wp_cron'         => 'Content freshness scans and bulk operations need WP cron to run on schedule. If cron is disabled, those features silently stop working.',
 			'db_tables'       => 'The crawler log table stores which AI bots visited which pages. Without it, the Insights tab has nothing to show.',
 			'abilities_api'   => 'WordPress 6.9+ ships a native MCP integration. RankReady uses it when available, falls back to its own manifest otherwise — either is fine.',
 			'cache_plugin'    => 'Cache plugins can serve stale or HTML versions of /llms.txt to AI bots. RankReady tries to add bypass rules but some plugins need manual setup.',
-			'page_builder'    => 'Page builders (Bricks, Elementor, Oxygen, Divi) intercept WordPress template loading. RankReady runs at priority 1 to beat them — if you still see HTML on /llms.txt, a mu-plugin is racing us.',
+			'page_builder'    => 'Page builders (Bricks, Elementor, Oxygen, Divi) intercept WordPress template loading. RankReady runs at template_redirect priority ' . rnrd_template_redirect_priority( 0 ) . ' to beat them — if you still see HTML on /llms.txt, a mu-plugin is racing us.',
 			'seo_plugin'      => 'Your SEO plugin emits its own schema markup. RankReady merges into it via filters to avoid double tags. If your SEO plugin schema is OFF, RankReady\'s standalone schema is also OFF — use the rankready_force_standalone_schema filter to override.',
 			'cache_constants' => 'WP_CACHE / DONOTCACHEPAGE / DISABLE_WP_CRON change how content caching and scheduling behave. Info-only here — for context, not a fix.',
 			'brand_identity'  => 'Brand name + summary + about are the only AI-facing description of your site. Empty Brand Identity means llms.txt has no useful header for AI engines.',

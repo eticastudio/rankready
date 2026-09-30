@@ -58,8 +58,8 @@ class RNRD_Elementor_Faq_Widget extends \Elementor\Widget_Base {
 		$this->add_control( 'title_text', array(
 			'label'       => esc_html__( 'Title Text', 'rankready-ai-llm-seo' ),
 			'type'        => \Elementor\Controls_Manager::TEXT,
-			'default'     => 'Frequently Asked Questions',
-			'placeholder' => 'Frequently Asked Questions',
+			'default'     => __( 'Frequently Asked Questions', 'rankready-ai-llm-seo' ),
+			'placeholder' => __( 'Frequently Asked Questions', 'rankready-ai-llm-seo' ),
 			'condition'   => array( 'show_title' => 'yes' ),
 		) );
 
@@ -211,6 +211,12 @@ class RNRD_Elementor_Faq_Widget extends \Elementor\Widget_Base {
 		if ( ! $post || ! RNRD_Faq::is_post_type_enabled( $post->post_type ) ) {
 			return;
 		}
+		// Same opt-out and password rules the automatic path applies. A widget
+		// dropped into a Theme Builder template is a third emitter of the same
+		// stored text, and it used to ignore both.
+		if ( ! RNRD_Util::can_emit( (int) $post_id, RNRD_META_FAQ_DISABLE ) ) {
+			return;
+		}
 
 		$faq_data = RNRD_Faq::get_faq_data( $post_id );
 		if ( empty( $faq_data ) ) {
@@ -218,6 +224,17 @@ class RNRD_Elementor_Faq_Widget extends \Elementor\Widget_Base {
 		}
 
 		// phpcs:disable WordPress.Security.EscapeOutput.OutputNotEscaped -- render_html() escapes every value it interpolates.
+		/*
+		 * RNRD_Faq::render_html() returns markup it has already escaped: every
+		 * attribute goes through esc_attr(), colours through
+		 * RNRD_Util::sanitize_color(), sizes are cast to int, the heading
+		 * tag through validate_heading_tag() and the title through
+		 * sanitize_text_field(). Wrapping the result in wp_kses_post()
+		 * here would strip valid structural markup without adding safety.
+		 * Annotated so a reviewer can see this is deliberate rather than
+		 * an unescaped echo. Release gate check #11 flags the shape.
+		 */
+		// phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- pre-escaped by the renderer, see above.
 		echo RNRD_Faq::render_html( $faq_data, array(
 			'showTitle'    => 'yes' === ( $settings['show_title'] ?? 'yes' ),
 			'titleText'    => ! empty( $settings['title_text'] ) ? sanitize_text_field( $settings['title_text'] ) : __( 'Frequently Asked Questions', 'rankready-ai-llm-seo' ),

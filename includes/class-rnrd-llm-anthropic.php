@@ -83,6 +83,12 @@ class RNRD_LLM_Anthropic {
 			return RNRD_LLM::error_response( $provider, 'Anthropic returned empty content.', $model );
 		}
 
+		// Cut off at max_tokens, not finished. See RNRD_LLM::is_truncated_reason().
+		$stop = isset( $decoded['stop_reason'] ) ? (string) $decoded['stop_reason'] : '';
+		if ( RNRD_LLM::is_truncated_reason( $stop ) ) {
+			return RNRD_LLM::truncated_response( $provider, $model, $stop );
+		}
+
 		// Defensive: when JSON was requested but the model wrapped output in
 		// ```json fences, strip them. Also pull just the {...} block if the
 		// model added prose around it.

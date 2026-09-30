@@ -26,6 +26,7 @@ body[class*="rankready_page_"] {
 	--rnrd-mint-600: #16C28D;
 	--rnrd-mint-700: #0F9C70;
 	--rnrd-mint-800: #0A6E50;
+	--rnrd-mint-900: #064A36;  /* link hover; 8.6:1 on #F0F0F0 */
 
 	/* ─── Surfaces ────────────────────────────────────────────────────── */
 	--rnrd-bg-canvas:    #F8F9F6;  /* soft off-white — NOT pure white */
@@ -42,13 +43,27 @@ body[class*="rankready_page_"] {
 	--rnrd-border-mint:    #A7F3D2;
 	--rnrd-border-dark:    #262C28;
 
-	/* ─── Text (all contrast-checked against canvas) ──────────────────── */
-	--rnrd-text-primary:   #0F1411;  /* headings, primary */
-	--rnrd-text-secondary: #3D423F;  /* body */
-	--rnrd-text-tertiary:  #6B716D;  /* captions, meta */
-	--rnrd-text-muted:     #9A9F9B;  /* placeholders, disabled */
+	/* ─── Text ─────────────────────────────────────────────────────────
+	   Contrast-checked against #F0F0F0, which is what wp-admin actually
+	   paints behind .rnrd-wrap, NOT against the lighter canvas token. That
+	   distinction is the whole bug: #6B716D cleared 4.5:1 on white and only
+	   reached 4.33:1 on the real surface, so the subtitle and the wizard's
+	   "Step 1 of 3" failed AA on every screen in the product. Checked with
+	   lab/visual-matrix.mjs, which reads the composited colour off the
+	   rendered page rather than trusting these comments. ───────────────── */
+	--rnrd-text-primary:   #0F1411;  /* headings, primary          17.5:1 */
+	--rnrd-text-secondary: #3D423F;  /* body                        9.8:1 */
+	--rnrd-text-tertiary:  #5C625E;  /* captions, meta              5.4:1 */
+	--rnrd-text-muted:     #9A9F9B;  /* placeholders, disabled only, never
+	                                    load-bearing text: 2.6:1 on #F0F0F0,
+	                                    which is deliberate and below AA. */
 	--rnrd-text-inverse:   #F8F9F6;
-	--rnrd-text-link:      #0F9C70;
+	/* mint-700 is a 3:1 colour: correct for icons, borders and a 24px CTA,
+	   and NOT usable as link text. It was the default for every <a> inside
+	   .rnrd-wrap, which is why "Official Website", "View all", "Open
+	   Settings" and the crawler Allow/Block links all failed AA at once. */
+	--rnrd-text-link:      #0A6E50;  /* 5.4:1 on #F0F0F0, 6.3:1 on white */
+	--rnrd-text-link-hover:#064A36;
 	--rnrd-text-on-mint:   #0A2A1F;
 
 	/* ─── Semantic ────────────────────────────────────────────────────── */
@@ -338,4 +353,48 @@ body[class*="rankready_page_"] .rnrd-subsection-title {
 #adminmenu #toplevel_page_rankready-ai-llm-seo.wp-has-current-submenu .wp-menu-image,
 #adminmenu #toplevel_page_rankready-ai-llm-seo.current .wp-menu-image {
     opacity: 1;
+}
+
+/* Directional "go here" arrow on link and button labels.
+
+   The arrow used to be a literal U+2192 inside the translatable string:
+   'View all â', 'Continue â', 'Configure â'. Two problems with that.
+   In an RTL locale the whole layout mirrors but the character does not, so
+   the arrow ended up pointing away from the thing it was pointing at. And a
+   translator had no way to drop it, because it was welded to the words.
+
+   Rendering it from CSS fixes both: the arrow is presentation, the string is
+   words, and [dir="rtl"] flips it. Path separators inside prose
+   ("Settings â Permalinks") are NOT this and are left in the string, where a
+   translator can localise them.
+
+   NOTE: this lives in design-tokens.css because that is the only stylesheet
+   enqueued across all three RankReady admin screen groups (settings, upgrade,
+   post-edit/profile). admin.css never loads on post.php, so a rule placed
+   there would silently delete the meta box arrows. The onboarding screen
+   hangs off options.php and loads none of these sheets, so it carries its own
+   copy of this rule in its inline <style>. */
+.rnrd-arrow-link::after {
+    content: "\2192";
+    margin-left: 4px;
+    display: inline-block;
+}
+[dir="rtl"] .rnrd-arrow-link::after {
+    content: "\2190";
+    margin-left: 0;
+    margin-right: 4px;
+}
+
+/* Leading-arrow variant, for "Prev" style back links. Same reasoning as
+   .rnrd-arrow-link: the glyph was welded to the word ('← Prev') and could
+   neither mirror in RTL nor be dropped by a translator. */
+.rnrd-arrow-link--back::before {
+    content: "\2190";
+    margin-right: 4px;
+    display: inline-block;
+}
+[dir="rtl"] .rnrd-arrow-link--back::before {
+    content: "\2192";
+    margin-right: 0;
+    margin-left: 4px;
 }

@@ -252,6 +252,35 @@
 .rnrd-ab-cred-icon {
 	flex-shrink: 0;
 	opacity: 0.7;
+	/* Drawn, not typed. A literal U+2713 in the markup renders in whatever
+	   glyph the visitor's font stack happens to have, and on several platforms
+	   it picks up the colour-emoji variant. An SVG mask renders identically
+	   everywhere and inherits the surrounding text colour. */
+	display: inline-block;
+	width: 1em;
+	height: 1em;
+	vertical-align: -0.125em;
+	background-color: currentColor;
+	-webkit-mask: var(--rnrd-ab-tick) center / contain no-repeat;
+	mask: var(--rnrd-ab-tick) center / contain no-repeat;
+}
+
+/* Education rows get a star, certifications keep the tick.
+
+   These were two different characters in the markup (U+2605 and U+2713) until
+   the glyphs came out. Collapsing both onto the one tick mask would have been
+   a silent frontend regression: a degree and a certification are different
+   kinds of credential and the author box has always shown them apart. The
+   distinction is decorative only, both spans stay aria-hidden, and the row
+   text already names which is which for anyone not seeing the icon. */
+.rnrd-ab-cred-icon--edu {
+	-webkit-mask-image: var(--rnrd-ab-star);
+	mask-image: var(--rnrd-ab-star);
+}
+
+:root {
+	--rnrd-ab-tick: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M6.2 11.6 2.8 8.2l1.1-1.1 2.3 2.3 5.9-5.9 1.1 1.1z'/%3E%3C/svg%3E");
+	--rnrd-ab-star: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M8 1.2l2 4.6 5 .4-3.8 3.3 1.2 4.9L8 11.8l-4.4 2.6 1.2-4.9L1 6.2l5-.4z'/%3E%3C/svg%3E");
 }
 
 .rnrd-ab-socials {
@@ -419,34 +448,11 @@
 	margin-bottom: 0;
 }
 
-/* ─────────────────────────────────────────────────────────────────────
-   v1.2.0-rc.6 — IA finalization
-   - .rnrd-subsection-title: H3 divider used inside merged cards
-     (AI Summary, FAQ Generator, Author Box, Provider Configuration).
-   - .rnrd-provider-card-inner: renamed from .rnrd-provider-card after the
-     4 provider cards merged into one outer .rnrd-card.
-   - .rnrd-scorecard: Dashboard "Agentic Ready Scorecard" container.
-   ───────────────────────────────────────────────────────────────────── */
-
-.rnrd-card .rnrd-subsection-title {
-	margin: 22px 0 10px;
-	padding: 6px 0 4px;
-	font-size: 14px;
-	font-weight: 600;
-	color: var(--rnrd-color-ink, #1d2327);
-	border-bottom: 1px solid var(--rnrd-color-border, #e5e5e7);
-	letter-spacing: 0.01em;
-}
-
-.rnrd-card > .rnrd-subsection-title:first-of-type {
-	margin-top: 8px;
-}
-
-.rnrd-provider-card-inner {
-	padding-top: 6px;
-}
-
-.rnrd-scorecard .rnrd-scorecard-group ul li:hover {
-	background: var(--rnrd-color-surface-2, #f6f7f7);
-	border-radius: 4px;
-}
+/* Three admin-only selectors used to live here: .rnrd-subsection-title,
+   .rnrd-provider-card-inner and .rnrd-scorecard. This stylesheet is enqueued
+   on the FRONTEND only (RNRD_Block::enqueue_frontend_assets, is_singular),
+   so none of them could ever match a thing here, and every visitor was paying
+   to download admin rules. The first two are already defined in admin.css,
+   which is the sheet that actually loads on those screens. The third belonged
+   to the Dashboard scorecard that was removed in 1.4.0 and has no markup left
+   anywhere in the plugin. Removed rather than moved, on purpose. */

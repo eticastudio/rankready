@@ -68,6 +68,11 @@ class RNRD_Shortcode {
 		if ( ! $post || ! RNRD_Summary::is_post_type_enabled( $post->post_type ) ) {
 			return '';
 		}
+		// Manual placement is still placement: honour the per-post opt-out and
+		// skip password-protected posts, exactly as the automatic path does.
+		if ( ! RNRD_Util::can_emit( (int) $post_id, RNRD_META_DISABLE ) ) {
+			return '';
+		}
 		$raw = (string) get_post_meta( $post_id, RNRD_META_SUMMARY, true );
 		if ( '' === $raw ) {
 			return '';
@@ -90,6 +95,11 @@ class RNRD_Shortcode {
 		if ( ! $post || ! RNRD_Faq::is_post_type_enabled( $post->post_type ) ) {
 			return '';
 		}
+		// Manual placement is still placement: honour the per-post opt-out and
+		// skip password-protected posts, exactly as the automatic path does.
+		if ( ! RNRD_Util::can_emit( (int) $post_id, RNRD_META_FAQ_DISABLE ) ) {
+			return '';
+		}
 		$faq_data = RNRD_Faq::get_faq_data( (int) $post_id );
 		if ( empty( $faq_data ) || ! is_array( $faq_data ) ) {
 			return '';
@@ -110,6 +120,11 @@ class RNRD_Shortcode {
 		}
 		$post = get_post( $post_id );
 		if ( ! $post || ! RNRD_Author_Box::is_post_type_enabled( $post->post_type ) ) {
+			return '';
+		}
+		// Manual placement is still placement: honour the per-post opt-out and
+		// skip password-protected posts, exactly as the automatic path does.
+		if ( ! RNRD_Util::can_emit( (int) $post_id, RNRD_META_AUTHOR_DISABLE ) ) {
 			return '';
 		}
 		$user_id = (int) get_post_field( 'post_author', $post_id );

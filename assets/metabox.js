@@ -81,6 +81,7 @@
 					return normalizeFaq( body && body.faq );
 				},
 				fill: fillFaq,
+				getPath: 'faq/get/',
 			};
 		}
 		return {
@@ -107,6 +108,7 @@
 				return decodeBullets( body && body.summary );
 			},
 			fill: fillSummary,
+			getPath: 'summary/',
 		};
 	}
 
@@ -451,6 +453,123 @@
 					setError( t( 'deleteFailed', 'Could not delete. Try again.' ) );
 					refreshUi();
 				} );
+		}
+
+		// Auto-generate on publish runs through WP-Cron, so a save is followed by
+		// a short silent gap. Say so, and swap the content in when it lands.
+		var autogenEl = wrap.querySelector( '[data-rnrd-autogen]' );
+		var autogenErrEl = wrap.querySelector( '[data-rnrd-autogen-error]' );
+		var autogenTimer = null;
+		var autogenTries = 0;
+
+		function stopAutogenPoll() {
+			if ( autogenTimer ) {
+				clearTimeout( autogenTimer );
+				autogenTimer = null;
+			}
+		}
+
+		// A failure message inside a collapsed panel, or a sidebar that is shut,
+		// is as invisible as no message at all. Open whatever hides it: the
+		// panel, and in the block editor the document sidebar the panel lives in.
+		function revealAutogenError() {
+			if ( ! autogenErrEl || autogenErrEl.hidden ) {
+				return;
+			}
+			var box = autogenErrEl.closest( '.postbox' );
+			if ( box && box.classList.contains( 'closed' ) ) {
+				box.classList.remove( 'closed' );
+				var toggle = box.querySelector( '.handlediv' );
+				if ( toggle ) {
+					toggle.setAttribute( 'aria-expanded', 'true' );
+				}
+			}
+			if ( autogenErrEl.offsetParent === null && window.wp && wp.data && wp.data.dispatch ) {
+				try {
+					var editPost = wp.data.dispatch( 'core/edit-post' );
+					if ( editPost && editPost.openGeneralSidebar ) {
+						editPost.openGeneralSidebar( 'edit-post/document' );
+					}
+				} catch ( e ) {}
+			}
+		}
+
+		function pollAutogen() {
+			stopAutogenPoll();
+			if ( ! autogenEl || postId < 1 || loading ) {
+				return;
+			}
+			if ( autogenTries > 45 ) {
+				// Roughly three minutes of polling with no result: say so instead of
+				// leaving the "queued" notice up forever.
+				if ( ! autogenEl.hidden && autogenErrEl ) {
+					autogenEl.hidden = true;
+					autogenErrEl.textContent = t( 'autogenTimeout', 'This is taking longer than expected. Reload the page in a minute, or use the Generate button to run it now.' );
+					autogenErrEl.hidden = false;
+					revealAutogenError();
+				}
+				return;
+			}
+			autogenTries++;
+			apiRequest( 'GET', spec.getPath, null )
+				.then( function ( res ) {
+					if ( res.ok && res.body && res.body.autogen_pending ) {
+						autogenEl.hidden = false;
+						if ( autogenErrEl ) {
+							autogenErrEl.hidden = true;
+						}
+						autogenTimer = setTimeout( pollAutogen, 4000 );
+						return;
+					}
+					// The run ended. If it failed, say why instead of leaving the
+					// author to wonder why nothing appeared. This also covers a run
+					// that failed before the first poll ever saw it queued.
+					if ( res.ok && res.body && res.body.autogen_error && autogenErrEl ) {
+						autogenEl.hidden = true;
+						autogenErrEl.textContent = res.body.autogen_error;
+						autogenErrEl.hidden = false;
+						revealAutogenError();
+						return;
+					}
+					if ( ! autogenEl.hidden ) {
+						autogenEl.hidden = true;
+						var items = res.ok ? spec.parse( res.body ) : [];
+						if ( items.length ) {
+							applyItems( items );
+							markGenerated();
+							tickCooldown();
+						}
+					}
+				} )
+				.catch( function () {
+					autogenTimer = setTimeout( pollAutogen, 8000 );
+				} );
+		}
+
+		if ( autogenEl ) {
+			if ( ! autogenEl.hidden ) {
+				pollAutogen();
+			}
+			if ( autogenErrEl && ! autogenErrEl.hidden ) {
+				// The block editor mounts its sidebar after this script runs.
+				setTimeout( revealAutogenError, 1200 );
+			}
+			// Block editor: re-check when a save completes.
+			if ( window.wp && wp.data && wp.data.subscribe && wp.data.select ) {
+				var wasSaving = false;
+				wp.data.subscribe( function () {
+					var ed = wp.data.select( 'core/editor' );
+					if ( ! ed || ! ed.isSavingPost ) {
+						return;
+					}
+					var saving = ed.isSavingPost() && ! ed.isAutosavingPost();
+					if ( wasSaving && ! saving ) {
+						autogenTries = 0;
+						setTimeout( pollAutogen, 1500 );
+					}
+					wasSaving = saving;
+				} );
+			}
 		}
 
 		btn.addEventListener( 'click', generate );

@@ -54,6 +54,11 @@ class RNRD_Faq {
 		if ( ! $post || ! self::is_post_type_enabled( $post->post_type ) ) {
 			return '';
 		}
+		// Same opt-out and password rules as the_content, the shortcode, the
+		// Elementor widget and the author block. See RNRD_Summary::render_block().
+		if ( ! RNRD_Util::can_emit( (int) $post_id, RNRD_META_FAQ_DISABLE ) ) {
+			return '';
+		}
 
 		$faq_data = self::get_faq_data( $post_id );
 		if ( empty( $faq_data ) ) {
@@ -205,10 +210,16 @@ class RNRD_Faq {
 			$q_styles[] = 'font-size:' . (int) $attrs['questionFontSize'] . 'px';
 		}
 		if ( ! empty( $attrs['questionFontFamily'] ) ) {
-			$q_styles[] = 'font-family:' . esc_attr( (string) $attrs['questionFontFamily'] );
+			$rnrd_css = RNRD_Util::sanitize_style_value( 'questionFontFamily', (string) $attrs['questionFontFamily'] );
+			if ( '' !== $rnrd_css ) {
+				$q_styles[] = 'font-family:' . $rnrd_css;
+			}
 		}
 		if ( ! empty( $attrs['questionFontWeight'] ) ) {
-			$q_styles[] = 'font-weight:' . esc_attr( (string) $attrs['questionFontWeight'] );
+			$rnrd_css = RNRD_Util::sanitize_style_value( 'questionFontWeight', (string) $attrs['questionFontWeight'] );
+			if ( '' !== $rnrd_css ) {
+				$q_styles[] = 'font-weight:' . $rnrd_css;
+			}
 		}
 		if ( ! empty( $attrs['questionLineHeight'] ) ) {
 			$q_styles[] = 'line-height:' . number_format( (float) $attrs['questionLineHeight'], 2 );
@@ -223,10 +234,16 @@ class RNRD_Faq {
 			$a_styles[] = 'font-size:' . (int) $attrs['answerFontSize'] . 'px';
 		}
 		if ( ! empty( $attrs['answerFontFamily'] ) ) {
-			$a_styles[] = 'font-family:' . esc_attr( (string) $attrs['answerFontFamily'] );
+			$rnrd_css = RNRD_Util::sanitize_style_value( 'answerFontFamily', (string) $attrs['answerFontFamily'] );
+			if ( '' !== $rnrd_css ) {
+				$a_styles[] = 'font-family:' . $rnrd_css;
+			}
 		}
 		if ( ! empty( $attrs['answerFontWeight'] ) ) {
-			$a_styles[] = 'font-weight:' . esc_attr( (string) $attrs['answerFontWeight'] );
+			$rnrd_css = RNRD_Util::sanitize_style_value( 'answerFontWeight', (string) $attrs['answerFontWeight'] );
+			if ( '' !== $rnrd_css ) {
+				$a_styles[] = 'font-weight:' . $rnrd_css;
+			}
 		}
 		if ( ! empty( $attrs['answerLineHeight'] ) ) {
 			$a_styles[] = 'line-height:' . number_format( (float) $attrs['answerLineHeight'], 2 );
@@ -295,7 +312,7 @@ class RNRD_Faq {
 			if ( ! empty( $modified_ts ) ) {
 				$date = wp_date( get_option( 'date_format' ), (int) $modified_ts );
 				$html .= '<p class="rnrd-faq-reviewed">';
-					/* translators: %s: human-readable date the post was last reviewed */
+					/* translators: %s: relative or absolute time */
 				$html .= esc_html( sprintf( __( 'Last reviewed: %s', 'rankready-ai-llm-seo' ), $date ) );
 				$html .= '</p>';
 			}
@@ -543,15 +560,32 @@ class RNRD_Faq {
 	 * Track DataForSEO API usage (calls + cost).
 	 */
 	private static function track_dfs_usage( float $cost ): void {
-		$usage = (array) get_option( 'rnrd_dfs_usage', array(
-			'total_calls' => 0,
-			'total_cost'  => 0,
-		) );
+		// Split out of the serialised `rnrd_dfs_usage` array for the same reason
+		// as the token counters: an array cannot be incremented atomically, and
+		// this one carries real reported money, not an estimate. The legacy
+		// option is still read by get_dfs_usage(), never written again.
+		RNRD_Atomic::bump_option_int( self::OPT_DFS_CALLS, 1 );
+		RNRD_Atomic::bump_option_float( self::OPT_DFS_COST, $cost );
+	}
 
-		$usage['total_calls'] = ( isset( $usage['total_calls'] ) ? (int) $usage['total_calls'] : 0 ) + 1;
-		$usage['total_cost']  = ( isset( $usage['total_cost'] ) ? (float) $usage['total_cost'] : 0 ) + $cost;
+	/** Option names of the atomic DataForSEO counters. */
+	const OPT_DFS_CALLS = 'rnrd_dfs_calls';
+	const OPT_DFS_COST  = 'rnrd_dfs_cost';
 
-		update_option( 'rnrd_dfs_usage', $usage, false );
+	/**
+	 * Cumulative DataForSEO usage, folding pre-1.4.0 history in.
+	 *
+	 * @return array{total_calls:int,total_cost:float}
+	 */
+	public static function get_dfs_usage(): array {
+		$legacy = (array) get_option( 'rnrd_dfs_usage', array() );
+
+		return array(
+			'total_calls' => ( isset( $legacy['total_calls'] ) ? (int) $legacy['total_calls'] : 0 )
+				+ RNRD_Atomic::read_int( self::OPT_DFS_CALLS ),
+			'total_cost'  => ( isset( $legacy['total_cost'] ) ? (float) $legacy['total_cost'] : 0 )
+				+ RNRD_Atomic::read_float( self::OPT_DFS_COST ),
+		);
 	}
 
 	// ── OpenAI FAQ Generation ─────────────────────────────────────────────────
@@ -602,9 +636,10 @@ class RNRD_Faq {
 		// and the REST bulk job; many shortcodes (Elementor, EDD, BBPress, JetEngine,
 		// MailPoet) assume a frontend/current_user context and crash or fire side effects
 		// when invoked from cron. Mirror the guard already used at the generation site below.
+		$body     = self::resolved_body( $post );
 		$content  = wp_doing_cron()
-			? wp_strip_all_tags( strip_shortcodes( $post->post_content ) )
-			: wp_strip_all_tags( do_shortcode( $post->post_content ) );
+			? wp_strip_all_tags( strip_shortcodes( $body ) )
+			: wp_strip_all_tags( do_shortcode( $body ) );
 		$new_hash = md5( $content . $keyword . $count );
 		$old_hash = (string) get_post_meta( $post_id, RNRD_META_FAQ_HASH, true );
 
@@ -629,6 +664,18 @@ class RNRD_Faq {
 		// Detect page type for context-aware FAQ generation.
 		$page_type = self::detect_page_type( $post );
 
+		// Confirm an LLM provider is configured (OpenAI/Claude/Gemini/DeepSeek).
+		if ( ! RNRD_LLM::active_provider_ready() ) {
+			return new \WP_Error(
+				'no_api_key',
+				sprintf(
+					/* translators: %s: AI provider name */
+					__( 'No %s API key configured.', 'rankready-ai-llm-seo' ),
+					RNRD_LLM::get_provider_label( RNRD_LLM::get_active_provider() )
+				)
+			);
+		}
+
 		// Fetch questions from DataForSEO (if credentials available).
 		$dfs_questions = array();
 		if ( ! empty( $keyword ) ) {
@@ -642,17 +689,6 @@ class RNRD_Faq {
 		// Build LLM prompt.
 		$prompt = self::build_faq_prompt( $post, $keyword, $brand_terms, $dfs_questions, $internal_links, $count );
 
-		// Confirm an LLM provider is configured (OpenAI/Claude/Gemini/DeepSeek).
-		if ( ! RNRD_LLM::active_provider_ready() ) {
-			return new \WP_Error(
-				'no_api_key',
-				sprintf(
-					/* translators: %s: AI provider name */
-					__( 'No %s API key configured.', 'rankready-ai-llm-seo' ),
-					RNRD_LLM::get_provider_label( RNRD_LLM::get_active_provider() )
-				)
-			);
-		}
 
 		// Build system prompt with product context.
 		$faq_system  = RNRD_LLM::language_directive( $post->ID );
@@ -825,22 +861,55 @@ class RNRD_Faq {
 		// Save to post meta.
 		// JSON_UNESCAPED_UNICODE keeps non-Latin (Turkish/CJK/Arabic/Hindi/Cyrillic)
 		// as real UTF-8 — see generator.php for the slash-fragility rationale.
-		update_post_meta( $post_id, RNRD_META_FAQ, wp_json_encode( $clean_faq, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES ) );
+		// wp_slash: update_post_meta() unslashes, which would strip the escapes out of the JSON and store it invalid.
+		update_post_meta( $post_id, RNRD_META_FAQ, wp_slash( wp_json_encode( $clean_faq, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES ) ) );
 		update_post_meta( $post_id, RNRD_META_FAQ_HASH, $new_hash );
 		update_post_meta( $post_id, RNRD_META_FAQ_GENERATED, time() );
-		update_post_meta( $post_id, RNRD_META_FAQ_KEYWORD, $keyword );
+		update_post_meta( $post_id, RNRD_META_FAQ_KEYWORD, wp_slash( $keyword ) );
 
 		// Bump dateModified by touching the post (legitimate content update).
 		// Set generator guard to prevent wp_update_post from re-triggering summary generation.
+		$prev_generating            = RNRD_Generator::$generating;
 		RNRD_Generator::$generating = true;
-		wp_update_post( array(
+		RNRD_Util::update_post_fields( array(
 			'ID'            => $post_id,
 			'post_modified' => current_time( 'mysql' ),
 			'post_modified_gmt' => current_time( 'mysql', true ),
 		) );
-		RNRD_Generator::$generating = false;
+		RNRD_Generator::$generating = $prev_generating;
 
 		return $clean_faq;
+	}
+
+	/**
+	 * The post body FAQ generation should actually read.
+	 *
+	 * Every read in this class used to be `$post->post_content` directly, and on
+	 * an Elementor, Bricks, Divi or Beaver Builder page that column holds a
+	 * handful of characters or nothing at all: the real content lives in
+	 * `_elementor_data` and its equivalents. So the content hash was computed
+	 * over an empty string (making every page's hash collide with every other
+	 * page's), detect_page_type() classified everything as 'blog', the prompt
+	 * shipped with no PAGE CONTENT, no headings and no internal links, and the
+	 * model invented questions from the title alone.
+	 *
+	 * RNRD_Generator::resolve_post_content() is the existing answer to exactly
+	 * this: raw content when it is real text, the builder's own rendered output
+	 * when it is not, `the_content` defensively as a last resort. The summary
+	 * generator has routed through it since 1.1.x; FAQ never did.
+	 *
+	 * Falls back to the raw column if the generator is somehow unavailable, so
+	 * this can only ever return the same or more than it used to.
+	 */
+	private static function resolved_body( WP_Post $post ): string {
+		if ( class_exists( 'RNRD_Generator' ) && method_exists( 'RNRD_Generator', 'resolve_post_content' ) ) {
+			$resolved = (string) RNRD_Generator::resolve_post_content( $post );
+			if ( '' !== trim( $resolved ) ) {
+				return $resolved;
+			}
+		}
+
+		return (string) $post->post_content;
 	}
 
 	/**
@@ -852,7 +921,7 @@ class RNRD_Faq {
 	private static function detect_page_type( WP_Post $post ): string {
 		$title = strtolower( get_the_title( $post ) );
 		$type  = $post->post_type;
-		$content_lower = strtolower( $post->post_content );
+		$content_lower = strtolower( self::resolved_body( $post ) );
 
 		// Documentation pages.
 		if ( 'docs' === $type || 'doc' === $type || 'documentation' === $type
@@ -891,7 +960,7 @@ class RNRD_Faq {
 	 * - Docs: troubleshooting, "does it support X", config questions
 	 * - Landing: buyer objections, pricing, comparisons, "is it worth it"
 	 * - Comparison: "vs" questions, "which is better", migration
-	 * - Tutorial: "what if X fails", prerequisites, alternatives
+	 * - Tutorial: "what if X fails", environment fit, trade-offs, verification
 	 * - Blog: topical authority, Reddit-style questions, debate points
 	 *
 	 * Question sourcing priority:
@@ -916,9 +985,10 @@ class RNRD_Faq {
 		// a frontend / current_user context and either crash or trigger side
 		// effects when invoked from cron. Same pattern RNRD_Llms_Txt uses.
 		// (Audit beta.3 #8.)
+		$body    = self::resolved_body( $post );
 		$content = wp_doing_cron()
-			? wp_strip_all_tags( strip_shortcodes( $post->post_content ) )
-			: wp_strip_all_tags( do_shortcode( $post->post_content ) );
+			? wp_strip_all_tags( strip_shortcodes( $body ) )
+			: wp_strip_all_tags( do_shortcode( $body ) );
 		$page_type = self::detect_page_type( $post );
 
 		// Truncate content to ~3500 words to stay within token limits.
@@ -929,7 +999,7 @@ class RNRD_Faq {
 
 		// Extract headings for structural context.
 		$headings = array();
-		if ( preg_match_all( '/<h[2-3][^>]*>(.*?)<\/h[2-3]>/si', $post->post_content, $h_matches ) ) {
+		if ( preg_match_all( '/<h[2-3][^>]*>(.*?)<\/h[2-3]>/si', $body, $h_matches ) ) {
 			foreach ( $h_matches[1] as $h ) {
 				$headings[] = wp_strip_all_tags( trim( $h ) );
 			}
@@ -1003,10 +1073,15 @@ class RNRD_Faq {
 				break;
 
 			case 'tutorial':
+				// Every example here must survive validate_faq_items(). This branch
+				// used to ask for prerequisite, "is there an alternative" and "what
+				// happens after I complete" questions, which the system prompt calls
+				// low-value and the validator deletes, so tutorial posts silently got
+				// fewer FAQs than requested and the user paid for the discarded tokens.
 				$prompt .= "- Ask 'what if step X fails' troubleshooting questions.\n";
-				$prompt .= "- Ask prerequisite questions: 'What do I need before starting?'\n";
-				$prompt .= "- Ask alternative approach questions: 'Is there another way to do X?'\n";
-				$prompt .= "- Ask outcome questions: 'What happens after I complete this?'\n";
+				$prompt .= "- Ask environment questions a reader hits midway: 'Does this work on [specific version, host or setup]?'\n";
+				$prompt .= "- Ask trade-off questions: 'When should I use [method A] instead of [method B]?'\n";
+				$prompt .= "- Ask verification questions: 'How do I know step X actually worked?'\n";
 				$prompt .= "- Think like someone following the tutorial who hits a snag.\n";
 				break;
 
@@ -1131,7 +1206,7 @@ class RNRD_Faq {
 		$links = array();
 		$home  = home_url();
 
-		preg_match_all( '/<a\s[^>]*href=["\']([^"\']+)["\'][^>]*>(.*?)<\/a>/si', $post->post_content, $matches, PREG_SET_ORDER );
+		preg_match_all( '/<a\s[^>]*href=["\']([^"\']+)["\'][^>]*>(.*?)<\/a>/si', self::resolved_body( $post ), $matches, PREG_SET_ORDER );
 
 		foreach ( $matches as $match ) {
 			$url  = $match[1];

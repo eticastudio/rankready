@@ -52,6 +52,16 @@ class RNRD_Schema {
 		if ( defined( 'SQ_VERSION' ) ) {
 			return true;
 		}
+		// SiteSEO and SureRank both out-install SEOPress, which was already on
+		// this list. Without them RankReady emitted a second, competing schema
+		// graph on sites running either one. Constants verified against
+		// siteseo 1.4.1 and surerank 1.10.1, not guessed.
+		if ( defined( 'SITESEO_VERSION' ) ) {
+			return true;
+		}
+		if ( defined( 'SURERANK_VERSION' ) ) {
+			return true;
+		}
 		return false;
 	}
 
@@ -85,6 +95,12 @@ class RNRD_Schema {
 			return;
 		}
 		if ( ! class_exists( 'RNRD_Summary' ) || ! RNRD_Summary::is_enabled() || ! RNRD_Summary::is_post_type_enabled( $post->post_type ) ) {
+			return;
+		}
+		// The visible box respects _rnrd_disable_summary; the JSON-LD has to
+		// as well, or unticking it hides the summary from the reader while
+		// still handing the same sentences to Google.
+		if ( ! RNRD_Util::can_emit( (int) $post_id, RNRD_META_DISABLE ) ) {
 			return;
 		}
 
@@ -227,6 +243,15 @@ class RNRD_Schema {
 	}
 
 	private static function merge_into_article_node( array &$nodes, int $post_id ): void {
+		// One guard for all seven SEO-plugin merge filters. They gated on
+		// is_singular() and nothing else, so a password-protected post shipped
+		// its summary as someone else's JSON-LD, and the per-post opt-out did
+		// not apply on any of them. Guarding here rather than in each filter
+		// means a new integration cannot be added without it.
+		if ( ! RNRD_Util::can_emit( $post_id, RNRD_META_DISABLE ) ) {
+			return;
+		}
+
 		$raw = (string) get_post_meta( $post_id, RNRD_META_SUMMARY, true );
 		if ( empty( $raw ) ) {
 			return;
@@ -256,7 +281,7 @@ class RNRD_Schema {
 		unset( $node );
 	}
 
-	public static function merge_rankmath_schema( $data, $jsonld ): array {
+	public static function merge_rankmath_schema( $data, $jsonld ) {
 		if ( ! is_singular() || ! is_array( $data ) ) {
 			return $data;
 		}
@@ -267,7 +292,7 @@ class RNRD_Schema {
 		return $data;
 	}
 
-	public static function merge_yoast_schema( $graph ): array {
+	public static function merge_yoast_schema( $graph ) {
 		if ( ! is_singular() || ! is_array( $graph ) ) {
 			return $graph;
 		}
@@ -278,7 +303,7 @@ class RNRD_Schema {
 		return $graph;
 	}
 
-	public static function merge_aioseo_schema( $graphs ): array {
+	public static function merge_aioseo_schema( $graphs ) {
 		if ( ! is_singular() || ! is_array( $graphs ) ) {
 			return $graphs;
 		}
@@ -308,6 +333,11 @@ class RNRD_Schema {
 		if ( ! $post_id ) {
 			return $schema;
 		}
+		// SeoPress returns a flat node rather than a graph, so it does not pass
+		// through merge_into_article_node() and needs the same guard here.
+		if ( ! RNRD_Util::can_emit( (int) $post_id, RNRD_META_DISABLE ) ) {
+			return $schema;
+		}
 
 		$raw = (string) get_post_meta( $post_id, RNRD_META_SUMMARY, true );
 		if ( empty( $raw ) ) {
@@ -326,7 +356,7 @@ class RNRD_Schema {
 		return $schema;
 	}
 
-	public static function merge_tsf_schema( $graph ): array {
+	public static function merge_tsf_schema( $graph ) {
 		if ( ! is_singular() || ! is_array( $graph ) ) {
 			return $graph;
 		}
@@ -337,7 +367,7 @@ class RNRD_Schema {
 		return $graph;
 	}
 
-	public static function merge_slim_seo_schema( $graph ): array {
+	public static function merge_slim_seo_schema( $graph ) {
 		if ( ! is_singular() || ! is_array( $graph ) ) {
 			return $graph;
 		}
@@ -368,6 +398,14 @@ class RNRD_Schema {
 	public static function build_article_properties( int $post_id, array $summary ): array {
 		$props = array();
 		$post  = get_post( $post_id );
+
+		// Every in-tree caller passes RNRD_Generator::decode_summary(), which always
+		// sets both keys. This method is public, so Pro and third-party code can
+		// reach it too, and the three `$summary['type']` reads below would emit
+		// undefined-key warnings into a front-end response rather than degrade.
+		// Normalise once instead of guarding three times.
+		$summary = array_merge( array( 'type' => 'empty', 'data' => array() ), $summary );
+
 		$summary_type_ok = $post instanceof WP_Post
 			&& class_exists( 'RNRD_Summary' )
 			&& RNRD_Summary::is_enabled()
@@ -493,47 +531,64 @@ class RNRD_Schema {
 			$props['mentions'] = $mentions;
 		}
 
-		$modified_ts = get_the_modified_time( 'U', $post_id );
-		if ( ! empty( $modified_ts ) ) {
-			$props['lastReviewed'] = gmdate( 'Y-m-d', (int) $modified_ts );
-		}
-
-		if ( $post ) {
-			$author_name = get_the_author_meta( 'display_name', $post->post_author );
-			$author_url  = get_author_posts_url( $post->post_author );
-			$author_desc = get_the_author_meta( 'description', $post->post_author );
-
-			if ( ! empty( $author_name ) ) {
-				$reviewed_by = array(
-					'@type' => 'Person',
-					'name'  => $author_name,
-					'url'   => $author_url,
-				);
-				if ( ! empty( $author_desc ) ) {
-					$reviewed_by['description'] = wp_trim_words( $author_desc, 30 );
-				}
-				$props['reviewedBy'] = $reviewed_by;
-			}
-		}
-
+		/*
+		 * `lastReviewed`, `reviewedBy` and `citation` used to be emitted here.
+		 * All three were removed on 2026-09-26 because each published an
+		 * inference to Google as an assertion of fact, which is the same
+		 * standard this project already holds its customer-facing copy to:
+		 *
+		 * - `lastReviewed` was the post's own modified date. schema.org defines
+		 *   it as the date the content was last reviewed for accuracy, which a
+		 *   modified timestamp is not: fixing a typo, changing a category or
+		 *   re-saving a post all moved it. RankReady's own "Refresh dateModified"
+		 *   feature moves that timestamp with no content change at all, so the
+		 *   review date advanced while nobody reviewed anything. Where a site
+		 *   genuinely records a reviewer and a review date, the author box's
+		 *   per-post "Last reviewed" field emits this property from what a human
+		 *   actually entered (RNRD_Author_Box::inject_review_signals) — that is
+		 *   the honest source, and it is the one that should own the property.
+		 *
+		 * - `reviewedBy` was set to the post's own author, with their WordPress
+		 *   bio as the review description. "Reviewed by the person who wrote it"
+		 *   is a null claim; schema.org means it as an independent check, and a
+		 *   search engine reading it has been told a review happened that never
+		 *   did. Nothing in WordPress records a reviewer, so there is no honest
+		 *   value to put here, and an absent property is correct.
+		 * - `citation` was the first ten external <a> hrefs wrapped as
+		 *   CreativeWork. An affiliate link, a "buy now" button, a social profile
+		 *   and a sponsor logo all became declared citations of source material.
+		 *
+		 * `significantLink` stays: it is defined as a link the page considers
+		 * significant, which is a claim about this page, not about the target.
+		 *
+		 * Any site that genuinely does track a reviewer, or that curates real
+		 * citations, can add either property back through the
+		 * `rankready_ai_schema_properties` filter at the end of this method.
+		 */
 		if ( $post && ! empty( $post->post_content ) ) {
 			$links = self::extract_content_links( $post->post_content, $post_id );
 
 			if ( ! empty( $links['internal'] ) ) {
 				$props['significantLink'] = array_slice( $links['internal'], 0, 10 );
 			}
-			if ( ! empty( $links['external'] ) ) {
-				$citations = array();
-				foreach ( array_slice( $links['external'], 0, 10 ) as $ext_url ) {
-					$citations[] = array(
-						'@type' => 'CreativeWork',
-						'url'   => $ext_url,
-					);
-				}
-				$props['citation'] = $citations;
-			}
 		}
 
+		/*
+		 * accessibilityFeature is a claim about the page's accessibility, so an
+		 * over-claim here is worse than silence: it tells assistive technology and
+		 * search engines a feature is present when it may not be.
+		 *
+		 * - `structuralNavigation` was asserted whenever the content had two or
+		 *   more h2/h3 tags. Two headings are not navigation, and this fired on
+		 *   essentially every post. Removed.
+		 * - `alternativeText` was asserted when ANY one image had an alt
+		 *   attribute. A post with nine bare images and one described image
+		 *   claimed alternative text. It is now asserted only when there is at
+		 *   least one image and EVERY image has a non-empty alt.
+		 * - `tableOfContents` is kept: it matches a specific named TOC plugin's
+		 *   wrapper or block, which is an observation about the markup rather
+		 *   than an inference from prose.
+		 */
 		$features = array();
 		if ( $post && ! empty( $post->post_content ) ) {
 			if ( preg_match( '/class="[^"]*(?:table-of-contents|toc-widget|ez-toc|lwptoc|rr-toc)[^"]*"/i', $post->post_content )
@@ -543,18 +598,27 @@ class RNRD_Schema {
 				$features[] = 'tableOfContents';
 			}
 
-			if ( preg_match_all( '/<h[23][^>]*>/i', $post->post_content, $h_matches ) && count( $h_matches[0] ) >= 2 ) {
-				$features[] = 'structuralNavigation';
-			}
-
-			if ( preg_match( '/<img[^>]+alt="[^"]+"/i', $post->post_content ) ) {
-				$features[] = 'alternativeText';
+			if ( preg_match_all( '/<img\s[^>]*>/i', $post->post_content, $img_matches ) ) {
+				$described = 0;
+				foreach ( $img_matches[0] as $img_tag ) {
+					if ( preg_match( '/\salt=["\'][^"\']+["\']/i', $img_tag ) ) {
+						$described++;
+					}
+				}
+				if ( $described === count( $img_matches[0] ) ) {
+					$features[] = 'alternativeText';
+				}
 			}
 		}
 
-		if ( ! empty( $summary['data'] ) ) {
-			$features[] = 'longDescription';
-		}
+		/*
+		 * `longDescription` was asserted whenever an AI summary existed. In the
+		 * accessibility vocabulary it means a long textual description of
+		 * non-text content — a chart, a diagram, an image — for a reader who
+		 * cannot see it. A summary of the prose is not that, so the property was
+		 * telling assistive technology that described visuals were available
+		 * when nothing of the kind had been produced. Removed 2026-09-26.
+		 */
 
 		if ( ! empty( $features ) ) {
 			$props['accessibilityFeature'] = array_unique( $features );
@@ -575,7 +639,7 @@ class RNRD_Schema {
 		$seen      = array();
 
 		foreach ( $matches[1] as $url ) {
-			$url = esc_url( $url );
+			$url = esc_url_raw( html_entity_decode( $url, ENT_QUOTES ) );
 			if ( empty( $url ) || isset( $seen[ $url ] ) ) {
 				continue;
 			}

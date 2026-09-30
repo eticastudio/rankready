@@ -4,9 +4,11 @@
  *
  * Manages the three content-usage permission signals (ai-train, search,
  * ai-input) that tell AI engines what they may do with site content.
- * The directives are emitted inside the RankReady block in robots.txt
- * via RNRD_Robots::generate_robots_block(), which calls
- * RNRD_Content_Signals::get_robots_fragment() to get this class's output.
+ * The directives are emitted inside the RankReady block in robots.txt by
+ * RNRD_Robots, which reads is_enabled() and get_directive() and places the
+ * Content-Signal line in its own `User-agent: *` group.
+ * get_robots_fragment() has no caller inside the plugin since 1.4.0; it stays
+ * public because it shipped, and third-party code may call it.
  *
  * Option keys (defined in rankready.php):
  *   RNRD_OPT_CONTENT_SIGNALS_ENABLE   — master on/off toggle
@@ -60,9 +62,21 @@ class RNRD_Content_Signals {
 			return '';
 		}
 
+		return "# Content Signals (contentsignals.org)\n" . self::get_directive() . "\n\n";
+	}
+
+	/**
+	 * The bare `Content-Signal:` line, or an empty string when the feature is off.
+	 *
+	 * RNRD_Robots places it inside its own `User-agent: *` group, since the
+	 * directive applies to whichever group it sits in.
+	 */
+	public static function get_directive(): string {
+		if ( ! self::is_enabled() ) {
+			return '';
+		}
+
 		$s = self::get_signals();
-		return "# Content Signals (contentsignals.org)\n"
-			. "Content-Signal: ai-train={$s['ai_train']}, search={$s['search']}, ai-input={$s['ai_input']}\n"
-			. "\n";
+		return "Content-Signal: ai-train={$s['ai_train']}, search={$s['search']}, ai-input={$s['ai_input']}";
 	}
 }

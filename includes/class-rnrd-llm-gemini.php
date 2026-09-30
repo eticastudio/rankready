@@ -2,10 +2,12 @@
 /**
  * RankReady — Google Gemini provider.
  *
- * POST https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}
+ * POST https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent
+ * Auth: x-goog-api-key header. Never ?key= — a query string is logged by every
+ * proxy, WAF and access log on the path, and lands in cURL error text.
  *
  * Notes vs OpenAI:
- *   - API key goes in URL query string, not Authorization header.
+ *   - API key goes in the x-goog-api-key header, not Authorization: Bearer.
  *   - System prompt goes in `systemInstruction.parts[].text`.
  *   - User content is in `contents[].parts[].text` with role: "user".
  *   - Native JSON mode supported via `generationConfig.responseMimeType:
@@ -19,7 +21,7 @@ defined( 'ABSPATH' ) || exit;
 
 class RNRD_LLM_Gemini {
 
-	const ENDPOINT_TEMPLATE = 'https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent?key=%s';
+	const ENDPOINT_TEMPLATE = 'https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent';
 
 	public static function generate( string $system, string $user, array $opts ): array {
 		$provider = RNRD_LLM::PROVIDER_GEMINI;
@@ -47,12 +49,16 @@ class RNRD_LLM_Gemini {
 			'generationConfig' => $generation_config,
 		);
 
-		$endpoint = sprintf( self::ENDPOINT_TEMPLATE, rawurlencode( $model ), rawurlencode( $api_key ) );
+		$endpoint = sprintf( self::ENDPOINT_TEMPLATE, rawurlencode( $model ) );
 
 		$response = wp_remote_post( $endpoint, array(
 			'timeout'    => (int) $opts['timeout'],
 			'user-agent' => 'RankReady/' . RNRD_VERSION . '; WordPress/' . get_bloginfo( 'version' ),
-			'headers'    => array( 'Content-Type' => 'application/json' ),
+			'headers'    => array(
+				'Content-Type'    => 'application/json',
+				// Header auth, not ?key= — see the class docblock.
+				'x-goog-api-key' => $api_key,
+			),
 			// Send non-Latin content as real UTF-8 bytes — see openai client.
 			'body'       => wp_json_encode( $body, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES ),
 		) );
@@ -87,6 +93,12 @@ class RNRD_LLM_Gemini {
 		if ( '' === $content ) {
 			$finish = isset( $decoded['candidates'][0]['finishReason'] ) ? (string) $decoded['candidates'][0]['finishReason'] : 'unknown';
 			return RNRD_LLM::error_response( $provider, 'Gemini returned empty content (finishReason: ' . $finish . ').', $model );
+		}
+
+		// Cut off at MAX_TOKENS, not finished. See RNRD_LLM::is_truncated_reason().
+		$finish_reason = isset( $decoded['candidates'][0]['finishReason'] ) ? (string) $decoded['candidates'][0]['finishReason'] : '';
+		if ( RNRD_LLM::is_truncated_reason( $finish_reason ) ) {
+			return RNRD_LLM::truncated_response( $provider, $model, $finish_reason );
 		}
 
 		$tokens_in  = isset( $decoded['usageMetadata']['promptTokenCount'] ) ? (int) $decoded['usageMetadata']['promptTokenCount'] : 0;

@@ -3,12 +3,19 @@
  * RankReady — AI snippet preview controls.
  *
  * Injects `<meta name="robots" content="max-snippet:-1, max-image-preview:large">`
- * on singular post views so AI engines (ChatGPT, Perplexity, Google AI Overview)
- * can quote the full passage instead of being capped at ~160 characters.
+ * on singular post views, so a crawler that honours the directive is allowed
+ * the full passage instead of being capped at ~160 characters.
  *
- * Per Zyppy's 23-factor AI citation study, "Preview Control" is the 4th
- * highest ranking factor (9.2/10). Sites that allow unlimited snippets are
- * more likely to be cited verbatim instead of summarised away from the source.
+ * Three claims used to sit here: a named SEO vendor's "AI citation study", a
+ * ranked ordinal with a score out of ten, and a statement that unlimited
+ * snippets are more likely to be quoted verbatim. All three were deleted on
+ * 2026-09-26, and none of them are restated here, both so they cannot be copied
+ * back into copy and because the build gate now reads comments too.
+ * None of those numbers came from a source anybody here has read,
+ * and the last one is an outcome claim about citations, which this project does
+ * not make in copy and should not make in a comment either. What the directive
+ * actually does is lift a length cap; whether anything quotes the result is
+ * not ours to assert.
  *
  * Resolution order per post:
  *   1. Per-post meta `_rnrd_max_snippet` if set ('on' | 'off').

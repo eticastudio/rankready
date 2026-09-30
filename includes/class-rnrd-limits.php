@@ -4,7 +4,11 @@
  *
  * The Free WP.org build has NO monthly caps on manual generation. Every
  * AI Summary and FAQ generation a user triggers is permitted. The features
- * that are NOT in the Free build (and ship as "Coming Soon" placeholders):
+ * that are NOT in the Free build. Free renders an upsell panel in their place
+ * (RNRD_Admin::render_pro_panel) naming the feature and linking to Pro; it has
+ * not said "Coming Soon" about any of them since rc.16, because these three
+ * have all shipped in Pro and calling a shipped feature Coming Soon both breaks
+ * the promise and kills the upsell:
  *
  *   - Bulk regeneration across existing posts
  *   - Auto-generate on post publish/update
@@ -69,7 +73,8 @@ class RNRD_Limits {
 		return PHP_INT_MAX;
 	}
 
-	// ── REST endpoint kept for back-compat with admin.js polling ─────────────
+	// ── REST endpoint kept for back-compat: a public route, so external
+	//    callers may poll it even though no bundled script does. ─────────────
 
 	public static function register_rest(): void {
 		register_rest_route(
@@ -95,7 +100,7 @@ class RNRD_Limits {
 	}
 
 	/**
-	 * Stats shape — kept the same key names so admin.js doesn't break,
+	 * Stats shape — kept the same key names so existing callers don't break,
 	 * but every limit is now "unlimited" (-1 sentinel).
 	 *
 	 * @return array

@@ -81,10 +81,10 @@
 	];
 
 	registerBlockType( 'rankready/faq', {
-		title:       'FAQ — RankReady',
+		title:       t( 'faqBlockTitle', 'FAQ — RankReady' ),
 		icon:        'editor-help',
 		category:    'rankready',
-		description: 'Display AI-generated FAQ with brand entity injection. Generate from DataForSEO + OpenAI.',
+		description: t( 'faqBlockDescription', 'Display AI-generated FAQ with brand entity injection. Generate from the RankReady panel.' ),
 		keywords:    [ 'faq', 'questions', 'qa', 'ai', 'ai seo', 'llm', 'geo', 'answer engine', 'seo', 'rankready', 'schema' ],
 
 		attributes: {
@@ -154,6 +154,35 @@
 					} )
 					.catch( function () {} );
 			}, [ postId ] );
+
+			/*
+			 * Reorder used to live inline in onDrop, with the auto-save written as
+			 * `.catch( function () {} )`. That swallowed every failure: the list
+			 * showed the new order, the database kept the old one, and the user was
+			 * told nothing. It also had no keyboard path at all: the only handle was
+			 * a dashicon with aria-hidden="true" and no tabIndex, so reordering FAQ
+			 * items was mouse-only, a WCAG 2.1.1 failure on a shipped control.
+			 *
+			 * Both are fixed here, in one place: move() is what the drag handler and
+			 * the two arrow buttons call, it reverts the local order when the save
+			 * fails, and it says so.
+			 */
+			function moveFaqItem( from, to ) {
+				if ( from === to || from < 0 || to < 0 || from >= faq.length || to >= faq.length ) return;
+				var before    = [].concat( faq );
+				var reordered = [].concat( faq );
+				var moved     = reordered.splice( from, 1 )[0];
+				reordered.splice( to, 0, moved );
+				setFaq( reordered );
+				if ( ! postId ) return;
+				apiFetch( { path: '/rankready/v1/faq/save/' + postId, method: 'POST', data: { faq: reordered } } )
+					.catch( function ( err ) {
+						setFaq( before );
+						setError( ( err && err.message )
+							? err.message
+							: t( 'faqReorderFailed', 'Could not save the new order. The previous order has been restored.' ) );
+					} );
+			}
 
 			function handleGenerate() {
 				if ( ! postId || loading ) return;
@@ -314,7 +343,7 @@
 						colorControl( t( 'color', 'Color' ), attrs.questionColor, function ( v ) { setAttrs( { questionColor: v } ); } ),
 						el( SelectControl, {
 							label: t( 'fontFamily', 'Font Family' ),
-							help: t( 'fontFamilyHelp', 'Pulls from your theme.json fonts (Kadence, or any block theme). Leave blank to inherit.' ),
+							help: t( 'fontFamilyHelp', 'Pulls from your theme.json fonts (Kadence, or any block theme). Leave blank to inherit from theme.' ),
 							value: attrs.questionFontFamily || '',
 							options: rnrdGlobalFontOptions(),
 							onChange: function ( v ) { setAttrs( { questionFontFamily: v } ); },
@@ -398,7 +427,7 @@
 
 					loading
 						? el( 'div', { style: { display: 'flex', alignItems: 'center', gap: '8px', padding: '12px 0' } },
-							el( Spinner ), el( 'span', null, t( 'generatingFaqLong', 'Generating FAQ from DataForSEO + OpenAI…' ) )
+							el( Spinner ), el( 'span', null, t( 'generatingFaqLong', 'Generating FAQ…' ) )
 						)
 						: faq.length > 0
 							? el( 'div', { className: 'rnrd-faq-list' },
@@ -421,18 +450,40 @@
 											e.preventDefault();
 											setDragOver( -1 );
 											if ( dragIndex === i || dragIndex < 0 ) return;
-											var reordered = [].concat( faq );
-											var moved = reordered.splice( dragIndex, 1 )[0];
-											reordered.splice( i, 0, moved );
-											setFaq( reordered );
+											moveFaqItem( dragIndex, i );
 											setDragIndex( -1 );
-											// Auto-save reordered FAQ
-											apiFetch( { path: '/rankready/v1/faq/save/' + postId, method: 'POST', data: { faq: reordered } } ).catch( function () {} );
 										},
 										onDragEnd: function () { setDragIndex( -1 ); setDragOver( -1 ); },
 									},
 										el( 'div', { style: { display: 'flex', alignItems: 'flex-start', gap: '8px' } },
-											el( 'span', { style: { color: '#999', fontSize: '12px', cursor: 'grab', userSelect: 'none', lineHeight: '1.6' } }, '\u2261' ),
+											// Dashicon, not `\u2261`. The editor already loads
+											// dashicons, and the bare character rendered at a
+											// different weight in every editor font.
+											el( 'span', {
+												className: 'dashicons dashicons-menu',
+												'aria-hidden': 'true',
+												style: { color: '#999', fontSize: '16px', width: '16px', height: '16px', cursor: 'grab', userSelect: 'none', lineHeight: '1.2' },
+											} ),
+											// The keyboard path. The dashicon above stays
+											// decorative (it is the drag affordance); these are
+											// real buttons, focusable and labelled, and they call
+											// the same moveFaqItem() the drop handler calls.
+											el( 'div', { style: { display: 'flex', flexDirection: 'column', gap: '2px' } },
+												el( Button, {
+													icon: 'arrow-up-alt2',
+													label: t( 'faqMoveUp', 'Move question up' ),
+													disabled: 0 === i,
+													isSmall: true,
+													onClick: function () { moveFaqItem( i, i - 1 ); },
+												} ),
+												el( Button, {
+													icon: 'arrow-down-alt2',
+													label: t( 'faqMoveDown', 'Move question down' ),
+													disabled: i === faq.length - 1,
+													isSmall: true,
+													onClick: function () { moveFaqItem( i, i + 1 ); },
+												} )
+											),
 											el( 'div', { style: { flex: 1 } },
 												el( 'h4', {
 													className: 'rnrd-faq-question',

@@ -261,9 +261,9 @@ class RNRD_Author_Box {
 				<h2 id="rnrd-author-box" class="rnrd-author-card__title"><?php esc_html_e( 'Author Profile for E-E-A-T', 'rankready-ai-llm-seo' ); ?></h2>
 				<p class="rnrd-author-card__desc">
 					<?php if ( $profile_is_pro ) : ?>
-					<?php esc_html_e( 'Every field below emits Schema.org Person data for Google EEAT and AI citation (ChatGPT, Perplexity, Google AI Overviews). Fill in only what applies. RankReady merges into Rank Math, Yoast, and AIOSEO Person schema automatically when those plugins are active.', 'rankready-ai-llm-seo' ); ?>
+					<?php esc_html_e( 'Every field below is published as Schema.org Person data that search engines and AI crawlers can read. Fill in only what applies. RankReady merges into Rank Math, Yoast, and AIOSEO Person schema automatically when those plugins are active.', 'rankready-ai-llm-seo' ); ?>
 					<?php else : ?>
-					<?php esc_html_e( 'These fields power the on-page Author Box and the basic Person schema that ships with every post. Each input below explains the EEAT or AI-citation signal it produces. Extended schema for credentials, verified identity, and social profiles is listed under Coming Soon.', 'rankready-ai-llm-seo' ); ?>
+					<?php esc_html_e( 'These fields power the on-page Author Box and the basic Person schema that ships with every post. Each input below says which Schema.org property it becomes. Extended schema for credentials, verified identity, and social profiles is listed below, and ships in RankReady Pro.', 'rankready-ai-llm-seo' ); ?>
 					<?php endif; ?>
 				</p>
 				<?php
@@ -276,7 +276,7 @@ class RNRD_Author_Box {
 				<p class="rnrd-author-card__head-cta">
 					<a class="rnrd-author-card__head-link" href="<?php echo esc_url( $rnrd_eeat_url ); ?>">
 						<?php esc_html_e( 'Open RankReady Author Box settings', 'rankready-ai-llm-seo' ); ?>
-						<span class="rnrd-author-card__head-link-arrow" aria-hidden="true">&rarr;</span>
+						<span class="rnrd-author-card__head-link-arrow" aria-hidden="true"></span>
 					</a>
 				</p>
 			</div>
@@ -286,7 +286,7 @@ class RNRD_Author_Box {
 			<!-- ── Identity & Work — FREE ───────────────────────────────────── -->
 			<tr><th colspan="2">
 				<h3><?php esc_html_e( 'Identity & Work', 'rankready-ai-llm-seo' ); ?></h3>
-				<p class="rnrd-author-card__section-intro"><?php esc_html_e( 'The core entity block. Job title plus employer give AI systems a verifiable career identity to attach citations to.', 'rankready-ai-llm-seo' ); ?></p>
+				<p class="rnrd-author-card__section-intro"><?php esc_html_e( 'The core identity block. Job title and employer tell crawlers who wrote the page and where they work.', 'rankready-ai-llm-seo' ); ?></p>
 			</th></tr>
 
 			<tr>
@@ -314,7 +314,7 @@ class RNRD_Author_Box {
 				<th><label for="rnrd_author_bio"><?php esc_html_e( 'Bio', 'rankready-ai-llm-seo' ); ?></label></th>
 				<td>
 					<textarea name="rnrd_author_bio" id="rnrd_author_bio" rows="4" class="large-text" maxlength="500"><?php echo esc_textarea( $m( 'rnrd_author_bio' ) ); ?></textarea>
-					<p class="description"><?php esc_html_e( 'Short professional bio (max 500 chars). Emits as Person.description. Keep it factual — AI systems extract this verbatim.', 'rankready-ai-llm-seo' ); ?></p>
+					<p class="description"><?php esc_html_e( 'Short professional bio (max 500 chars). Emits as Person.description. Keep it factual. It is published as written.', 'rankready-ai-llm-seo' ); ?></p>
 				</td>
 			</tr>
 			<tr>
@@ -322,7 +322,7 @@ class RNRD_Author_Box {
 				<td>
 					<input type="url" name="rnrd_author_headshot" id="rnrd_author_headshot" value="<?php echo esc_attr( $m( 'rnrd_author_headshot' ) ); ?>" class="regular-text" placeholder="https://" />
 					<button type="button" class="button rnrd-media-picker" data-target="rnrd_author_headshot"><?php esc_html_e( 'Select Image', 'rankready-ai-llm-seo' ); ?></button>
-					<p class="description"><?php esc_html_e( 'Real photo, square, at least 400x400px. Emits as Person.image. Avoid avatars and stock photos — AI Overviews favor verifiable faces.', 'rankready-ai-llm-seo' ); ?></p>
+					<p class="description"><?php esc_html_e( 'Real photo, square, at least 400x400px. Emits as Person.image. Use a real photo of the author rather than an avatar or stock image.', 'rankready-ai-llm-seo' ); ?></p>
 				</td>
 			</tr>
 			<tr>
@@ -336,7 +336,7 @@ class RNRD_Author_Box {
 			<!-- ── Experience ─────────────────────────────────────────────── -->
 			<tr><th colspan="2">
 				<h3><?php esc_html_e( 'Experience', 'rankready-ai-llm-seo' ); ?></h3>
-				<p class="rnrd-author-card__section-intro"><?php esc_html_e( 'The first-hand experience and topical authority signals. AI systems weight these heavily when deciding whether to cite a source on a given topic.', 'rankready-ai-llm-seo' ); ?></p>
+				<p class="rnrd-author-card__section-intro"><?php esc_html_e( 'First-hand experience and topics the author writes about. Published as Person properties that crawlers can read.', 'rankready-ai-llm-seo' ); ?></p>
 			</th></tr>
 
 			<tr>
@@ -350,20 +350,29 @@ class RNRD_Author_Box {
 				<th><label for="rnrd_author_expertise"><?php esc_html_e( 'Topics of Expertise', 'rankready-ai-llm-seo' ); ?></label></th>
 				<td>
 					<input type="text" name="rnrd_author_expertise" id="rnrd_author_expertise" value="<?php echo esc_attr( $m( 'rnrd_author_expertise' ) ); ?>" class="large-text" placeholder="WordPress, Elementor, SEO, …" />
-					<p class="description"><?php esc_html_e( 'Comma-separated topics. Emits as Person.knowsAbout[] — the highest-signal field for LLM topical clustering. Use 3–8 specific topics.', 'rankready-ai-llm-seo' ); ?></p>
+					<p class="description"><?php esc_html_e( 'Comma-separated topics. Shown as topic chips in the card layout. RankReady Pro also publishes them as Person.knowsAbout[]. Use 3–8 specific topics.', 'rankready-ai-llm-seo' ); ?></p>
 				</td>
 			</tr>
 
 			<?php if ( ! $profile_is_pro ) : ?>
-			<!-- ── What's next — clean Coming Soon footer ─────────────────── -->
+			<!-- ── Extended author schema — shipped in Pro, previewed here ───
+			     IMPORTANT: These fields are BUILT and shipping in RankReady Pro 1.0.0
+			     today; the inputs live a few lines down behind $profile_is_pro
+			     and Pro's schema class already emits every property named here.
+			     This block previews them, it does NOT promise them. If you ever
+			     find yourself writing "coming soon" or a future tense into this
+			     block, check whether the feature actually shipped first: Free
+			     once labelled eight shipped Pro features "COMING SOON", which
+			     broke the free promise and killed the upsell at the same time.
+			     ─────────────────────────────────────────────────────────────── -->
 			<tr>
 				<td colspan="2" class="rnrd-author-card__next">
 					<div class="rnrd-author-card__next-head">
-						<h4 class="rnrd-author-card__next-title"><?php esc_html_e( 'Coming Soon', 'rankready-ai-llm-seo' ); ?></h4>
-						<span class="rnrd-soon-tag rnrd-soon-tag--inverse"><?php esc_html_e( 'Extended schema', 'rankready-ai-llm-seo' ); ?></span>
+						<h4 class="rnrd-author-card__next-title"><?php esc_html_e( 'Extended author schema', 'rankready-ai-llm-seo' ); ?></h4>
+						<a class="rnrd-pro-tag" href="<?php echo esc_url( rnrd_upgrade_url( 'author-extended-schema' ) ); ?>"><?php esc_html_e( 'Pro', 'rankready-ai-llm-seo' ); ?></a>
 					</div>
 					<p class="rnrd-author-card__next-desc">
-						<?php esc_html_e( 'Four extra section groups will unlock here. Each one emits a distinct Schema.org Person property that AI ranking systems read when picking authors to cite. Names below match the JSON-LD fields RankReady will write.', 'rankready-ai-llm-seo' ); ?>
+						<?php esc_html_e( 'Four more field groups sit here in RankReady Pro. Each one publishes a distinct Schema.org Person property, and the names below are the exact JSON-LD fields RankReady writes. Like everything else in RankReady, they sit alongside Yoast, Rank Math or AIOSEO rather than competing with them.', 'rankready-ai-llm-seo' ); ?>
 					</p>
 					<div class="rnrd-author-card__next-grid">
 						<div class="rnrd-author-card__next-group">
@@ -383,7 +392,7 @@ class RNRD_Author_Box {
 								<li><?php esc_html_e( 'Wikipedia URL — high-trust entity anchor', 'rankready-ai-llm-seo' ); ?></li>
 								<li><?php esc_html_e( 'ORCID iD — academic identifier (dual emit)', 'rankready-ai-llm-seo' ); ?></li>
 								<li><?php esc_html_e( 'Google Scholar URL — academic authority', 'rankready-ai-llm-seo' ); ?></li>
-								<li><?php esc_html_e( 'LinkedIn URL — top-weighted Perplexity signal', 'rankready-ai-llm-seo' ); ?></li>
+								<li><?php esc_html_e( 'LinkedIn URL — professional identity link', 'rankready-ai-llm-seo' ); ?></li>
 							</ul>
 						</div>
 						<div class="rnrd-author-card__next-group">
@@ -410,7 +419,7 @@ class RNRD_Author_Box {
 
 			<!-- ── Credentials ─────────────────────────────────────────────── -->
 			<?php if ( $profile_is_pro ) : ?>
-			<tr><th colspan="2"><h3 style="margin:24px 0 0;"><?php esc_html_e( 'Credentials', 'rankready-ai-llm-seo' ); ?> <span class="rnrd-soon-tag" style="margin-left:8px;"><?php esc_html_e( 'COMING SOON', 'rankready-ai-llm-seo' ); ?></span></h3></th></tr>
+			<tr><th colspan="2"><h3 style="margin:24px 0 0;"><?php esc_html_e( 'Credentials', 'rankready-ai-llm-seo' ); ?></h3></th></tr>
 			<?php endif; ?>
 			<?php if ( $profile_is_pro ) : ?>
 
@@ -473,7 +482,7 @@ class RNRD_Author_Box {
 				<th><label for="rnrd_author_wikidata"><?php esc_html_e( 'Wikidata QID', 'rankready-ai-llm-seo' ); ?></label></th>
 				<td>
 					<input type="text" name="rnrd_author_wikidata" id="rnrd_author_wikidata" value="<?php echo esc_attr( $m( 'rnrd_author_wikidata' ) ); ?>" class="regular-text" placeholder="Q12345" />
-					<p class="description"><?php esc_html_e( 'Your Wikidata identifier if you have one (format: Q12345). Highest-priority sameAs — the canonical entity URI LLMs actually reuse.', 'rankready-ai-llm-seo' ); ?></p>
+					<p class="description"><?php esc_html_e( 'Your Wikidata identifier if you have one (format: Q12345). Published as a sameAs link so crawlers can match this author to the Wikidata entry.', 'rankready-ai-llm-seo' ); ?></p>
 				</td>
 			</tr>
 			<tr>
@@ -494,14 +503,14 @@ class RNRD_Author_Box {
 				<th><label for="rnrd_author_scholar"><?php esc_html_e( 'Google Scholar URL', 'rankready-ai-llm-seo' ); ?></label></th>
 				<td>
 					<input type="url" name="rnrd_author_scholar" id="rnrd_author_scholar" value="<?php echo esc_attr( $m( 'rnrd_author_scholar' ) ); ?>" class="regular-text" placeholder="https://scholar.google.com/citations?user=…" />
-					<p class="description"><?php esc_html_e( 'Google Scholar profile. Emits in sameAs[] — academic authority signal.', 'rankready-ai-llm-seo' ); ?></p>
+					<p class="description"><?php esc_html_e( 'Google Scholar profile. Emits in sameAs[] as a Schema.org identity link.', 'rankready-ai-llm-seo' ); ?></p>
 				</td>
 			</tr>
 			<tr>
 				<th><label for="rnrd_author_linkedin"><?php esc_html_e( 'LinkedIn URL', 'rankready-ai-llm-seo' ); ?></label></th>
 				<td>
 					<input type="url" name="rnrd_author_linkedin" id="rnrd_author_linkedin" value="<?php echo esc_attr( $m( 'rnrd_author_linkedin' ) ); ?>" class="regular-text" placeholder="https://www.linkedin.com/in/…" />
-					<p class="description"><?php esc_html_e( 'LinkedIn profile. Perplexity explicitly weights authors with verifiable LinkedIn — this is the single most important social signal for AI citation.', 'rankready-ai-llm-seo' ); ?></p>
+					<p class="description"><?php esc_html_e( 'LinkedIn profile. Emits in sameAs[] — the most widely recognised professional identity link.', 'rankready-ai-llm-seo' ); ?></p>
 				</td>
 			</tr>
 
@@ -512,7 +521,7 @@ class RNRD_Author_Box {
 				<th><label for="rnrd_author_github"><?php esc_html_e( 'GitHub URL', 'rankready-ai-llm-seo' ); ?></label></th>
 				<td>
 					<input type="url" name="rnrd_author_github" id="rnrd_author_github" value="<?php echo esc_attr( $m( 'rnrd_author_github' ) ); ?>" class="regular-text" placeholder="https://github.com/…" />
-					<p class="description"><?php esc_html_e( 'GitHub profile. Emits in sameAs[] — technical authority signal.', 'rankready-ai-llm-seo' ); ?></p>
+					<p class="description"><?php esc_html_e( 'GitHub profile. Emits in sameAs[] as a Schema.org identity link.', 'rankready-ai-llm-seo' ); ?></p>
 				</td>
 			</tr>
 			<tr>
@@ -737,6 +746,11 @@ class RNRD_Author_Box {
 		if ( 'on' !== get_option( RNRD_OPT_AUTHOR_SCHEMA_ENABLE, 'on' ) ) return;
 		$post = get_post( $post_id );
 		if ( ! $post ) return;
+		// One guard for the seven SEO-plugin author merges that route through
+		// here. They gated on is_singular() alone, so a password-protected post
+		// still emitted Person, reviewedBy and lastReviewed, and the per-post
+		// opt-out applied to the visible box only.
+		if ( ! RNRD_Util::can_emit( $post_id, RNRD_META_AUTHOR_DISABLE ) ) return;
 
 		$person = self::build_person_schema( (int) $post->post_author );
 		if ( null === $person ) return;
@@ -753,7 +767,7 @@ class RNRD_Author_Box {
 			$node_url = isset( $node['url'] ) ? $node['url'] : '';
 			if ( $node_url && $node_url !== $author_url ) continue;
 
-			self::smart_merge_person( $node, $person );
+			self::smart_merge_person( $node, $person, self::has_explicit_headshot( (int) $post->post_author ) );
 		}
 		unset( $node );
 
@@ -769,7 +783,30 @@ class RNRD_Author_Box {
 	 * @param array $node   The existing Person node from the SEO plugin graph (modified in place).
 	 * @param array $person The Person data built from RankReady's Author Box fields.
 	 */
-	private static function smart_merge_person( array &$node, array $person ): void {
+	/**
+	 * Did this user actually upload a headshot in the Author Box?
+	 *
+	 * build_person_schema() falls back to get_avatar_url() when they did not,
+	 * and `image` is in $overwrite_keys, so the merge used to replace Yoast's
+	 * or Rank Math's real author image with a Gravatar URL. The overwrite set's
+	 * own docblock says it is for "fields the user explicitly filled in", and
+	 * a fallback is by definition not one of those, so the fallback now stays
+	 * additive: it fills an empty `image`, it never displaces a populated one.
+	 *
+	 * @param int $user_id User to check.
+	 * @return bool True when a headshot URL is stored on the user.
+	 */
+	private static function has_explicit_headshot( int $user_id ): bool {
+		return '' !== trim( (string) get_user_meta( $user_id, 'rnrd_author_headshot', true ) );
+	}
+
+	/**
+	 * @param array $node           Existing Person node from the SEO plugin graph, modified in place.
+	 * @param array $person         Person data built from RankReady's Author Box fields.
+	 * @param bool  $image_explicit Whether $person['image'] came from an uploaded
+	 *                              headshot rather than the Gravatar fallback.
+	 */
+	private static function smart_merge_person( array &$node, array $person, bool $image_explicit = true ): void {
 		// Fields where RankReady's value WINS when present. These are the
 		// Author Box fields the user explicitly filled in — they should never
 		// be overridden by SEO plugin defaults (Gravatar, WP bio, etc.).
@@ -781,6 +818,10 @@ class RNRD_Author_Box {
 			'knowsAbout',
 			'contactPoint',
 		);
+
+		if ( ! $image_explicit ) {
+			$overwrite_keys = array_values( array_diff( $overwrite_keys, array( 'image' ) ) );
+		}
 
 		foreach ( $person as $key => $value ) {
 			if ( '@type' === $key ) continue;
@@ -885,6 +926,11 @@ class RNRD_Author_Box {
 	}
 
 	private static function inject_review_signals( array &$graph, int $post_id ): void {
+		// Trust is opt-in. Reviewer meta left over from when it was on must not
+		// keep reaching the schema once the owner has switched it off.
+		if ( 'on' !== get_option( RNRD_OPT_AUTHOR_TRUST_ENABLE, 'off' ) ) {
+			return;
+		}
 		$reviewed_by_id    = (int) get_post_meta( $post_id, RNRD_META_AUTHOR_REVIEWED_BY, true );
 		$fact_checked_by_id = (int) get_post_meta( $post_id, RNRD_META_AUTHOR_FACT_CHECKED_BY, true );
 		$last_reviewed     = (string) get_post_meta( $post_id, RNRD_META_AUTHOR_LAST_REVIEWED, true );
@@ -947,6 +993,9 @@ class RNRD_Author_Box {
 		if ( 'on' !== get_option( RNRD_OPT_AUTHOR_SCHEMA_ENABLE, 'on' ) ) return $schema;
 		$post_id = get_queried_object_id();
 		if ( ! $post_id ) return $schema;
+		// SeoPress does not route through enhance_graph(), so it needs the same
+		// opt-out and password guard here.
+		if ( ! RNRD_Util::can_emit( (int) $post_id, RNRD_META_AUTHOR_DISABLE ) ) return $schema;
 
 		// SEOPress (free + Pro) passes the Article schema directly with an
 		// inline `author` Person instead of a separate @graph node. Use the
@@ -955,7 +1004,7 @@ class RNRD_Author_Box {
 		if ( isset( $schema['author'] ) && is_array( $schema['author'] ) ) {
 			$person = self::build_person_schema( (int) get_post_field( 'post_author', $post_id ) );
 			if ( null !== $person ) {
-				self::smart_merge_person( $schema['author'], $person );
+				self::smart_merge_person( $schema['author'], $person, self::has_explicit_headshot( (int) get_post_field( 'post_author', $post_id ) ) );
 			}
 		}
 		return $schema;
@@ -1014,6 +1063,24 @@ class RNRD_Author_Box {
 	// ══════════════════════════════════════════════════════════════════════════
 
 	/**
+	 * The site-wide author box heading, translated when it is still the default.
+	 *
+	 * Activation used to store the English literal 'About the Author', which
+	 * froze the heading in English on every non-English site. A stored value
+	 * that is empty or equal to that literal now reads as the translatable
+	 * default; anything the admin typed is returned unchanged.
+	 *
+	 * @since 1.4.0
+	 */
+	public static function heading_text(): string {
+		$stored = trim( (string) get_option( RNRD_OPT_AUTHOR_HEADING, '' ) );
+		if ( '' === $stored || 'About the Author' === $stored ) {
+			return __( 'About the Author', 'rankready-ai-llm-seo' );
+		}
+		return $stored;
+	}
+
+	/**
 	 * Render the author box. Called by the Gutenberg block render_callback,
 	 * the Elementor widget, the [rankready_author] shortcode, and auto-display.
 	 *
@@ -1021,7 +1088,7 @@ class RNRD_Author_Box {
 	 * @param array $attrs    Block/widget attributes.
 	 * @param int   $post_id  Current post ID (for per-post reviewed-by data).
 	 */
-	public static function render_html( int $user_id, array $attrs = array(), int $post_id = 0 ): string {
+	public static function render_html( int $user_id, array $attrs = array(), int $post_id = 0, bool $is_block = false ): string {
 		if ( $user_id <= 0 ) return '';
 		$user = get_userdata( $user_id );
 		if ( ! $user ) return '';
@@ -1031,7 +1098,7 @@ class RNRD_Author_Box {
 		$show_heading  = isset( $attrs['showHeading'] ) ? (bool) $attrs['showHeading'] : true;
 		$heading_text  = isset( $attrs['headingText'] ) && '' !== $attrs['headingText']
 			? sanitize_text_field( $attrs['headingText'] )
-			: (string) get_option( RNRD_OPT_AUTHOR_HEADING, 'About the Author' );
+			: self::heading_text();
 		$heading_tag   = isset( $attrs['headingTag'] ) && '' !== $attrs['headingTag']
 			? $attrs['headingTag']
 			: (string) get_option( RNRD_OPT_AUTHOR_HEADING_TAG, 'h3' );
@@ -1044,7 +1111,8 @@ class RNRD_Author_Box {
 		$show_expertise  = isset( $attrs['showExpertise'] )  ? (bool) $attrs['showExpertise']  : true;
 		$show_socials    = isset( $attrs['showSocials'] )    ? (bool) $attrs['showSocials']    : true;
 		$show_credentials = isset( $attrs['showCredentials'] ) ? (bool) $attrs['showCredentials'] : true;
-		$show_reviewed   = isset( $attrs['showReviewed'] )   ? (bool) $attrs['showReviewed']   : true;
+		$show_reviewed   = ( isset( $attrs['showReviewed'] )   ? (bool) $attrs['showReviewed']   : true )
+			&& 'on' === get_option( RNRD_OPT_AUTHOR_TRUST_ENABLE, 'off' );
 		$show_years_exp  = isset( $attrs['showYearsExp'] )   ? (bool) $attrs['showYearsExp']   : true;
 
 		$m = function ( $key ) use ( $user_id ) {
@@ -1072,10 +1140,29 @@ class RNRD_Author_Box {
 		$fact_checked_by_id = $post_id ? (int) get_post_meta( $post_id, RNRD_META_AUTHOR_FACT_CHECKED_BY, true ) : 0;
 		$last_reviewed      = $post_id ? (string) get_post_meta( $post_id, RNRD_META_AUTHOR_LAST_REVIEWED, true ) : '';
 
+		// On the block path the outer element must carry the attributes the block
+		// editor generated: the user's Additional CSS class, an anchor, and every
+		// block-support style (colour, spacing, typography). Rendering our own
+		// bare class attribute dropped all of them, so a class typed into the
+		// Advanced panel simply never appeared on the front end. Mirrors what
+		// RNRD_Summary and RNRD_Faq already do for their blocks.
+		$rnrd_ab_classes = 'rnrd-author-box rnrd-ab-' . $layout;
+		$rnrd_ab_decls   = self::style_declarations( $attrs );
+
+		if ( $is_block && function_exists( 'get_block_wrapper_attributes' ) ) {
+			$rnrd_ab_wrap_args = array( 'class' => $rnrd_ab_classes );
+			if ( '' !== $rnrd_ab_decls ) {
+				$rnrd_ab_wrap_args['style'] = $rnrd_ab_decls;
+			}
+			$rnrd_ab_open = '<div ' . get_block_wrapper_attributes( $rnrd_ab_wrap_args ) . '>';
+		} else {
+			$rnrd_ab_open = '<div class="' . esc_attr( $rnrd_ab_classes ) . '"'
+				. ( '' === $rnrd_ab_decls ? '' : ' style="' . esc_attr( $rnrd_ab_decls ) . '"' ) . '>';
+		}
+
 		ob_start();
 		?>
-		<div class="rnrd-author-box rnrd-ab-<?php echo esc_attr( $layout ); ?>"
-			<?php echo self::inline_style( $attrs ); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped ?>>
+		<?php echo $rnrd_ab_open; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- built from esc_attr()'d parts / get_block_wrapper_attributes(). ?>
 			<?php if ( $show_heading && 'inline' !== $layout ) : ?>
 				<<?php echo esc_attr( $heading_tag ); ?> class="rnrd-ab-heading"><?php echo esc_html( $heading_text ); ?></<?php echo esc_attr( $heading_tag ); ?>>
 			<?php endif; ?>
@@ -1141,13 +1228,13 @@ class RNRD_Author_Box {
 							<div class="rnrd-ab-credentials">
 								<?php foreach ( $education as $row ) : if ( empty( $row['degree'] ) && empty( $row['institution'] ) ) continue; ?>
 									<div class="rnrd-ab-cred-row">
-										<span class="rnrd-ab-cred-icon" aria-hidden="true">&#9733;</span>
+										<span class="rnrd-ab-cred-icon rnrd-ab-cred-icon--edu" aria-hidden="true"></span>
 										<?php echo esc_html( trim( ( $row['degree'] ?? '' ) . ( ! empty( $row['institution'] ) ? ' · ' . $row['institution'] : '' ) ) ); ?>
 									</div>
 								<?php endforeach; ?>
 								<?php foreach ( $certs as $row ) : if ( empty( $row['name'] ) ) continue; ?>
 									<div class="rnrd-ab-cred-row">
-										<span class="rnrd-ab-cred-icon" aria-hidden="true">✓</span>
+										<span class="rnrd-ab-cred-icon" aria-hidden="true"></span>
 										<?php echo esc_html( trim( $row['name'] . ( ! empty( $row['issuer'] ) ? ' · ' . $row['issuer'] : '' ) ) ); ?>
 									</div>
 								<?php endforeach; ?>
@@ -1247,51 +1334,12 @@ class RNRD_Author_Box {
 	}
 
 	/**
-	 * Build the inline style="..." attribute from block attributes.
-	 * Uses CSS variables so style.css does the layout.
+	 * The box's CSS custom properties as raw declarations, with no attribute
+	 * wrapper. get_block_wrapper_attributes() wants them raw so it can merge
+	 * them with the block supports' own style output instead of putting a
+	 * second style attribute on the element.
 	 */
-	/**
-	 * Validate one CSS custom-property value by the kind of attribute it came from.
-	 *
-	 * Returns '' for anything that does not match, so an invalid value is dropped
-	 * rather than emitted. Nothing here can contain ';', so a value can never open
-	 * a second declaration.
-	 *
-	 * @param string $attr  Attribute name (used to infer the expected value kind).
-	 * @param string $value Raw value.
-	 * @return string Safe value, or '' to skip.
-	 */
-	private static function sanitize_style_value( string $attr, string $value ): string {
-		$value = trim( $value );
-		if ( '' === $value ) {
-			return '';
-		}
-
-		if ( false !== stripos( $attr, 'color' ) ) {
-			// hex / rgb() / rgba() / hsl() / hsla() / CSS named colour.
-			return preg_match( '/^(#[0-9a-fA-F]{3,8}|rgba?\([\d\s.,%]+\)|hsla?\([\d\s.,%]+\)|[a-zA-Z]{3,20})$/', $value )
-				? $value
-				: '';
-		}
-
-		if ( false !== stripos( $attr, 'fontfamily' ) ) {
-			// Font stacks: letters, digits, spaces, quotes, hyphens and commas only.
-			return preg_match( '/^[a-zA-Z0-9 ,\'"\-]{1,120}$/', $value ) ? esc_attr( $value ) : '';
-		}
-
-		if ( false !== stripos( $attr, 'fontweight' ) ) {
-			return preg_match( '/^(normal|bold|lighter|bolder|[1-9]00)$/', $value ) ? $value : '';
-		}
-
-		if ( false !== stripos( $attr, 'lineheight' ) ) {
-			return is_numeric( $value ) ? (string) (float) $value : '';
-		}
-
-		// Unknown kind — allow only a conservative token charset.
-		return preg_match( '/^[a-zA-Z0-9 .%\-]{1,60}$/', $value ) ? esc_attr( $value ) : '';
-	}
-
-	private static function inline_style( array $attrs ): string {
+	private static function style_declarations( array $attrs ): string {
 		$vars = array();
 
 		$map = array(
@@ -1324,7 +1372,8 @@ class RNRD_Author_Box {
 			if ( empty( $attrs[ $attr ] ) ) continue;
 			$value = $attrs[ $attr ];
 			if ( is_array( $var ) ) {
-				$vars[] = $var[0] . ':' . (float) $value . $var[1];
+				// plain_number(), not a float concat: locale-dependent on PHP 7.4.
+				$vars[] = $var[0] . ':' . RNRD_Util::plain_number( $value ) . $var[1];
 				continue;
 			}
 
@@ -1332,16 +1381,15 @@ class RNRD_Author_Box {
 			// leaves `;` intact, so a post editor could set a colour to
 			// "red;background-image:url(https://attacker.example)" and inject a
 			// second declaration — an outbound request on render, or a UI-redress
-			// overlay. Validate by value kind, matching RNRD_Util::sanitize_color().
-			$clean = self::sanitize_style_value( $attr, (string) $value );
+			// overlay. Validate by value kind: one validator for every block.
+			$clean = RNRD_Util::sanitize_style_value( $attr, (string) $value );
 			if ( '' === $clean ) {
 				continue;
 			}
 			$vars[] = $var . ':' . $clean;
 		}
 
-		if ( empty( $vars ) ) return '';
-		return ' style="' . esc_attr( implode( ';', $vars ) ) . '"';
+		return empty( $vars ) ? '' : implode( ';', $vars );
 	}
 
 	// ══════════════════════════════════════════════════════════════════════════
@@ -1401,6 +1449,10 @@ class RNRD_Author_Box {
 		if ( ! $post || ! self::is_post_type_enabled( $post->post_type ) ) {
 			return '';
 		}
+		// Same opt-out and password rules as the automatic the_content path.
+		if ( ! RNRD_Util::can_emit( (int) $post_id, RNRD_META_AUTHOR_DISABLE ) ) {
+			return '';
+		}
 
 		$source  = isset( $attrs['authorSource'] ) ? $attrs['authorSource'] : 'post';
 		$user_id = 'specific' === $source && ! empty( $attrs['authorId'] )
@@ -1409,7 +1461,7 @@ class RNRD_Author_Box {
 
 		if ( $user_id <= 0 ) return '';
 
-		return self::render_html( $user_id, (array) $attrs, (int) $post_id );
+		return self::render_html( $user_id, (array) $attrs, (int) $post_id, true );
 	}
 
 	/**

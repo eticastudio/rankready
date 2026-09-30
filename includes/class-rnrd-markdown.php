@@ -36,13 +36,16 @@ class RNRD_Markdown {
 			add_action( 'admin_notices', array( self::class, 'maybe_cloudflare_apo_notice' ) );
 		}
 		add_action( 'init',              array( self::class, 'add_rewrite_rules' ) );
-		// v1.2.0-rc.2 — priority 1 beats page builders (Bricks ~ default 10).
-		add_action( 'template_redirect', array( self::class, 'handle_request' ), 1 );
+		// issue #41 — shared, filterable base priority instead of a hardcoded
+		// small number (was: "priority 1 beats page builders ~ default 10", which
+		// a builder or mu-plugin hooking template_redirect even earlier could
+		// still beat). rnrd_template_redirect_priority() defaults to -9999.
+		add_action( 'template_redirect', array( self::class, 'handle_request' ), rnrd_template_redirect_priority( 1 ) );
 
 		// Content negotiation: serve markdown when Accept: text/markdown is sent.
-		// Priority 2 — still before page builders but AFTER the explicit
-		// .md URL handler at priority 1.
-		add_action( 'template_redirect', array( self::class, 'handle_accept_header' ), 2 );
+		// Offset 2 — still before page builders but AFTER the explicit .md URL
+		// handler (offset 1), same relative order as before.
+		add_action( 'template_redirect', array( self::class, 'handle_accept_header' ), rnrd_template_redirect_priority( 2 ) );
 
 		// Emit Vary: Accept on all HTML pages so caches store markdown and HTML separately.
 		// v1.2.1 — PHP_INT_MAX so we merge Vary LAST. add_vary_header() collapses
@@ -477,6 +480,23 @@ class RNRD_Markdown {
 		$post   = self::translate_post( $post );
 		$locale = self::resolved_locale( $post );
 
+		// issue #9 — page-builder posts (Elementor et al.) can have an empty
+		// `post_content` column even though the frontend renders real content.
+		// RNRD_Generator::resolve_post_content() already tries the builder's own
+		// render pipeline and the `the_content` filter chain before giving up; if
+		// even that resolves to nothing, there is no real body to serve. A 200
+		// with an empty content section reads to an AI crawler as confirmed thin
+		// content, which is worse than a 404 — so 404 rather than serve it.
+		if ( class_exists( 'RNRD_Generator' ) ) {
+			$rnrd_resolved_body = trim( wp_strip_all_tags( RNRD_Generator::resolve_post_content( $post ) ) );
+			if ( '' === $rnrd_resolved_body ) {
+				status_header( 404 );
+				header( 'Content-Type: text/plain; charset=utf-8' );
+				echo '# 404 Not Found';
+				exit;
+			}
+		}
+
 		// Log with the resolved post so CPT, title, and ID are captured.
 		RNRD_Crawler_Log::log( 'markdown', $post );
 
@@ -508,6 +528,24 @@ class RNRD_Markdown {
 		// handle_request() at priority 10 serves the correct page markdown.
 		// Reported by a user in early testing.
 		if ( '' !== (string) get_query_var( 'rnrd_md_path', '' ) ) {
+			return;
+		}
+
+		// A URL that does not exist is 404, whatever the client will accept.
+		// Without this, a request for a missing page carrying an Accept header
+		// that excludes HTML fell through to the 406 branch below and answered
+		// "Not Acceptable" — which tells a crawler the resource EXISTS and we
+		// merely cannot represent it. template_redirect runs after the main
+		// query, so is_404() is already authoritative here.
+		if ( is_404() ) {
+			return;
+		}
+
+		// Feeds, robots.txt, embeds and the core XML sitemaps have their own
+		// content types and are never a page RankReady could serve as markdown.
+		// template_redirect fires for all of them, so without this an RSS reader
+		// or a crawler sending an Accept header without HTML got "406" on the feed.
+		if ( is_feed() || is_robots() || is_embed() || is_trackback() || '' !== (string) get_query_var( 'sitemap', '' ) || '' !== (string) get_query_var( 'sitemap-stylesheet', '' ) ) {
 			return;
 		}
 
@@ -562,6 +600,12 @@ class RNRD_Markdown {
 				// text/markdown not in Accept or explicitly excluded (q=0).
 				// If the client also can't accept HTML, nothing we serve will satisfy it.
 				if ( $q_html_eff <= 0.0 ) {
+					// Only answer 406 on a URL RankReady could have served as
+					// markdown. An archive, search or any other page is not ours to
+					// refuse (an uptime probe sending Accept: application/json).
+					if ( ! is_singular() && ! is_front_page() && ! is_home() ) {
+						return;
+					}
 					status_header( 406 );
 					header( 'Content-Type: text/plain; charset=utf-8' );
 					header( 'Vary: Accept' );
@@ -768,27 +812,55 @@ class RNRD_Markdown {
 			$lines[] = '';
 		}
 
-		$posts = get_posts( array(
-			'numberposts'      => 10,
-			'post_status'      => 'publish',
-			'has_password'     => false,
-			'suppress_filters' => false,
-		) );
-
-		if ( ! empty( $posts ) ) {
-			$lines[] = '## ' . __( 'Recent Posts', 'rankready-ai-llm-seo' );
-			$lines[] = '';
-			foreach ( $posts as $post ) {
-				$title   = html_entity_decode( get_the_title( $post ), ENT_QUOTES, 'UTF-8' );
-				$lines[] = '- [' . $title . '](' . get_permalink( $post ) . ')';
-			}
-			$lines[] = '';
-		}
+		$lines = array_merge( $lines, self::recent_posts_section() );
 
 		$markdown = implode( "\n", $lines );
 		set_transient( $cache_key, $markdown, HOUR_IN_SECONDS );
 
 		return $markdown;
+	}
+
+	/**
+	 * "Recent Posts" section shared by the homepage and posts-page listings.
+	 *
+	 * Honours the per-post "exclude from AI surfaces" setting like every other
+	 * Markdown surface, and flattens titles to one line so a crafted title
+	 * cannot forge Markdown structure (a newline plus "## ") in the list.
+	 * Over-fetches so excluded posts do not shrink the list below 10.
+	 *
+	 * @return string[] Lines, empty when there is nothing to list.
+	 */
+	private static function recent_posts_section(): array {
+		$posts = get_posts( array(
+			'numberposts'      => 30,
+			'post_status'      => 'publish',
+			'has_password'     => false,
+			'suppress_filters' => false,
+		) );
+
+		$items = array();
+		foreach ( $posts as $post ) {
+			if ( class_exists( 'RNRD_Llms_Txt' ) && RNRD_Llms_Txt::should_exclude_from_llms( $post ) ) {
+				continue;
+			}
+			$title = html_entity_decode( get_the_title( $post ), ENT_QUOTES, 'UTF-8' );
+			$title = trim( (string) preg_replace( '/\s+/u', ' ', $title ) );
+			$title = str_replace( array( '[', ']' ), array( '\\[', '\\]' ), $title );
+			$items[] = '- [' . $title . '](' . get_permalink( $post ) . ')';
+			if ( count( $items ) >= 10 ) {
+				break;
+			}
+		}
+
+		if ( empty( $items ) ) {
+			return array();
+		}
+
+		return array_merge(
+			array( '## ' . __( 'Recent Posts', 'rankready-ai-llm-seo' ), '' ),
+			$items,
+			array( '' )
+		);
 	}
 
 	/**
@@ -865,22 +937,7 @@ class RNRD_Markdown {
 			$lines[] = '';
 		}
 
-		$posts = get_posts( array(
-			'numberposts'      => 10,
-			'post_status'      => 'publish',
-			'has_password'     => false,
-			'suppress_filters' => false,
-		) );
-
-		if ( ! empty( $posts ) ) {
-			$lines[] = '## ' . __( 'Recent Posts', 'rankready-ai-llm-seo' );
-			$lines[] = '';
-			foreach ( $posts as $post ) {
-				$post_title = html_entity_decode( get_the_title( $post ), ENT_QUOTES, 'UTF-8' );
-				$lines[]    = '- [' . $post_title . '](' . get_permalink( $post ) . ')';
-			}
-			$lines[] = '';
-		}
+		$lines = array_merge( $lines, self::recent_posts_section() );
 
 		$markdown = implode( "\n", $lines );
 		set_transient( $cache_key, $markdown, HOUR_IN_SECONDS );
@@ -903,7 +960,13 @@ class RNRD_Markdown {
 
 		RNRD_Crawler_Log::log( 'home_md' );
 		$markdown  = self::build_posts_page_markdown( $page );
-		$canonical = $shared_url ? get_permalink( $page ) : self::get_md_url( $page );
+		// Always the HTML URL, on both routes. `Link: rel=canonical` on a
+		// markdown representation exists to point an agent at the canonical
+		// resource, and `/blog.md` naming ITSELF as canonical tells it nothing
+		// and breaks the association with the page it represents. The singular
+		// route has always sent get_permalink() here regardless of which URL
+		// served it; these two home surfaces were the only ones that did not.
+		$canonical = get_permalink( $page );
 		self::serve_markdown( $markdown, $canonical, $shared_url );
 	}
 
@@ -914,9 +977,11 @@ class RNRD_Markdown {
 	 * Latest-posts home → site overview. Both URLs share the same body.
 	 *
 	 * Cache policy depends on the URL:
-	 *   - $shared_url = true  → canonical `/` (Accept). Force no-store so APO
+	 *   - $shared_url = true  → served on `/` via Accept. Force no-store so APO
 	 *     cannot poison the HTML homepage (bug seen on nexterwp.com, 2026-06-02).
 	 *   - $shared_url = false → distinct `/index.md`. Safe to cache publicly.
+	 *
+	 * Either way the declared canonical is the HTML home page.
 	 */
 	private static function serve_homepage_markdown( bool $shared_url = true ): void {
 		$post = self::get_front_page_post();
@@ -936,7 +1001,9 @@ class RNRD_Markdown {
 			$markdown = self::build_homepage_overview_markdown();
 		}
 
-		$canonical = $shared_url ? home_url( '/' ) : self::homepage_md_url();
+		// See the note in serve_posts_page_markdown(): the canonical is the HTML
+		// home page whichever URL served the markdown.
+		$canonical = home_url( '/' );
 		self::serve_markdown( $markdown, $canonical, $shared_url );
 	}
 
@@ -1200,14 +1267,14 @@ class RNRD_Markdown {
 	 * HTTP Link headers for the homepage /index.md surface.
 	 */
 	private static function send_homepage_md_link_headers(): void {
-		header( 'Link: <' . esc_url( self::homepage_md_url() ) . '>; rel="alternate"; type="text/markdown"', false );
+		header( 'Link: <' . esc_url_raw( self::homepage_md_url() ) . '>; rel="alternate"; type="text/markdown"', false );
 
 		$front = self::get_front_page_post();
 		if ( ! $front instanceof WP_Post ) {
 			return;
 		}
 		foreach ( self::get_translation_md_urls( $front ) as $code => $translated_md_url ) {
-			header( 'Link: <' . esc_url( $translated_md_url ) . '>; rel="alternate"; type="text/markdown"; hreflang="' . $code . '"', false );
+			header( 'Link: <' . esc_url_raw( $translated_md_url ) . '>; rel="alternate"; type="text/markdown"; hreflang="' . $code . '"', false );
 		}
 	}
 
@@ -1234,9 +1301,9 @@ class RNRD_Markdown {
 		if ( ! $page instanceof WP_Post ) {
 			return;
 		}
-		header( 'Link: <' . esc_url( self::get_md_url( $page ) ) . '>; rel="alternate"; type="text/markdown"', false );
+		header( 'Link: <' . esc_url_raw( self::get_md_url( $page ) ) . '>; rel="alternate"; type="text/markdown"', false );
 		foreach ( self::get_translation_md_urls( $page ) as $code => $translated_md_url ) {
-			header( 'Link: <' . esc_url( $translated_md_url ) . '>; rel="alternate"; type="text/markdown"; hreflang="' . $code . '"', false );
+			header( 'Link: <' . esc_url_raw( $translated_md_url ) . '>; rel="alternate"; type="text/markdown"; hreflang="' . $code . '"', false );
 		}
 	}
 
@@ -1274,11 +1341,11 @@ class RNRD_Markdown {
 		}
 
 		$md_url = self::get_md_url( $post );
-		header( 'Link: <' . esc_url( $md_url ) . '>; rel="alternate"; type="text/markdown"', false );
+		header( 'Link: <' . esc_url_raw( $md_url ) . '>; rel="alternate"; type="text/markdown"', false );
 
 		// v1.1.17 — per-language alternates as separate Link headers (RFC 8288).
 		foreach ( self::get_translation_md_urls( $post ) as $code => $translated_md_url ) {
-			header( 'Link: <' . esc_url( $translated_md_url ) . '>; rel="alternate"; type="text/markdown"; hreflang="' . $code . '"', false );
+			header( 'Link: <' . esc_url_raw( $translated_md_url ) . '>; rel="alternate"; type="text/markdown"; hreflang="' . $code . '"', false );
 		}
 	}
 
@@ -1294,7 +1361,7 @@ class RNRD_Markdown {
 		if ( ! is_front_page() || 'on' !== get_option( RNRD_OPT_LLMS_ENABLE, 'off' ) ) {
 			return;
 		}
-		header( 'Link: <' . esc_url( home_url( '/llms.txt' ) ) . '>; rel="describedby"; type="text/plain"', false );
+		header( 'Link: <' . esc_url_raw( home_url( '/llms.txt' ) ) . '>; rel="describedby"; type="text/plain"', false );
 	}
 
 	// ── Multilingual resolution (WPML / Polylang / TranslatePress / Weglot) ──
@@ -1313,7 +1380,33 @@ class RNRD_Markdown {
 	 * @param WP_Post $post Original post resolved from the URL.
 	 * @return WP_Post Translated post or the original if no translation exists.
 	 */
+	/** True when detect_request_language() fell through to Accept-Language. */
+	private static $lang_from_header = false;
+
+	/** True when an Accept-Language header actually selected a different post. */
+	private static $negotiated_by_header = false;
+
+	/**
+	 * Whether the response being served was chosen by the Accept-Language
+	 * header rather than by the URL.
+	 *
+	 * A distinct `.md` URL is cached publicly, and serve_markdown() deliberately
+	 * declares no variance it cannot demonstrate. Accept-Language is the one
+	 * header that can change the body: on a WPML or Polylang site where neither
+	 * plugin resolves a current language from the URL, detect_request_language()
+	 * falls through to the header and translate_post() can hand back a different
+	 * translation. Without this, the first visitor's language would be stored
+	 * under the shared URL and served to everyone after them for the whole TTL.
+	 * It stays false on monolingual sites, where no translation plugin is hooked
+	 * and the header changes nothing, so their cache is not split for nothing.
+	 */
+	public static function language_negotiated(): bool {
+		return self::$negotiated_by_header;
+	}
+
 	public static function translate_post( WP_Post $post ): WP_Post {
+		self::$negotiated_by_header = false;
+
 		$lang = self::detect_request_language();
 
 		// WPML — `wpml_object_id` returns translated post ID for the given lang.
@@ -1321,7 +1414,8 @@ class RNRD_Markdown {
 			$translated_id = apply_filters( 'wpml_object_id', $post->ID, $post->post_type, false, $lang ?: null );
 			if ( $translated_id && (int) $translated_id !== $post->ID ) {
 				$translated = get_post( (int) $translated_id );
-				if ( $translated instanceof WP_Post && 'publish' === $translated->post_status ) {
+				if ( $translated instanceof WP_Post && self::post_has_servable_md_url( $translated ) ) {
+					self::$negotiated_by_header = self::$lang_from_header;
 					return $translated;
 				}
 			}
@@ -1332,7 +1426,8 @@ class RNRD_Markdown {
 			$translated_id = pll_get_post( $post->ID, $lang );
 			if ( $translated_id && (int) $translated_id !== $post->ID ) {
 				$translated = get_post( (int) $translated_id );
-				if ( $translated instanceof WP_Post && 'publish' === $translated->post_status ) {
+				if ( $translated instanceof WP_Post && self::post_has_servable_md_url( $translated ) ) {
+					self::$negotiated_by_header = self::$lang_from_header;
 					return $translated;
 				}
 			}
@@ -1376,6 +1471,8 @@ class RNRD_Markdown {
 	 *   4. Accept-Language header (parsed for highest q-value)
 	 */
 	private static function detect_request_language(): string {
+		self::$lang_from_header = false;
+
 		// 1. Explicit query var.
 		if ( ! empty( $_GET['lang'] ) ) { // phpcs:ignore WordPress.Security.NonceVerification.Recommended
 			return sanitize_key( wp_unslash( (string) $_GET['lang'] ) ); // phpcs:ignore WordPress.Security.NonceVerification.Recommended
@@ -1397,8 +1494,12 @@ class RNRD_Markdown {
 			}
 		}
 
-		// 4. Accept-Language header (best q-value).
+		// 4. Accept-Language header (best q-value). Everything above this point
+		// is carried in the URL, so it is already part of any cache key; this
+		// branch is the only one that makes the response depend on a request
+		// header, which is why it is recorded (see $lang_from_header).
 		if ( ! empty( $_SERVER['HTTP_ACCEPT_LANGUAGE'] ) ) {
+			self::$lang_from_header = true;
 			$header = sanitize_text_field( wp_unslash( (string) $_SERVER['HTTP_ACCEPT_LANGUAGE'] ) );
 			$best   = '';
 			$best_q = 0.0;
@@ -1453,7 +1554,7 @@ class RNRD_Markdown {
 					$translated_id = apply_filters( 'wpml_object_id', $post->ID, $post->post_type, false, $code );
 					if ( $translated_id ) {
 						$translated = get_post( (int) $translated_id );
-						if ( $translated instanceof WP_Post && 'publish' === $translated->post_status ) {
+						if ( $translated instanceof WP_Post && self::post_has_servable_md_url( $translated ) ) {
 							$out[ sanitize_key( (string) $code ) ] = self::get_md_url( $translated );
 						}
 					}
@@ -1469,7 +1570,7 @@ class RNRD_Markdown {
 					$translated_id = pll_get_post( $post->ID, $code );
 					if ( $translated_id ) {
 						$translated = get_post( (int) $translated_id );
-						if ( $translated instanceof WP_Post && 'publish' === $translated->post_status ) {
+						if ( $translated instanceof WP_Post && self::post_has_servable_md_url( $translated ) ) {
 							$out[ sanitize_key( (string) $code ) ] = self::get_md_url( $translated );
 						}
 					}
@@ -1574,15 +1675,25 @@ class RNRD_Markdown {
 		// Shared canonical URL is the opposite case: there the representation
 		// genuinely depends on Accept, so Vary: Accept is required for
 		// correctness, not decoration.
+		//
+		// Accept-Language is added only when it actually chose this body. See
+		// language_negotiated(): on a monolingual site the header changes
+		// nothing and declaring it would split the cache per browser locale for
+		// no benefit, while on a translated site that negotiated by header,
+		// leaving it out is what lets one visitor's language be stored under the
+		// shared URL and served to everyone else for the rest of the TTL.
+		$rnrd_vary = array( 'Accept-Encoding' );
 		if ( $shared_url ) {
-			header( 'Vary: Accept-Encoding, Accept' );
-		} else {
-			header( 'Vary: Accept-Encoding' );
+			$rnrd_vary[] = 'Accept';
 		}
+		if ( self::language_negotiated() ) {
+			$rnrd_vary[] = 'Accept-Language';
+		}
+		header( 'Vary: ' . implode( ', ', $rnrd_vary ) );
 
 		// Robots / discovery
 		header( 'X-Robots-Tag: noindex, follow' );
-		header( 'Link: <' . esc_url( $canonical_url ) . '>; rel="canonical"', false );
+		header( 'Link: <' . esc_url_raw( $canonical_url ) . '>; rel="canonical"', false );
 
 		// CORS — AI agents fetch from chat.openai.com, claude.ai, perplexity.ai
 		// (different origin from the WordPress site). Without these headers
@@ -1789,6 +1900,21 @@ class RNRD_Markdown {
 			$wc       = preg_match_all( '/\S+/', $plain ); // locale-safe word count.
 			$lines[]  = 'word_count: ' . ( false !== $wc ? $wc : 0 );
 
+			/**
+			 * Extra YAML frontmatter lines for a post, added before the closing
+			 * fence. Pro uses this for WooCommerce product facts. Each entry is
+			 * one complete `key: value` line, already escaped by the caller.
+			 *
+			 * @param string[] $extra Extra lines, empty by default.
+			 * @param WP_Post  $post  The post being rendered.
+			 */
+			$extra = apply_filters( 'rankready_md_frontmatter', array(), $post );
+			foreach ( is_array( $extra ) ? $extra : array() as $extra_line ) {
+				if ( is_string( $extra_line ) && '' !== $extra_line ) {
+					$lines[] = $extra_line;
+				}
+			}
+
 			$lines[] = '---';
 			$lines[] = '';
 		}
@@ -1797,8 +1923,27 @@ class RNRD_Markdown {
 		$lines[] = '# ' . self::clean_text( get_the_title( $post ) );
 		$lines[] = '';
 
+		/**
+		 * Extra Markdown lines right under the title, for sites that switched the
+		 * frontmatter off and would otherwise lose them. Empty by default.
+		 *
+		 * @param string[] $extra Extra lines.
+		 * @param WP_Post  $post  The post being rendered.
+		 * @param bool     $has_frontmatter Whether the frontmatter block was written.
+		 */
+		$intro = apply_filters( 'rankready_md_intro', array(), $post, $include_meta );
+		foreach ( is_array( $intro ) ? $intro : array() as $intro_line ) {
+			if ( is_string( $intro_line ) ) {
+				$lines[] = $intro_line;
+			}
+		}
+
 		// ── AI Summary (if available) ────────────────────────────────────
-		if ( class_exists( 'RNRD_Summary' ) && RNRD_Summary::is_enabled() && RNRD_Summary::is_post_type_enabled( $post->post_type ) ) {
+		// can_emit() carries the per-post opt-out. Without it, unticking
+		// "disable" removed the summary from the page and left it in the
+		// Markdown that AI crawlers actually read.
+		if ( class_exists( 'RNRD_Summary' ) && RNRD_Summary::is_enabled() && RNRD_Summary::is_post_type_enabled( $post->post_type )
+			&& RNRD_Util::can_emit( (int) $post->ID, RNRD_META_DISABLE ) ) {
 			$summary_raw = (string) get_post_meta( $post->ID, RNRD_META_SUMMARY, true );
 			if ( ! empty( $summary_raw ) ) {
 				$summary = RNRD_Generator::decode_summary( $summary_raw );
@@ -1821,7 +1966,9 @@ class RNRD_Markdown {
 		}
 
 		// ── FAQ section (if available) ───────────────────────────────
-		if ( class_exists( 'RNRD_Faq' ) ) {
+		// Same per-post opt-out the page and the MCP tools honour: a post with the FAQ
+		// switched off must not keep publishing it in the Markdown crawlers read.
+		if ( class_exists( 'RNRD_Faq' ) && RNRD_Util::can_emit( (int) $post->ID, RNRD_META_FAQ_DISABLE ) ) {
 			$faq_md = RNRD_Faq::get_faq_markdown( $post->ID );
 			if ( ! empty( $faq_md ) ) {
 				$lines[] = '';
@@ -1842,6 +1989,20 @@ class RNRD_Markdown {
 	 */
 	public static function get_md_url( $post ): string {
 		$permalink = get_permalink( $post );
+
+		// issue #3 — plain permalinks (Settings → Permalinks → "Plain") make
+		// get_permalink() return a query-string URL like "?p=123". Appending
+		// ".md" to that produces "?p=123.md", which the .md rewrite rule can
+		// never match (it routes on the URL PATH, not the query string) — a
+		// link that 404s the moment anyone follows it. post_has_servable_md_url()
+		// already keeps callers that check first (e.g. llms.txt's index) from
+		// reaching this method at all on a plain-permalink site, but several
+		// other callers (the <link rel="alternate">/header tags, the AI hint
+		// div) call get_md_url() directly, so the guard belongs here too,
+		// defensively, not only upstream.
+		if ( '' === (string) get_option( 'permalink_structure', '' ) ) {
+			return (string) $permalink;
+		}
 
 		// v1.0.1 — Front-page edge case. When a static page is set as the site
 		// home (Reading Settings → "A static page"), get_permalink() returns
@@ -1870,7 +2031,8 @@ class RNRD_Markdown {
 
 	private static function yaml_escape( string $text ): string {
 		$text = self::clean_text( $text );
-		$text = str_replace( '"', '\\"', $text );
+		// Backslash first: an unescaped trailing one would swallow the closing quote.
+		$text = str_replace( array( '\\', '"' ), array( '\\\\', '\\"' ), $text );
 		return $text;
 	}
 }

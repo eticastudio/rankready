@@ -1,0 +1,1006 @@
+/**
+ * RankReady onboarding wizard (admin.php?page=rankready-welcome).
+ * Enqueued by RNRD_Welcome::enqueue_assets() on that screen only.
+ */
+/* ── Onboarding wizard layout ──────────────────────────────────── */
+.rnrd-onboard {
+	max-width: 1080px;
+	margin: 48px auto 80px;
+	padding: 0 24px;
+	font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+	color: var(--rnrd-text-primary, #0F1411);
+}
+
+/* Brand row */
+.rnrd-onboard__brand {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	margin-bottom: 20px;
+	font-size: 12px;
+	font-weight: 600;
+	color: var(--rnrd-text-tertiary, #5C625E);
+	letter-spacing: 0.06em;
+	text-transform: uppercase;
+}
+.rnrd-onboard__dot {
+	width: 8px;
+	height: 8px;
+	border-radius: 50%;
+	background: var(--rnrd-mint-500, #59F7C2);
+	flex-shrink: 0;
+}
+.rnrd-onboard__step-count {
+	margin-left: auto;
+	font-weight: 400;
+	letter-spacing: 0;
+	text-transform: none;
+}
+
+/* Progress bar */
+.rnrd-onboard__progress-track {
+	height: 6px;
+	background: var(--rnrd-bg-surface-2, #F4F5F0);
+	border-radius: 99px;
+	overflow: hidden;
+	margin-bottom: 32px;
+}
+.rnrd-onboard__progress-fill {
+	height: 100%;
+	background: var(--rnrd-mint-500, #59F7C2);
+	border-radius: 99px;
+	transition: width 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* Card */
+.rnrd-onboard__card {
+	background: var(--rnrd-bg-surface, #FFFFFF);
+	border: 1px solid var(--rnrd-border-subtle, #ECEDE7);
+	border-radius: 16px;
+	padding: 36px 40px 32px;
+	box-shadow: 0 2px 8px rgba(15, 20, 17, 0.06);
+}
+
+/* v1.1.8 — Kill EVERY WP-admin form-table style leak inside the wizard.
+ * The wizard renders under /wp-admin/ so common.css cascades. We apply
+ * a single border/box-shadow/outline reset on the UNFOCUSED defaults,
+ * then let the more-specific `.rnrd-onboard__input:focus` rules below
+ * paint the mint focus ring. Order matters: this block has to come
+ * BEFORE the focus rules so source-order tiebreaker doesn't
+ * overwrite the mint glow. */
+.rnrd-onboard,
+.rnrd-onboard * {
+	box-sizing: border-box;
+}
+.rnrd-onboard input[type="text"],
+.rnrd-onboard input[type="email"],
+.rnrd-onboard textarea {
+	-webkit-appearance: none !important;
+	        appearance: none !important;
+	background-image: none !important;
+	box-shadow: none;
+	border: 1px solid var(--rnrd-border-default, #D9DAD5);
+}
+/* v1.1.10 — WP-admin button + anchor base override. Covers both
+ * <button>-style submits (step 1 Make site AI-ready) AND <a>-style
+ * primary CTAs (step 2 Go to Dashboard, which inherits WP-admin's
+ * blue focus outline by default). Mouse-click focus = no halo,
+ * keyboard-tab focus = mint ring via .rnrd-onboard__btn--primary rule. */
+.rnrd-onboard button:focus:not(:focus-visible),
+.rnrd-onboard a:focus:not(:focus-visible),
+/* The primary button's "go on then" arrow, drawn rather than typed.
+
+   It used to sit inside the label itself ('Continue →'), which meant it
+   pointed the wrong way in RTL locales and a translator could not remove
+   it. This screen hangs off options.php, so it loads none of the plugin's
+   stylesheets and cannot use the .rnrd-arrow-link rule in
+   design-tokens.css; hence the duplicate here. All three primary buttons
+   (Continue, Apply & finish, Go to Dashboard) take the arrow, and the
+   secondary "skip" links deliberately do not. */
+/* Back link on step 2. Leading arrow, same reasoning as the primary
+   button's trailing one: presentation belongs in CSS so RTL can mirror it. */
+.rnrd-onboard__skip--back::before {
+	content: "\2190";
+	margin-right: 5px;
+	display: inline-block;
+}
+[dir="rtl"] .rnrd-onboard__skip--back::before {
+	content: "\2192";
+	margin-right: 0;
+	margin-left: 5px;
+}
+
+.rnrd-onboard__btn--primary::after {
+	content: "\2192";
+	margin-left: 6px;
+	display: inline-block;
+}
+[dir="rtl"] .rnrd-onboard__btn--primary::after {
+	content: "\2190";
+	margin-left: 0;
+	margin-right: 6px;
+}
+
+.rnrd-onboard__btn:focus:not(:focus-visible) {
+	outline: none !important;
+	box-shadow: none !important;
+}
+.rnrd-onboard a.rnrd-onboard__btn:focus,
+.rnrd-onboard a.rnrd-onboard__btn:focus-visible {
+	outline: none !important;
+}
+
+/* Typography */
+.rnrd-onboard__title {
+	font-size: 24px;
+	font-weight: 700;
+	line-height: 1.2;
+	letter-spacing: -0.015em;
+	margin: 0 0 12px;
+	color: var(--rnrd-text-primary, #0F1411);
+}
+.rnrd-onboard__lede {
+	font-size: 14px;
+	line-height: 1.6;
+	color: var(--rnrd-text-secondary, #3D423F);
+	margin: 0 0 28px;
+}
+
+.rnrd-onboard__notice {
+	font-size: 13px;
+	line-height: 1.5;
+	color: var(--rnrd-text-primary, #0F1411);
+	background: #FFF8E6;
+	border: 1px solid #F0D9A0;
+	border-radius: 8px;
+	padding: 10px 14px;
+	margin: 0 0 20px;
+}
+
+/* v1.1.6 — 2-column split for Step 1: form on the left, sticky
+ * "Where this goes" sidebar on the right. Stacks on narrow screens. */
+.rnrd-onboard__split {
+	display: grid;
+	grid-template-columns: minmax(0, 1fr) 320px;
+	gap: 28px;
+	align-items: start;
+}
+@media (max-width: 900px) {
+	.rnrd-onboard__split {
+		grid-template-columns: 1fr;
+	}
+}
+.rnrd-onboard__form {
+	min-width: 0;
+}
+.rnrd-onboard__sidebar {
+	min-width: 0;
+	position: sticky;
+	top: 64px;
+}
+.rnrd-onboard__sidebar-inner {
+	padding: 22px 24px;
+	background: var(--rnrd-mint-50, #ECFDF6);
+	border: 1px solid var(--rnrd-mint-200, #B8F2DC);
+	border-radius: 14px;
+}
+.rnrd-onboard__sidebar-title {
+	font-size: 13px;
+	font-weight: 700;
+	letter-spacing: 0.08em;
+	text-transform: uppercase;
+	color: var(--rnrd-mint-800, #064E3B);
+	margin: 0 0 8px;
+}
+.rnrd-onboard__sidebar-lede {
+	font-size: 12px;
+	line-height: 1.55;
+	color: var(--rnrd-text-secondary, #3D423F);
+	margin: 0 0 14px;
+}
+.rnrd-onboard__sidebar-list {
+	list-style: none;
+	margin: 0;
+	padding: 0;
+	display: flex;
+	flex-direction: column;
+	gap: 10px;
+}
+.rnrd-onboard__sidebar-list li {
+	font-size: 12px;
+	color: var(--rnrd-text-primary, #0F1411);
+	line-height: 1.5;
+	padding-left: 14px;
+	position: relative;
+	font-weight: 600;
+}
+.rnrd-onboard__sidebar-list li::before {
+	content: "";
+	position: absolute;
+	left: 0;
+	top: 7px;
+	width: 5px;
+	height: 5px;
+	border-radius: 50%;
+	background: var(--rnrd-mint-500, #59F7C2);
+}
+.rnrd-onboard__sidebar-list li code {
+	font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+	background: transparent;
+	padding: 0;
+	color: var(--rnrd-mint-800, #064E3B);
+	font-size: 12px;
+}
+.rnrd-onboard__sidebar-list li span {
+	display: block;
+	margin-top: 2px;
+	font-weight: 400;
+	color: var(--rnrd-text-tertiary, #5C625E);
+}
+
+/* ── Live /llms.txt preview (step 1 sidebar) ─────────────────────
+   Reads as the file, not as a UI panel: monospace, dark ground, no
+   card chrome competing with the "Where this goes" list above it. */
+.rnrd-onboard__preview {
+	margin-top: 20px;
+	padding-top: 18px;
+	border-top: 1px solid var(--rnrd-border-subtle, #E5E7E0);
+}
+.rnrd-onboard__preview-title {
+	margin: 0 0 8px;
+	font-size: 11px;
+	font-weight: 600;
+	letter-spacing: 0.06em;
+	text-transform: uppercase;
+	color: var(--rnrd-text-tertiary, #5C625E);
+}
+.rnrd-onboard__preview-code {
+	margin: 0;
+	padding: 12px 14px;
+	max-height: 260px;
+	/* Long brand terms must scroll inside this box, never widen the
+	   wizard: a sideways page scroll here was the failure mode. */
+	overflow: auto;
+	border-radius: 6px;
+	background: #14181B;
+	color: #E9EDEB;
+	font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+	font-size: 11.5px;
+	line-height: 1.65;
+	white-space: pre-wrap;
+	overflow-wrap: anywhere;
+}
+.rnrd-onboard__preview-code code { background: none; padding: 0; color: inherit; font: inherit; }
+.rnrd-onboard__preview-note {
+	margin: 8px 0 0;
+	font-size: 11.5px;
+	line-height: 1.5;
+	color: var(--rnrd-text-tertiary, #5C625E);
+}
+.rnrd-onboard__preview-note code {
+	background: transparent;
+	padding: 0;
+	font-size: 11.5px;
+	overflow-wrap: anywhere;
+}
+
+/* ── Pro tie-in (step 3) ─────────────────────────────────────────
+   One line and one link, sitting under the primary CTA. Deliberately
+   not a bordered upsell box: the scope is a feature pair, not a
+   locked screen, and the Dashboard button must stay the loudest
+   thing on the page. */
+.rnrd-onboard__proline {
+	margin: 22px auto 0;
+	max-width: 520px;
+	text-align: center;
+}
+.rnrd-onboard__proline-text {
+	margin: 0;
+	font-size: 13px;
+	line-height: 1.6;
+	color: var(--rnrd-text-tertiary, #5C625E);
+}
+.rnrd-onboard__proline-link {
+	display: inline-block;
+	margin-top: 6px;
+	font-size: 13px;
+	font-weight: 600;
+	color: var(--rnrd-text-link, #0A6E50);
+	text-decoration: none;
+	border-bottom: 1px solid currentColor;
+}
+.rnrd-onboard__proline-link:hover,
+.rnrd-onboard__proline-link:focus-visible {
+	color: var(--rnrd-text-link-hover, #064A36);
+}
+
+/* v1.1.7 — One spacing/typography token across every field.
+ * Hard-overrides WP-admin's input:focus blue ring via !important
+ * (we're in /wp-admin so WP core CSS specificity always loads).
+ *
+ * v1.1.20 — Bumped field gap (24 → 28) and hint-to-input gap
+ * (10 → 12) so the bigger 46px input + 10px-radius chrome reads
+ * with the same breathing room as the textareas below. */
+.rnrd-onboard__field {
+	margin: 0 0 28px;
+}
+.rnrd-onboard__field:last-of-type {
+	margin-bottom: 0;
+}
+.rnrd-onboard__label {
+	display: block;
+	font-size: 14px;
+	font-weight: 600;
+	line-height: 1.4;
+	color: var(--rnrd-text-primary, #0F1411);
+	margin: 0 0 6px;
+	letter-spacing: -0.005em;
+}
+.rnrd-onboard__hint {
+	font-size: 12px;
+	line-height: 1.55;
+	color: var(--rnrd-text-tertiary, #5C625E);
+	margin: 0 0 12px;
+	max-width: 640px;
+}
+
+/* Inputs — strip WP-admin styles, lock to RankReady design tokens.
+ * v1.1.20 — Bumped padding (12px 14px) and radius (10px) so the
+ * single-line input matches the textarea's visible curve. Aditya's
+ * screenshot showed the text input looking squarer than the textarea
+ * below it; both classes now share identical chrome, the only
+ * difference is height (input is a single line, textarea has
+ * min-height). */
+.rnrd-onboard__input,
+.rnrd-onboard__textarea {
+	display: block;
+	width: 100%;
+	max-width: 100%;
+	padding: 12px 14px;
+	font-size: 14px;
+	font-family: inherit;
+	line-height: 1.5;
+	color: var(--rnrd-text-primary, #0F1411);
+	background: var(--rnrd-bg-surface, #fff);
+	background-image: none;
+	border: 1px solid var(--rnrd-border-default, #D9DAD5);
+	border-radius: 10px;
+	box-shadow: none;
+	box-sizing: border-box;
+	margin: 0;
+	-webkit-appearance: none;
+	        appearance: none;
+	transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+/* Single-line input — fixed height locks it to the same visual weight
+ * as the textarea, just shorter. Without this the input shrunk to
+ * line-height + padding and looked thinner than the textarea below. */
+.rnrd-onboard__input {
+	height: 46px;
+}
+/*
+ * Whole-line heights. The base rule sets padding 12px top and bottom
+ * and line-height 1.5 on 14px text, so one line of text occupies 21px
+ * and the box needs 24 + 21n to end flush with a line. 96px gave 3.43
+ * lines and 72px gave 2.28, so a partial line of the placeholder was
+ * always clipped along the bottom edge.
+ */
+.rnrd-onboard__textarea {
+	min-height: 108px; /* 24 + 21 * 4 */
+	resize: vertical;
+}
+.rnrd-onboard__textarea--short {
+	min-height: 87px; /* 24 + 21 * 3 */
+}
+/* Hover — subtle indication of interactivity, mint-tinted */
+.rnrd-onboard__input:hover,
+.rnrd-onboard__textarea:hover {
+	border-color: var(--rnrd-border-strong, #B0B3AB);
+}
+/* Focus — kill WP-admin's blue ring with !important. Mint glow only. */
+.rnrd-onboard__input:focus,
+.rnrd-onboard__textarea:focus,
+.rnrd-onboard__input:focus-visible,
+.rnrd-onboard__textarea:focus-visible {
+	border-color: var(--rnrd-mint-500, #59F7C2) !important;
+	box-shadow: 0 0 0 3px rgba(89, 247, 194, 0.22) !important;
+	outline: none !important;
+}
+/* Placeholder — consistent muted ink */
+.rnrd-onboard__input::placeholder,
+.rnrd-onboard__textarea::placeholder {
+	color: var(--rnrd-text-muted, #A8ACA3);
+	opacity: 1;
+}
+/* Selection — mint-tinted (matches brand) */
+.rnrd-onboard__input::selection,
+.rnrd-onboard__textarea::selection {
+	background: var(--rnrd-mint-200, #B8F2DC);
+	color: var(--rnrd-text-primary, #0F1411);
+}
+
+/* Buttons */
+.rnrd-onboard__actions {
+	display: flex;
+	align-items: center;
+	gap: 16px;
+	margin-top: 28px;
+	flex-wrap: wrap;
+}
+.rnrd-onboard__actions--centered {
+	justify-content: center;
+}
+/* v1.1.5 — The "Go to Dashboard" final-step button stretches to the
+ * width of the card content so it doesn't float small in the centre. */
+.rnrd-onboard__actions--centered .rnrd-onboard__btn--primary {
+	width: 100%;
+	max-width: 360px;
+	justify-content: center;
+	padding-top: 14px;
+	padding-bottom: 14px;
+}
+.rnrd-onboard__btn {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	padding: 12px 24px;
+	font-size: 14px;
+	font-weight: 600;
+	font-family: inherit;
+	border-radius: 8px;
+	border: none;
+	cursor: pointer;
+	text-decoration: none;
+	transition: background 0.15s ease, transform 0.1s ease;
+	line-height: 1.4;
+	box-sizing: border-box;
+}
+.rnrd-onboard__btn--primary {
+	background: var(--rnrd-mint-500, #59F7C2);
+	color: var(--rnrd-text-on-mint, #0A3D2B);
+	border: 1px solid var(--rnrd-mint-500, #59F7C2);
+}
+.rnrd-onboard__btn--primary:hover {
+	background: var(--rnrd-mint-400, #7CF9CE);
+	color: var(--rnrd-text-on-mint, #0A3D2B);
+	border-color: var(--rnrd-mint-400, #7CF9CE);
+}
+.rnrd-onboard__btn--primary:focus-visible {
+	outline: none !important;
+	box-shadow: 0 0 0 3px rgba(89, 247, 194, 0.40) !important;
+}
+.rnrd-onboard__btn--primary:active {
+	transform: scale(0.97);
+}
+/* These are the wizard's tertiary actions: "Skip for now", "Go to
+   Dashboard" beside a primary button, and the /llms.txt slot on the
+   finish screen. They used to carry no underline until hover, which is
+   survivable while one sits directly beside a filled button and reads
+   as an action by position, but not on the finish screen: the actions
+   row wraps at three items, so the /llms.txt link lands alone on its
+   own line, 13px tertiary grey, immediately above a paragraph of body
+   copy in the same grey. At rest there was nothing at all separating
+   the one clickable thing from the sentence under it. A faint underline
+   at rest costs the row almost nothing and makes every one of the three
+   readable as a link wherever it wraps to; hover and keyboard focus
+   then resolve it to full contrast. :focus-visible was missing outright,
+   so tabbing through the wizard moved through invisible stops. */
+.rnrd-onboard__skip {
+	font-size: 13px;
+	color: var(--rnrd-text-tertiary, #5C625E);
+	text-decoration: underline;
+	text-decoration-color: var(--rnrd-border-strong, #C9CAC1);
+	text-underline-offset: 3px;
+}
+.rnrd-onboard__skip:hover {
+	color: var(--rnrd-text-primary, #0F1411);
+	text-decoration-color: currentColor;
+}
+.rnrd-onboard__skip:focus-visible {
+	color: var(--rnrd-text-primary, #0F1411);
+	text-decoration-color: currentColor;
+	outline: 2px solid var(--rnrd-mint-600, #16C28D);
+	outline-offset: 3px;
+	border-radius: 3px;
+}
+.rnrd-onboard__back {
+	display: inline-block;
+	margin-top: 16px;
+	font-size: 12px;
+	color: var(--rnrd-text-tertiary, #5C625E);
+	text-decoration: none;
+}
+.rnrd-onboard__back:hover {
+	color: var(--rnrd-text-primary, #0F1411);
+	text-decoration: underline;
+}
+
+/* Checklist (step 2) */
+.rnrd-onboard__checklist {
+	list-style: none;
+	margin: 0 0 24px;
+	padding: 0;
+	display: flex;
+	flex-direction: column;
+	gap: 12px;
+}
+.rnrd-onboard__check-item {
+	display: flex;
+	align-items: flex-start;
+	gap: 10px;
+	font-size: 13px;
+	color: var(--rnrd-text-secondary, #3D423F);
+	line-height: 1.5;
+}
+.rnrd-onboard__check-icon {
+	flex-shrink: 0;
+	width: 20px;
+	height: 20px;
+	border-radius: 50%;
+	background: var(--rnrd-mint-50, #ECFDF6);
+	color: var(--rnrd-mint-700, #047857);
+	font-size: 11px;
+	font-weight: 700;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	margin-top: 1px;
+}
+.rnrd-onboard__check-item strong {
+	color: var(--rnrd-text-primary, #0F1411);
+}
+
+/* Step 2 — feature toggles */
+/*
+ * flex-wrap plus nowrap on the items, because this row has three labels
+ * in it and the narrow-width screenshot showed what a plain flex row
+ * does with them: the items shrink instead of wrapping, so every one of
+ * the three broke mid-label across two lines, with the underline
+ * breaking with it and the separator dots stranded at the end of a line.
+ * Three two-line underlined fragments read as six things, not three.
+ * Breaking between items instead of inside them keeps each label whole
+ * at any width, and row-gap keeps the wrapped line off the one above it.
+ */
+.rnrd-onboard__feat-bulk {
+	display: flex;
+	align-items: center;
+	flex-wrap: wrap;
+	gap: 6px 8px;
+	margin: 0 0 20px;
+	font-size: 13px;
+}
+.rnrd-onboard__feat-bulk-btn {
+	background: none;
+	border: 0;
+	padding: 0;
+	white-space: nowrap;
+	font: inherit;
+	color: var(--rnrd-mint-800, #064E3B);
+	cursor: pointer;
+	text-decoration: underline;
+	text-underline-offset: 2px;
+}
+.rnrd-onboard__feat-bulk-btn:hover {
+	color: var(--rnrd-text-primary, #0F1411);
+}
+.rnrd-onboard__feat-bulk-sep {
+	color: var(--rnrd-text-tertiary, #5C625E);
+}
+.rnrd-onboard__feat-group {
+	margin-bottom: 24px;
+}
+.rnrd-onboard__feat-group-title {
+	font-size: 12px;
+	font-weight: 700;
+	letter-spacing: 0.08em;
+	text-transform: uppercase;
+	color: var(--rnrd-text-tertiary, #5C625E);
+	margin: 0 0 10px;
+}
+.rnrd-onboard__feat-list {
+	list-style: none;
+	margin: 0;
+	padding: 0;
+	display: flex;
+	flex-direction: column;
+	gap: 0;
+	border: 1px solid var(--rnrd-border-subtle, #ECEDE7);
+	border-radius: 12px;
+	overflow: hidden;
+}
+.rnrd-onboard__feat-row {
+	border-bottom: 1px solid var(--rnrd-border-subtle, #ECEDE7);
+}
+.rnrd-onboard__feat-row:last-child {
+	border-bottom: 0;
+}
+.rnrd-onboard__feat-row--nested {
+	padding-left: 32px;
+}
+.rnrd-onboard__feat-row--disabled {
+	opacity: 0.45;
+}
+.rnrd-onboard__feat-label {
+	display: flex;
+	align-items: flex-start;
+	gap: 12px;
+	padding: 8px 16px;
+	cursor: pointer;
+	margin: 0;
+}
+.rnrd-onboard__feat-label input[type=checkbox],
+.rnrd-onboard__feat-label input[type=radio] {
+	margin: 0.25rem 0.25rem 0 0;
+}
+.rnrd-onboard__feat-check {
+	flex-shrink: 0;
+	width: 18px;
+	height: 18px;
+	margin: 2px 0 0;
+	accent-color: var(--rnrd-mint-600, #10B981);
+}
+/*
+ * accent-color alone is dead weight here: WordPress core sets
+ * appearance:none on admin checkboxes and paints the checked state
+ * itself in core blue, which a browser honours over accent-color.
+ * Every box on the first screen a new user sees was therefore blue on
+ * a mint page. Core's tick glyph is already white, so only the fill
+ * and border need retargeting.
+ */
+.rnrd-onboard input[type="checkbox"]:checked,
+.rnrd-onboard input[type="radio"]:checked {
+	background: var(--rnrd-mint-600, #10B981);
+	border-color: var(--rnrd-mint-600, #10B981);
+}
+.rnrd-onboard input[type="radio"]:checked::before {
+	background-color: #fff;
+}
+.rnrd-onboard__feat-copy {
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+	min-width: 0;
+}
+.rnrd-onboard__feat-copy strong {
+	font-size: 14px;
+	font-weight: 600;
+	color: var(--rnrd-text-primary, #0F1411);
+	line-height: 1.35;
+}
+.rnrd-onboard__feat-hint {
+	font-size: 12px;
+	line-height: 1.5;
+	color: var(--rnrd-text-secondary, #3D423F);
+	font-weight: 400;
+}
+.rnrd-onboard__feat-note {
+	font-size: 12px;
+	line-height: 1.55;
+	color: var(--rnrd-text-tertiary, #5C625E);
+	margin: 0 0 24px;
+}
+
+/* v1.1.0 — Plan list (step 2) — clean bulleted preview of what step 2 will turn on */
+.rnrd-onboard__plan {
+	list-style: none;
+	margin: 0 0 28px;
+	padding: 18px 20px;
+	background: var(--rnrd-bg-surface-2, #F4F5F0);
+	border-radius: 12px;
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+}
+.rnrd-onboard__plan li {
+	font-size: 13px;
+	color: var(--rnrd-text-secondary, #3D423F);
+	line-height: 1.5;
+	padding-left: 20px;
+	position: relative;
+}
+.rnrd-onboard__plan li::before {
+	content: "";
+	position: absolute;
+	left: 4px;
+	top: 8px;
+	width: 6px;
+	height: 6px;
+	border-radius: 50%;
+	background: var(--rnrd-mint-500, #59F7C2);
+}
+
+/* v1.1.0 — Tick list (step 3) — animated reveal, "tick tick tick" feel */
+.rnrd-onboard__ticks {
+	list-style: none;
+	margin: 0 0 28px;
+	padding: 0;
+	display: flex;
+	flex-direction: column;
+	gap: 10px;
+}
+.rnrd-onboard__ticks li {
+	display: flex;
+	align-items: center;
+	gap: 12px;
+	font-size: 14px;
+	color: var(--rnrd-text-primary, #0F1411);
+	line-height: 1.5;
+	min-height: 28px; /* same row height for every tick — no jagged baseline */
+	opacity: 0;
+	transform: translateY(4px);
+	animation: rnrd-onboard-tick-in 0.32s cubic-bezier(0.2, 0, 0, 1) forwards;
+}
+/* No nth-child ladder here. render_step_3() sets animation-delay inline
+   per row, which wins on specificity, so the ladder that used to sit
+   here never applied to anything; it also stopped at seven while the
+   list can hold eleven, so it read as a cap that did not exist. The
+   1800ms baseline and the step live in the PHP beside the loop. */
+@keyframes rnrd-onboard-tick-in {
+	to { opacity: 1; transform: translateY(0); }
+}
+/* v1.1.5 — Tick is a SOLID mint circle with a WHITE check.
+ * Hard-set every property that WP admin's checkbox stylesheet could
+ * leak into (border, box-shadow, background-image, appearance) so the
+ * circle never picks up the native WP-checkbox look. Same size for
+ * every tick — width === height === 24px exactly. */
+.rnrd-onboard__tick {
+	flex-shrink: 0;
+	width: 24px;
+	height: 24px;
+	min-width: 24px;
+	min-height: 24px;
+	max-width: 24px;
+	max-height: 24px;
+	border: 0;
+	border-radius: 50%;
+	background: var(--rnrd-mint-500, #10B981);
+	background-image: none;
+	color: #ffffff;
+	font-size: 14px;
+	font-weight: 700;
+	line-height: 1;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	margin: 0;
+	padding: 0;
+	box-shadow: none;
+	-webkit-appearance: none;
+	        appearance: none;
+}
+/* v1.4.0 — the check is DRAWN, not typed. This used to be a `\u2713`
+ * text node, which meant the shape came from whatever font the OS
+ * resolved: it rendered as a colour emoji on some Windows builds and as
+ * tofu wherever the font lacked the codepoint, inside a circle that is
+ * supposed to be flat mint and white. Two rotated borders always look
+ * the same everywhere and inherit `color`. */
+.rnrd-onboard__tick::before {
+	content: "";
+	width: 6px;
+	height: 11px;
+	margin-top: -3px;
+	border: solid currentColor;
+	border-width: 0 2.5px 2.5px 0;
+	transform: rotate(45deg);
+}
+
+/* Step 3 — centered completion layout */
+.rnrd-onboard__done {
+	max-width: 480px;
+	margin: 0 auto;
+	text-align: center;
+}
+.rnrd-onboard__done .rnrd-onboard__progress-ring {
+	margin-left: auto;
+	margin-right: auto;
+}
+.rnrd-onboard__done .rnrd-onboard__title,
+.rnrd-onboard__done .rnrd-onboard__lede {
+	text-align: center;
+}
+.rnrd-onboard__done .rnrd-onboard__ticks {
+	display: inline-flex;
+	flex-direction: column;
+	align-items: flex-start;
+	text-align: left;
+	margin-left: auto;
+	margin-right: auto;
+}
+.rnrd-onboard__done .rnrd-onboard__actions {
+	justify-content: center;
+}
+
+/*
+ * The Diagnostics footnote sits directly under the two-item action row
+ * and had no rule of its own, so it inherited the lede spacing meant
+ * for the paragraph under a heading. At 375px that put it hard against
+ * the links above it with no gap, and it read as a third line of the
+ * same block rather than as a separate note about them: "Turn on
+ * /llms.txt To confirm each one is serving...". It is a footnote, so
+ * give it the gap, the smaller size and the quieter colour that say so.
+ */
+.rnrd-onboard__lede--foot {
+	margin: 16px 0 0;
+	font-size: 13px;
+	line-height: 1.6;
+	color: var(--rnrd-text-tertiary, #5C625E);
+}
+
+/* v1.1.2 — Rotating progress ring → green tick (step 3 hero).
+ * 1500ms: ring sweeps clockwise from empty → full (CSS stroke-dashoffset)
+ * 1500ms→1700ms: ring fades out
+ * 1700ms→2000ms: green tick scales in
+ * Pure CSS, no JS. Respects prefers-reduced-motion below. */
+.rnrd-onboard__progress-ring {
+	position: relative;
+	width: 72px;
+	height: 72px;
+	margin: 0 0 24px;
+}
+.rnrd-onboard__ring-svg {
+	width: 100%;
+	height: 100%;
+	transform: rotate(-90deg);
+}
+.rnrd-onboard__ring-track {
+	fill: none;
+	stroke: var(--rnrd-mint-50, #ECFDF6);
+	stroke-width: 4;
+}
+.rnrd-onboard__ring-stroke {
+	fill: none;
+	stroke: var(--rnrd-mint-500, #59F7C2);
+	stroke-width: 4;
+	stroke-linecap: round;
+	stroke-dasharray: 151;   /* 2π × 24 ≈ 150.8 */
+	stroke-dashoffset: 151;
+	animation: rnrd-ring-fill 1500ms cubic-bezier(0.4, 0, 0.2, 1) forwards,
+	           rnrd-ring-fade 300ms ease 1500ms forwards;
+}
+@keyframes rnrd-ring-fill {
+	to { stroke-dashoffset: 0; }
+}
+@keyframes rnrd-ring-fade {
+	to { opacity: 0; }
+}
+.rnrd-onboard__ring-tick {
+	position: absolute;
+	inset: 0;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	width: 100%;
+	height: 100%;
+	color: var(--rnrd-mint-600, #059669);
+	background: var(--rnrd-mint-50, #ECFDF6);
+	border-radius: 50%;
+	opacity: 0;
+	transform: scale(0.4);
+	animation: rnrd-ring-tick-in 320ms cubic-bezier(0.2, 0, 0, 1) 1700ms forwards;
+}
+/* Drawn, not typed — see .rnrd-onboard__tick::before above. */
+.rnrd-onboard__ring-tick::before {
+	content: "";
+	width: 13px;
+	height: 24px;
+	margin-top: -6px;
+	border: solid currentColor;
+	border-width: 0 4px 4px 0;
+	transform: rotate(45deg);
+}
+@keyframes rnrd-ring-tick-in {
+	to { opacity: 1; transform: scale(1); }
+}
+@media (prefers-reduced-motion: reduce) {
+	.rnrd-onboard__ring-stroke,
+	.rnrd-onboard__ring-tick,
+	.rnrd-onboard__ticks li {
+		animation-duration: 0.001ms !important;
+		animation-delay: 0ms !important;
+	}
+	.rnrd-onboard__ring-stroke { stroke-dashoffset: 0; opacity: 0; }
+	.rnrd-onboard__ring-tick   { opacity: 1; transform: scale(1); }
+	.rnrd-onboard__ticks li    { opacity: 1; transform: none; }
+}
+
+/* Done icon — legacy (preserved for any pre-1.1.2 deep-link to ?step=3
+   that the router may still redirect; kept for layout-safety). */
+.rnrd-onboard__done-icon {
+	width: 56px;
+	height: 56px;
+	border-radius: 50%;
+	background: var(--rnrd-mint-50, #ECFDF6);
+	color: var(--rnrd-mint-600, #059669);
+	font-size: 24px;
+	font-weight: 700;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	margin: 0 0 24px;
+}
+
+/* ── Tips opt-in — mint-tinted, on-brand friendly card ─────────── */
+.rnrd-onboard__optin-field {
+	margin-top: 4px;
+	padding: 18px 20px;
+	border: 1px solid var(--rnrd-mint-200, #B8F2DC);
+	border-radius: 12px;
+	background: var(--rnrd-mint-50, #ECFDF6);
+}
+.rnrd-onboard__optin {
+	display: flex;
+	align-items: flex-start;   /* top-align so multi-line labels don't float the box */
+	gap: 12px;
+	cursor: pointer;
+	font-weight: 600;
+	font-size: 14px;
+	line-height: 1.45;
+	color: var(--rnrd-text-primary, #0F1411);
+	-webkit-user-select: none;
+	        user-select: none;
+}
+/* Custom mint checkbox — hard-set every property WP admin's checkbox
+ * stylesheet could leak into (appearance, border, background-image,
+ * box-shadow, size), same defence as the step-2 tick. */
+.rnrd-onboard__optin-check {
+	-webkit-appearance: none !important;
+	        appearance: none !important;
+	width: 20px !important;
+	height: 20px !important;
+	min-width: 20px;
+	max-width: 20px;
+	flex-shrink: 0;
+	margin: 1px 0 0 !important;   /* optical-center against the first label line */
+	padding: 0 !important;
+	border: 1.5px solid var(--rnrd-border-strong, #B0B3AB) !important;
+	border-radius: 6px !important;
+	background: var(--rnrd-bg-surface, #fff) !important;
+	background-image: none !important;
+	box-shadow: none !important;
+	cursor: pointer;
+	position: relative;
+	transition: border-color 0.15s ease, background 0.15s ease;
+}
+.rnrd-onboard__optin-check:hover {
+	border-color: var(--rnrd-mint-500, #59F7C2) !important;
+}
+.rnrd-onboard__optin-check:checked {
+	background: var(--rnrd-mint-500, #59F7C2) !important;
+	border-color: var(--rnrd-mint-500, #59F7C2) !important;
+}
+.rnrd-onboard__optin-check:checked::after {
+	content: "";
+	position: absolute;
+	left: 6px;
+	top: 2px;
+	width: 5px;
+	height: 10px;
+	border: solid var(--rnrd-text-on-mint, #0A3D2B);
+	border-width: 0 2px 2px 0;
+	transform: rotate(45deg);
+}
+/* Kill WP admin's native blue dashicon check (forms.css :checked::before)
+ * so ONLY our custom ::after check renders — prevents the "double checkbox". */
+.rnrd-onboard__optin-check::before {
+	content: none !important;
+	display: none !important;
+	background: none !important;
+}
+.rnrd-onboard__optin-check:focus,
+.rnrd-onboard__optin-check:focus-visible {
+	outline: none !important;
+	box-shadow: 0 0 0 3px rgba(89, 247, 194, 0.30) !important;
+}
+.rnrd-onboard__optin-fields {
+	display: flex;
+	flex-direction: column;
+	gap: 10px;
+	margin-top: 14px;
+}
+.rnrd-onboard__optin-input {
+	background: var(--rnrd-bg-surface, #fff);
+}
+.rnrd-onboard__optin-hint {
+	margin-top: 10px !important;
+	margin-bottom: 0 !important;
+}

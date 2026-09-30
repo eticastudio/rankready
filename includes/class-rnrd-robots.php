@@ -102,9 +102,11 @@ class RNRD_Robots {
 		// vice-versa). The block below only emits content the user has
 		// explicitly enabled, so always running it is safe.
 
-		// Don't duplicate if RankReady block already present in $output
-		// (defends against double-filtering edge cases).
-		if ( false !== stripos( $output, 'RankReady' ) ) {
+		// Don't duplicate if our block is already present in $output
+		// (defends against double-filtering edge cases). Match the marker,
+		// not the brand name: a hand-written comment that mentions RankReady
+		// must not switch the rules off.
+		if ( false !== strpos( $output, '# BEGIN RankReady' ) ) {
 			return $output;
 		}
 
@@ -168,6 +170,16 @@ class RNRD_Robots {
 			$block .= '# Brand: ' . implode( ', ', $brand_terms ) . "\n";
 		}
 
+		// The site's own `User-agent: *` restrictions, most-specific-first.
+		//
+		// Every group below names crawlers explicitly, and a crawler obeys
+		// ONLY its most specific matching group. Naming one therefore
+		// DETACHES it from `*`, so anything `*` disallowed has to be
+		// restated here or the named crawler silently gains access to it.
+		// That is not hypothetical: the AI group names Bingbot, so without
+		// this mirror Bingbot lost the site's `Disallow: /wp-admin/`.
+		$mirror_rules = self::build_mirrored_rules( $surrounding_robots );
+
 		// Stack all User-agent lines in one block — per robots.txt spec,
 		// grouped User-agent lines share the same Allow/Disallow rules.
 		if ( $robots_on ) {
@@ -198,9 +210,23 @@ class RNRD_Robots {
 				foreach ( $enabled_crawlers as $crawler ) {
 					$block .= 'User-agent: ' . sanitize_text_field( $crawler ) . "\n";
 				}
-				$block .= "Allow: /\n";
+				// Endpoints first, then the site's own restrictions, then the
+				// catch-all. Under RFC 9309 longest-match order is irrelevant,
+				// but order-based parsers exist in the wild and take the first
+				// match, so the most specific lines lead and the widening
+				// `Allow: /` comes last.
 				foreach ( $allow_paths as $path ) {
 					$block .= "Allow: {$path}\n";
+				}
+				foreach ( $mirror_rules as $rule ) {
+					$block .= $rule[0] . ': ' . $rule[1] . "\n";
+				}
+				// No catch-all when the site discourages indexing site-wide.
+				// The AI endpoints above stay reachable because they are more
+				// specific than `Disallow: /`; everything else stays denied,
+				// which is what the site asked for.
+				if ( ! self::mirrors_site_wide_disallow( $mirror_rules ) ) {
+					$block .= "Allow: /\n";
 				}
 				$block .= "\n";
 			}
@@ -219,32 +245,14 @@ class RNRD_Robots {
 			// $surrounding_robots must already have the RankReady block stripped
 			// (both callers do this) or we would re-ingest our own mirror.
 			if ( null !== $surrounding_robots && '' !== trim( $surrounding_robots ) ) {
-				$mirror = self::parse_wildcard_group_rules( $surrounding_robots );
-
-				$rules = array();
-				foreach ( $mirror['disallow'] as $path ) {
-					$rules[] = array( 'Disallow', $path );
-				}
-				foreach ( $mirror['allow'] as $path ) {
-					$rules[] = array( 'Allow', $path );
-				}
-
-				// Most-specific-first. RFC 9309 §2.2.2 mandates longest-match, but
-				// order-based parsers exist in the wild; sorting by descending path
-				// length (Allow winning ties) is correct under both.
-				usort(
-					$rules,
-					static function ( $a, $b ) {
-						$diff = strlen( $b[1] ) - strlen( $a[1] );
-						if ( 0 !== $diff ) {
-							return $diff;
-						}
-						return ( 'Allow' === $a[0] ? 0 : 1 ) - ( 'Allow' === $b[0] ? 0 : 1 );
-					}
-				);
+				$rules = $mirror_rules;
 
 				foreach ( array_keys( RNRD_Crawler_Access::get_search_social_crawlers() ) as $crawler ) {
 					$block .= 'User-agent: ' . sanitize_text_field( $crawler ) . "\n";
+				}
+				// Endpoints lead, for the same order-based-parser reason as above.
+				foreach ( $allow_paths as $path ) {
+					$block .= "Allow: {$path}\n";
 				}
 				if ( empty( $rules ) ) {
 					// Site places no restrictions on `*` — say so explicitly.
@@ -254,20 +262,103 @@ class RNRD_Robots {
 						$block .= $rule[0] . ': ' . $rule[1] . "\n";
 					}
 				}
-				foreach ( $allow_paths as $path ) {
-					$block .= "Allow: {$path}\n";
-				}
 				$block .= "\n";
 			}
 		}
 
-		// Content Signals — delegate to RNRD_Content_Signals.
-		$block .= RNRD_Content_Signals::get_robots_fragment();
+		// Content Signals, in their own `User-agent: *` group.
+		//
+		// A Content-Signal line belongs to the group it sits in, and a blank
+		// line does not end a group. Appended bare, it attached to whichever
+		// named group came last above (the search/social crawlers), not to
+		// every crawler as intended. The group restates the site's own `*`
+		// rules: compliant parsers merge it with the site's `*` group, and a
+		// parser that keeps only one `*` group still gets the same
+		// permissions from this one.
+		$signal = RNRD_Content_Signals::get_directive();
+		if ( '' !== $signal ) {
+			$block .= "# Content Signals (contentsignals.org)\n";
+			$block .= "User-agent: *\n";
+			$block .= $signal . "\n";
+			if ( empty( $mirror_rules ) ) {
+				$block .= "Allow: /\n";
+			} else {
+				foreach ( $mirror_rules as $rule ) {
+					$block .= $rule[0] . ': ' . $rule[1] . "\n";
+				}
+			}
+			$block .= "\n";
+		}
 
 		// Close functional marker.
 		$block .= "# END RankReady\n";
 
 		return $block;
+	}
+
+	/**
+	 * Whether a mirrored rule set carries the site's own site-wide `Disallow: /`.
+	 *
+	 * Appending `Allow: /` after it would hand a named crawler the whole site
+	 * that the surrounding file just denied, which is the inversion this guards.
+	 *
+	 * @param array<int,array{0:string,1:string}> $rules
+	 */
+	private static function mirrors_site_wide_disallow( array $rules ): bool {
+		foreach ( $rules as $rule ) {
+			if ( 'Disallow' === $rule[0] && '/' === $rule[1] ) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	/**
+	 * The site's own `User-agent: *` Allow/Disallow rules, most-specific-first.
+	 *
+	 * Shared by every named group we emit. Naming a crawler detaches it from
+	 * `*`, so each group has to restate these or the crawler quietly gains
+	 * whatever `*` denied it.
+	 *
+	 * @param string|null $surrounding_robots robots.txt body, RankReady block already stripped.
+	 * @return array<int, array{0:string,1:string}> Ordered [directive, path] pairs.
+	 */
+	private static function build_mirrored_rules( ?string $surrounding_robots ): array {
+		if ( null === $surrounding_robots || '' === trim( $surrounding_robots ) ) {
+			return array();
+		}
+
+		$mirror = self::parse_wildcard_group_rules( $surrounding_robots );
+
+		$rules = array();
+		if ( ! empty( $mirror['site_wide_disallow'] ) ) {
+			// Mirror it. It sorts last below (shortest path), so every more
+			// specific rule still wins under RFC 9309 longest-match, and the
+			// callers know not to append a widening `Allow: /` after it.
+			$rules[] = array( 'Disallow', '/' );
+		}
+		foreach ( $mirror['disallow'] as $path ) {
+			$rules[] = array( 'Disallow', $path );
+		}
+		foreach ( $mirror['allow'] as $path ) {
+			$rules[] = array( 'Allow', $path );
+		}
+
+		// Most-specific-first. RFC 9309 §2.2.2 mandates longest-match, but
+		// order-based parsers exist in the wild; sorting by descending path
+		// length (Allow winning ties) is correct under both.
+		usort(
+			$rules,
+			static function ( $a, $b ) {
+				$diff = strlen( $b[1] ) - strlen( $a[1] );
+				if ( 0 !== $diff ) {
+					return $diff;
+				}
+				return ( 'Allow' === $a[0] ? 0 : 1 ) - ( 'Allow' === $b[0] ? 0 : 1 );
+			}
+		);
+
+		return $rules;
 	}
 
 	// ── Physical file sync ─────────────────────────────────────────────────────
@@ -289,6 +380,28 @@ class RNRD_Robots {
 
 		$file = ABSPATH . 'robots.txt';
 
+		// Decide whether there is anything to do BEFORE touching WP_Filesystem, so a
+		// site with no physical file and no interceptor never logs a filesystem
+		// failure for a save that had nothing to write.
+		$file_exists = file_exists( $file );
+		$robots_on   = 'on' === get_option( RNRD_OPT_ROBOTS_ENABLE, 'on' );
+		if ( ! $file_exists ) {
+			// Write a physical robots.txt when one doesn't exist AND another plugin
+			// is intercepting the URL via custom rewrite. Without a physical file,
+			// plugins like SEOPress can register their own /robots.txt rewrite that
+			// bypasses both WP's virtual robots_txt filter AND our PHP_INT_MAX-priority
+			// append. A physical file wins at the webserver level before WP routing runs.
+			//
+			// Only create when robots toggle is ON and we have a non-empty block,
+			// otherwise we'd leave an empty file that could surprise users.
+			if ( ! $robots_on || empty( trim( self::generate_robots_block() ) ) ) {
+				return;
+			}
+			if ( ! self::detect_robots_txt_interceptor() ) {
+				return;
+			}
+		}
+
 		global $wp_filesystem;
 		if ( ! function_exists( 'WP_Filesystem' ) ) {
 			require_once ABSPATH . 'wp-admin/includes/file.php';
@@ -298,25 +411,33 @@ class RNRD_Robots {
 			return;
 		}
 
-		// Write a physical robots.txt when one doesn't exist AND another plugin
-		// is intercepting the URL via custom rewrite. Without a physical file,
-		// plugins like SEOPress can register their own /robots.txt rewrite that
-		// bypasses both WP's virtual robots_txt filter AND our PHP_INT_MAX-priority
-		// append. A physical file wins at the webserver level before WP routing runs.
-		//
-		// Only create when robots toggle is ON and we have a non-empty block —
-		// otherwise we'd leave an empty file that could surprise users.
 		if ( ! $wp_filesystem->exists( $file ) ) {
-			$robots_on = 'on' === get_option( RNRD_OPT_ROBOTS_ENABLE, 'on' );
-			$block     = self::generate_robots_block();
-			if ( ! $robots_on || empty( trim( $block ) ) ) {
+			// Seed the new file from what the interceptor is serving right now.
+			// A file is only created here because another plugin (SEOPress, Rank
+			// Math, Yoast) owns /robots.txt, and those bypass the core `robots_txt`
+			// filter, so building the seed from that filter would drop their custom
+			// rules the moment the physical file starts winning at the web server.
+			// If the live copy cannot be read, do not write anything: no file is
+			// safer than a file that replaces someone else's rules.
+			$resp = wp_remote_get(
+				home_url( '/robots.txt' ),
+				array(
+					'timeout'     => 5,
+					'redirection' => 0,
+					'sslverify'   => false, // Loopback to this same site; a self-signed local certificate must not block the read.
+				)
+			);
+			$seed = is_wp_error( $resp ) || 200 !== (int) wp_remote_retrieve_response_code( $resp )
+				? ''
+				: (string) wp_remote_retrieve_body( $resp );
+			if ( '' === trim( $seed ) || false !== stripos( $seed, '<html' ) ) {
+				self::log_sync_failure( 'Another plugin (' . self::detect_robots_txt_interceptor() . ') is serving /robots.txt and its current rules could not be read, so RankReady did not create a physical robots.txt. The AI crawler rules are NOT live. Add the RankReady block in that plugin\'s robots.txt editor.' );
 				return;
 			}
-			$intercepting = self::detect_robots_txt_interceptor();
-			if ( ! $intercepting ) {
-				return;
+			if ( false === strpos( $seed, '# BEGIN RankReady' ) ) {
+				$seed = rtrim( $seed ) . "\n" . self::generate_robots_block( $seed );
 			}
-			if ( ! $wp_filesystem->put_contents( $file, ltrim( $block ) . "\n", FS_CHMOD_FILE ) ) {
+			if ( ! $wp_filesystem->put_contents( $file, rtrim( $seed ) . "\n", FS_CHMOD_FILE ) ) {
 				self::log_sync_failure( 'Could not create a physical robots.txt at ' . $file . '. Another plugin is intercepting /robots.txt, so the AI crawler rules are NOT live.' );
 				return;
 			}
@@ -349,11 +470,16 @@ class RNRD_Robots {
 		// already gone — anything still carrying our own comment signature is
 		// by definition an orphan. A Content-Signal line the user wrote by hand
 		// has no such comment above it and is left untouched.
-		$new_contents = preg_replace(
+		$without_orphans = preg_replace(
 			'/\n?# Content Signals \(contentsignals\.org\)\n(?:Content-Signal:[^\n]*\n)+/',
 			'',
 			$new_contents
 		);
+		// preg_replace() returns null on a PCRE failure (backtrack limit on a
+		// huge file); keep the stripped contents rather than writing an empty file.
+		if ( is_string( $without_orphans ) ) {
+			$new_contents = $without_orphans;
+		}
 
 		// Trim trailing whitespace.
 		$new_contents = rtrim( $new_contents ) . "\n";
@@ -400,10 +526,29 @@ class RNRD_Robots {
 	 * @return string
 	 */
 	public static function strip_rankready_robots_block( string $contents ): string {
-		$contents = preg_replace( '/\n?# BEGIN RankReady\n.*?# END RankReady\n?/s', '', $contents );
-		$contents = preg_replace( '/\n?# -+ LLM.*?\(RankReady\).*?\n.*?(?=\n#[^-]|\n?$)/s', '', $contents );
-		$contents = preg_replace( '/\n?#[^\n]*LLM[^\n]*RankReady[^\n]*\n.*?(?=\n#[^-]|\n?$)/s', '', $contents );
-		return is_string( $contents ) ? $contents : '';
+		$had_marker = false !== strpos( $contents, '# BEGIN RankReady' );
+		$stripped   = preg_replace( '/\r?\n?# BEGIN RankReady\r?\n.*?# END RankReady[ \t]*(?:\r?\n|$)/s', '', $contents );
+		if ( ! is_string( $stripped ) ) {
+			return $contents;
+		}
+
+		// The legacy pre-marker patterns run to the next comment or to the end
+		// of the file, so on a file we already manage they could take the
+		// site's own rules with them. A file that carries the marker was
+		// migrated long ago; only an unmarked file can still hold a legacy block.
+		if ( ! $had_marker ) {
+			foreach ( array(
+				'/\n?# -+ LLM.*?\(RankReady\).*?\n.*?(?=\n#[^-]|\n?$)/s',
+				'/\n?#[^\n]*LLM[^\n]*RankReady[^\n]*\n.*?(?=\n#[^-]|\n?$)/s',
+			) as $legacy ) {
+				$next = preg_replace( $legacy, '', $stripped );
+				if ( is_string( $next ) ) {
+					$stripped = $next;
+				}
+			}
+		}
+
+		return $stripped;
 	}
 
 	/**
@@ -414,13 +559,14 @@ class RNRD_Robots {
 	 * mirrored rules would be re-ingested on every sync and compound.
 	 *
 	 * @param string $robots Raw robots.txt body, RankReady block removed.
-	 * @return array{allow:string[],disallow:string[]}
+	 * @return array{allow:string[],disallow:string[],site_wide_disallow:bool}
 	 */
 	public static function parse_wildcard_group_rules( string $robots ): array {
 		$allow      = array();
 		$disallow   = array();
 		$in_group   = false;
 		$reading_ua = false;
+		$site_wide  = false;
 
 		foreach ( preg_split( '/\r\n|\r|\n/', $robots ) as $line ) {
 			$line = trim( preg_replace( '/#.*$/', '', $line ) );
@@ -446,10 +592,14 @@ class RNRD_Robots {
 				continue;
 			}
 			if ( 'disallow' === $field ) {
-				// Never mirror a site-wide block. WordPress emits `Disallow: /`
-				// when "Discourage search engines" is on, and that is a
-				// search-indexing decision we must not silently widen.
+				// `Disallow: /` is WordPress's "Discourage search engines"
+				// setting. It is recorded separately rather than dropped:
+				// dropping it left the rule list empty, and an empty rule list
+				// is how this parser says "the site places no restrictions",
+				// which made every named group below emit `Allow: /` and invert
+				// the exact decision the setting exists to express.
 				if ( '/' === $value ) {
+					$site_wide = true;
 					continue;
 				}
 				$disallow[ $value ] = true;
@@ -461,6 +611,8 @@ class RNRD_Robots {
 		return array(
 			'allow'    => array_keys( $allow ),
 			'disallow' => array_keys( $disallow ),
+			// True when the site's own `*` group carries `Disallow: /`.
+			'site_wide_disallow' => $site_wide,
 		);
 	}
 

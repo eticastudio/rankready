@@ -26,7 +26,7 @@
 .rnrd-mb summary {
     cursor: pointer;
     font-size: 12px;
-    color: var(--rnrd-text-tertiary, #6B716D);
+    color: var(--rnrd-text-tertiary, #5C625E);
     padding: 4px 0;
     user-select: none;
 }
@@ -39,11 +39,11 @@
     font-weight: 600;
     text-transform: uppercase;
     letter-spacing: 0.04em;
-    color: var(--rnrd-text-tertiary, #6B716D);
+    color: var(--rnrd-text-tertiary, #5C625E);
     margin-bottom: 4px;
 }
 .rnrd-mb__field select { width: 100%; }
-.rnrd-mb__hint { margin: 4px 0 8px; font-size: 11px; color: var(--rnrd-text-tertiary, #6B716D); }
+.rnrd-mb__hint { margin: 4px 0 8px; font-size: 11px; color: var(--rnrd-text-tertiary, #5C625E); }
 .rnrd-mb__desc {
     margin: 16px 0 8px;
     font-size: 12px;
@@ -154,12 +154,35 @@
 	cursor: not-allowed;
 	text-decoration: none;
 }
+/* Automatic generation: queued = amber notice, failed = red notice. Both need
+ * their own [hidden] rule because display here would otherwise beat it. */
+.rnrd-mb__autogen,
+.rnrd-mb__autogen-error {
+	margin: 8px 0;
+	padding: 8px 10px;
+	border: 1px solid;
+	border-radius: 4px;
+	font-size: 12px;
+	line-height: 1.45;
+}
+.rnrd-mb__autogen {
+	color: var(--rnrd-color-warning-text, #92400E);
+	background: var(--rnrd-warning-bg, #FFFBEB);
+	border-color: #F9D59F;
+}
+.rnrd-mb__autogen-error {
+	color: #8A1F1F;
+	background: #FEF2F2;
+	border-color: #F5B5B5;
+}
+.rnrd-mb__autogen[hidden],
+.rnrd-mb__autogen-error[hidden] { display: none; }
 .rnrd-mb__error { margin: 4px 0 0; font-size: 12px; color: #d63638; line-height: 1.4; }
 .rnrd-mb__generated { margin-top: 6px; line-height: 1.45; }
 .rnrd-mb__faq-list { list-style: none; padding-left: 0; }
 .rnrd-mb__faq-list li { margin-bottom: 8px; }
 .rnrd-mb__faq-list strong { display: block; margin-bottom: 2px; }
-.rnrd-mb__faq-a { display: block; font-size: 11px; color: var(--rnrd-text-tertiary, #6B716D); }
+.rnrd-mb__faq-a { display: block; font-size: 11px; color: var(--rnrd-text-tertiary, #5C625E); }
 
 /* Block editor only — classic metabox shell → document-sidebar panel.
  * Classic Editor is unchanged: no .block-editor-page on body. */
@@ -278,7 +301,7 @@ body.block-editor-page .rnrd-mb__desc {
 
 .rnrd-author-card__desc {
 	font-size: 13px;
-	color: var(--rnrd-text-tertiary, #6B716D);
+	color: var(--rnrd-text-tertiary, #5C625E);
 	line-height: 1.55;
 	margin: 0;
 	max-width: 720px;
@@ -322,6 +345,17 @@ body.block-editor-page .rnrd-mb__desc {
 }
 .rnrd-author-card__head-link:hover .rnrd-author-card__head-link-arrow {
 	transform: translateX(2px);
+}
+
+/* Drawn, not typed, and mirrored for RTL — same pattern as
+   .rnrd-aside-link__arrow. A typed U+2192 in the markup keeps pointing right
+   in Arabic and Hebrew, where it should point at the link it belongs to. The
+   hover nudge is mirrored with it, otherwise the arrow slides away from the
+   direction it points in. */
+.rnrd-author-card__head-link-arrow::after { content: "\2192"; }
+[dir="rtl"] .rnrd-author-card__head-link-arrow::after { content: "\2190"; }
+[dir="rtl"] .rnrd-author-card__head-link:hover .rnrd-author-card__head-link-arrow {
+	transform: translateX(-2px);
 }
 
 .rnrd-author-card__table {
@@ -524,7 +558,7 @@ body.block-editor-page .rnrd-mb__desc {
 .rnrd-author-card__section-intro {
 	font-size: 12px;
 	font-weight: 400;
-	color: var(--rnrd-text-tertiary, #6B716D);
+	color: var(--rnrd-text-tertiary, #5C625E);
 	line-height: 1.5;
 	margin: 4px 0 4px;
 	max-width: 720px;
@@ -583,7 +617,7 @@ body.block-editor-page .rnrd-mb__desc {
  * give it the RankReady tone instead. */
 .rnrd-author-card .description {
 	font-size: 12px;
-	color: var(--rnrd-text-tertiary, #6B716D);
+	color: var(--rnrd-text-tertiary, #5C625E);
 	line-height: 1.5;
 	margin: 4px 0 0;
 }

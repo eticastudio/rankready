@@ -41,6 +41,49 @@ class RNRD_Cloudflare {
 
 	public static function init(): void {
 		add_action( 'rest_api_init', array( self::class, 'register_rest_routes' ) );
+		add_filter( 'rankready_force_accept_negotiation', array( self::class, 'force_accept_negotiation' ) );
+	}
+
+	/**
+	 * Turn Accept negotiation back on once our own bypass rule exists.
+	 *
+	 * IMPORTANT: this closes a contradiction between what this screen SAYS and what the
+	 * markdown handler DOES. On Cloudflare APO, RNRD_Markdown::handle_accept_header()
+	 * bails out (`is_apo_active() && ! rankready_force_accept_negotiation`) because
+	 * APO caches HTML at the edge and ignores Vary: Accept, so negotiating on the
+	 * canonical URL would poison the page cache. Correct — UNLESS a Cache Rule
+	 * bypasses cache for `Accept: text/markdown`, which is exactly the rule this
+	 * class creates and then reports as "Cache rule active. AI markdown requests
+	 * bypass APO."
+	 *
+	 * Before this filter existed, that sentence was false: we created the rule,
+	 * told the user negotiation worked, and then still refused to negotiate. The
+	 * only way to get the advertised behaviour was to find an undocumented filter
+	 * and add it to a theme. A user has no way to tell that from a plugin conflict,
+	 * which is how it reaches the support forum.
+	 *
+	 * Deliberately narrow, all three must hold:
+	 *   1. credentials and zone stored (`connected`) — we own this zone,
+	 *   2. a rule id stored — create_rule() actually succeeded, not just connected,
+	 *   3. nobody upstream already forced it, so an explicit site filter still wins.
+	 *
+	 * Fails CLOSED. Any missing piece and we fall back to the `.md` URLs, which is
+	 * the safe path: a distinct cache key that APO cannot poison.
+	 *
+	 * @param bool $force Current value from earlier filters.
+	 * @return bool
+	 */
+	public static function force_accept_negotiation( $force ): bool {
+		if ( $force ) {
+			return true;
+		}
+		if ( ! self::has_stored_creds() ) {
+			return false;
+		}
+		if ( '' === (string) get_option( self::OPT_ZONE, '' ) ) {
+			return false;
+		}
+		return '' !== (string) get_option( self::OPT_RULE_ID, '' );
 	}
 
 	public static function register_rest_routes(): void {
@@ -226,7 +269,13 @@ class RNRD_Cloudflare {
 		// If we already had a stored rule_id, delete it first (re-connect path).
 		$existing_rule_id = (string) get_option( self::OPT_RULE_ID, '' );
 		if ( '' !== $existing_rule_id ) {
-			self::delete_rule( $creds, $zone_id, $existing_rule_id );
+			// Best effort: a stale rule we cannot remove must not block reconnecting.
+			// create_rule() appends, so the old rule id is simply replaced below.
+			// Once it is gone, forget the id: if create_rule() then fails, a stale id
+			// would keep force_accept_negotiation() on with no bypass rule behind it.
+			if ( ! is_wp_error( self::delete_rule( $creds, $zone_id, $existing_rule_id ) ) ) {
+				delete_option( self::OPT_RULE_ID );
+			}
 		}
 
 		$rule_id = self::create_rule( $creds, $zone_id );
@@ -284,7 +333,23 @@ class RNRD_Cloudflare {
 		$rule_id = (string) get_option( self::OPT_RULE_ID, '' );
 
 		if ( self::has_stored_creds() && '' !== $zone_id && '' !== $rule_id ) {
-			self::delete_rule( $creds, $zone_id, $rule_id );
+			$deleted = self::delete_rule( $creds, $zone_id, $rule_id );
+			// Keep the token, zone and rule id when Cloudflare could not remove the
+			// rule: dropping them would leave a live cache rule this plugin can no
+			// longer find or remove. "force" lets the user detach anyway (revoked token).
+			if ( is_wp_error( $deleted ) && ! $request->get_param( 'force' ) ) {
+				return new WP_REST_Response(
+					array(
+						'success' => false,
+						'error'   => sprintf(
+							/* translators: %s: Cloudflare API error message */
+							__( 'Cloudflare did not remove the cache rule: %s. RankReady is still connected. Try again, or remove the "RankReady" rule in Cloudflare yourself and disconnect again with force.', 'rankready-ai-llm-seo' ),
+							$deleted->get_error_message()
+						),
+					),
+					502
+				);
+			}
 		}
 
 		delete_option( self::OPT_TOKEN );
@@ -378,7 +443,9 @@ class RNRD_Cloudflare {
 					$message = (string) $first['message'];
 				}
 			}
-			return new WP_Error( 'rnrd_cf_api_error', $message );
+			// Carry the HTTP status so callers can tell "does not exist" (404) from
+			// "could not read" (401, 403, 429, 5xx) and never act on the second as the first.
+			return new WP_Error( 'rnrd_cf_api_error', $message, array( 'status' => (int) $code ) );
 		}
 
 		return $json;
@@ -419,6 +486,13 @@ class RNRD_Cloudflare {
 			'GET',
 			'/zones/' . rawurlencode( $zone_id ) . '/rulesets/phases/http_request_cache_settings/entrypoint'
 		);
+
+		// Only a genuine 404 means "no entrypoint yet". Any other failure (bad token
+		// scope, rate limit, 5xx, timeout) is an unreadable ruleset, and falling
+		// through to the PUT below would replace every rule the user already has.
+		if ( is_wp_error( $entry ) && ! self::is_not_found( $entry ) ) {
+			return $entry;
+		}
 
 		if ( ! is_wp_error( $entry ) && ! empty( $entry['result']['id'] ) ) {
 			$ruleset_id = (string) $entry['result']['id'];
@@ -492,7 +566,11 @@ class RNRD_Cloudflare {
 		return new WP_Error( 'rnrd_cf_no_rule', __( 'Could not locate the RankReady rule in Cloudflare response.', 'rankready-ai-llm-seo' ) );
 	}
 
-	private static function delete_rule( $token, string $zone_id, string $rule_id ): void {
+	/**
+	 * @return true|WP_Error True when the rule is gone from Cloudflare (a rule or
+	 *                       ruleset that is already absent counts as gone).
+	 */
+	private static function delete_rule( $token, string $zone_id, string $rule_id ) {
 		// Single-rule deletion must use the RULESET-ID path. The phase-entrypoint
 		// path only supports GET/PUT, so a DELETE there silently no-ops (leaving a
 		// stale rule behind on disconnect). Resolve the cache-phase ruleset ID
@@ -502,15 +580,27 @@ class RNRD_Cloudflare {
 			'GET',
 			'/zones/' . rawurlencode( $zone_id ) . '/rulesets/phases/http_request_cache_settings/entrypoint'
 		);
-		if ( is_wp_error( $entry ) || empty( $entry['result']['id'] ) ) {
-			return;
+		if ( is_wp_error( $entry ) ) {
+			return self::is_not_found( $entry ) ? true : $entry;
+		}
+		if ( empty( $entry['result']['id'] ) ) {
+			return true;
 		}
 		$ruleset_id = (string) $entry['result']['id'];
-		self::api_request(
+		$deleted    = self::api_request(
 			$token,
 			'DELETE',
 			'/zones/' . rawurlencode( $zone_id ) . '/rulesets/' . rawurlencode( $ruleset_id ) . '/rules/' . rawurlencode( $rule_id )
 		);
+		if ( is_wp_error( $deleted ) ) {
+			return self::is_not_found( $deleted ) ? true : $deleted;
+		}
+		return true;
+	}
+
+	private static function is_not_found( WP_Error $error ): bool {
+		$data = $error->get_error_data();
+		return is_array( $data ) && 404 === (int) ( $data['status'] ?? 0 );
 	}
 
 	// ── Admin render helper (called from RNRD_Admin Settings tab) ─────────
@@ -526,7 +616,9 @@ class RNRD_Cloudflare {
 		$state = self::detect();
 		?>
 		<div class="rnrd-card rnrd-cf-card">
-			<h2 class="rnrd-card-title"><?php esc_html_e( 'Cloudflare cache compatibility', 'rankready-ai-llm-seo' ); ?></h2>
+			<h2 class="rnrd-card-title"><?php esc_html_e( 'Cloudflare cache compatibility', 'rankready-ai-llm-seo' ); ?>
+				<?php if ( function_exists( 'rnrd_doc' ) ) { rnrd_doc( 'rankready-caching-cdn-fix', __( 'Cache setup', 'rankready-ai-llm-seo' ) ); } ?>
+			</h2>
 			<p class="rnrd-card-desc">
 				<?php esc_html_e( 'Cloudflare APO caches the HTML response and serves it back to every visitor, including AI agents that requested Markdown. RankReady adds one Cache Rule that bypasses cache for those requests.', 'rankready-ai-llm-seo' ); ?>
 			</p>
@@ -547,7 +639,7 @@ class RNRD_Cloudflare {
 						?>
 					</p>
 				<?php else : ?>
-					<p class="rnrd-notice rnrd-notice--warn" role="status">
+					<p class="rnrd-notice rnrd-notice--inline rnrd-notice--warn" role="status">
 						<?php esc_html_e( 'RankReady did not detect Cloudflare on this site (no cf-ray / Cloudflare headers on the homepage). If you use Cloudflare, you can still connect a scoped API token. If you do not use Cloudflare, you can ignore this tab.', 'rankready-ai-llm-seo' ); ?>
 					</p>
 				<?php endif; ?>
@@ -584,9 +676,19 @@ class RNRD_Cloudflare {
 						<p class="description" style="margin:10px 0 4px;">
 							<strong><?php esc_html_e( 'Give it these two permission rows:', 'rankready-ai-llm-seo' ); ?></strong>
 						</p>
+						<?php
+						/*
+						 * dir="ltr" on the rows, not a mirrored arrow. These reproduce
+						 * Cloudflare's own token editor, which is LTR English whatever
+						 * language wp-admin is in, so the path must read left to right
+						 * even in Arabic or Hebrew. Left as neutral text the bidi
+						 * algorithm reorders the arrows against the code spans and the
+						 * path renders scrambled.
+						 */
+						?>
 						<ul class="description" style="margin:0 0 0 2px;padding:0;list-style:none;">
-							<li style="margin:0 0 3px;"><code>Zone</code> &rarr; <code>Zone</code> &rarr; <code>Read</code></li>
-							<li style="margin:0;"><code>Zone</code> &rarr; <code>Cache Rules</code> &rarr; <code>Edit</code></li>
+							<li dir="ltr" style="margin:0 0 3px;unicode-bidi:isolate;"><code>Zone</code> &rarr; <code>Zone</code> &rarr; <code>Read</code></li>
+							<li dir="ltr" style="margin:0;unicode-bidi:isolate;"><code>Zone</code> &rarr; <code>Cache Rules</code> &rarr; <code>Edit</code></li>
 						</ul>
 
 						<p class="description" style="margin-top:10px;">

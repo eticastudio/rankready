@@ -77,7 +77,7 @@ class RNRD_Agent_Dashboard {
 				<a class="rnrd-kpi rnrd-kpi--link" href="<?php echo esc_url( $insights_url . '&sub=bot-activity' ); ?>" aria-label="<?php esc_attr_e( 'Training Bots — open Insights', 'rankready-ai-llm-seo' ); ?>">
 					<div class="rnrd-kpi__title">
 						<div class="rnrd-kpi__label"><?php esc_html_e( 'Training Bots', 'rankready-ai-llm-seo' ); ?></div>
-						<span class="rnrd-kpi__go" aria-hidden="true">→</span>
+						<span class="rnrd-kpi__go" aria-hidden="true"></span>
 					</div>
 					<?php if ( $training_active ) : ?>
 						<div class="rnrd-kpi__period"><?php esc_html_e( 'Last 30 days', 'rankready-ai-llm-seo' ); ?></div>
@@ -92,7 +92,7 @@ class RNRD_Agent_Dashboard {
 				<a class="rnrd-kpi rnrd-kpi--link" href="<?php echo esc_url( $insights_url . '&sub=citation' ); ?>" aria-label="<?php esc_attr_e( 'Citation Bots — open Insights', 'rankready-ai-llm-seo' ); ?>">
 					<div class="rnrd-kpi__title">
 						<div class="rnrd-kpi__label"><?php esc_html_e( 'Citation Bots', 'rankready-ai-llm-seo' ); ?></div>
-						<span class="rnrd-kpi__go" aria-hidden="true">→</span>
+						<span class="rnrd-kpi__go" aria-hidden="true"></span>
 					</div>
 					<?php if ( $citation_active ) : ?>
 						<div class="rnrd-kpi__period"><?php esc_html_e( 'Last 30 days', 'rankready-ai-llm-seo' ); ?></div>
@@ -107,7 +107,7 @@ class RNRD_Agent_Dashboard {
 				<a class="rnrd-kpi rnrd-kpi--link" href="<?php echo esc_url( $insights_url . '&sub=referral' ); ?>" aria-label="<?php esc_attr_e( 'Real AI Referrals — open Insights', 'rankready-ai-llm-seo' ); ?>">
 					<div class="rnrd-kpi__title">
 						<div class="rnrd-kpi__label"><?php esc_html_e( 'Real AI Referrals', 'rankready-ai-llm-seo' ); ?></div>
-						<span class="rnrd-kpi__go" aria-hidden="true">→</span>
+						<span class="rnrd-kpi__go" aria-hidden="true"></span>
 					</div>
 					<?php if ( $referral_on ) : ?>
 						<div class="rnrd-kpi__period"><?php esc_html_e( 'Last 30 days', 'rankready-ai-llm-seo' ); ?></div>
@@ -122,9 +122,12 @@ class RNRD_Agent_Dashboard {
 				<a class="rnrd-kpi rnrd-kpi--link" href="<?php echo esc_url( $insights_url . '&sub=freshness' ); ?>" aria-label="<?php esc_attr_e( 'Content Fresh — open Insights', 'rankready-ai-llm-seo' ); ?>">
 					<div class="rnrd-kpi__title">
 						<div class="rnrd-kpi__label"><?php esc_html_e( 'Content Fresh', 'rankready-ai-llm-seo' ); ?></div>
-						<span class="rnrd-kpi__go" aria-hidden="true">→</span>
+						<span class="rnrd-kpi__go" aria-hidden="true"></span>
 					</div>
-					<div class="rnrd-kpi__period"><?php esc_html_e( '60+ days old', 'rankready-ai-llm-seo' ); ?></div>
+					<div class="rnrd-kpi__period"><?php
+					/* translators: %d: number of days after which a post counts as stale */
+					echo esc_html( sprintf( __( '%d+ days old', 'rankready-ai-llm-seo' ), RNRD_Freshness::stale_days() ) );
+					?></div>
 					<div class="rnrd-kpi__value"><?php echo esc_html( number_format_i18n( $stale ) ); ?></div>
 					<div class="rnrd-kpi__foot"><?php esc_html_e( 'posts going stale', 'rankready-ai-llm-seo' ); ?></div>
 				</a>

@@ -63,6 +63,12 @@ class RNRD_LLM_DeepSeek {
 			return RNRD_LLM::error_response( $provider, 'DeepSeek returned empty content.', $model );
 		}
 
+		// Cut off at the token cap, not finished. See RNRD_LLM::is_truncated_reason().
+		$finish = isset( $decoded['choices'][0]['finish_reason'] ) ? (string) $decoded['choices'][0]['finish_reason'] : '';
+		if ( RNRD_LLM::is_truncated_reason( $finish ) ) {
+			return RNRD_LLM::truncated_response( $provider, $model, $finish );
+		}
+
 		$tokens_in  = isset( $decoded['usage']['prompt_tokens'] ) ? (int) $decoded['usage']['prompt_tokens'] : 0;
 		$tokens_out = isset( $decoded['usage']['completion_tokens'] ) ? (int) $decoded['usage']['completion_tokens'] : 0;
 

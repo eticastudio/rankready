@@ -83,21 +83,121 @@ class RNRD_Generator {
 			return;
 		}
 
-		// Hash check: only call API if content changed
-		$content  = self::get_content_string( $post );
-		$new_hash = md5( $content );
-		$old_hash = (string) get_post_meta( $post_id, RNRD_META_HASH, true );
+		/*
+		 * Hash check: only call the API if the content changed.
+		 *
+		 * The hash used to be stamped here, before the generation it was meant
+		 * to describe had run. That made it a promise rather than a record: if
+		 * the cron run then failed (provider outage, exhausted quota, a 429, or
+		 * WP-Cron simply never firing on the site), the post was left with a
+		 * hash matching its current content and no summary, so every later save
+		 * returned early right here and the post was never retried. The only
+		 * escape was editing the content or generating by hand.
+		 *
+		 * The hash is now written by run_generation() and force_generate() when
+		 * a summary actually exists, so it means what it says. The gate below
+		 * therefore asks both questions: has the content changed, and do we
+		 * have a summary for it. A post that failed answers no to the second
+		 * and gets picked up on the next save.
+		 */
+		$content     = self::get_content_string( $post );
+		$new_hash    = md5( $content );
+		$old_hash    = (string) get_post_meta( $post_id, RNRD_META_HASH, true );
+		$has_summary = '' !== (string) get_post_meta( $post_id, RNRD_META_SUMMARY, true );
 
-		if ( $new_hash === $old_hash ) {
+		if ( $new_hash === $old_hash && $has_summary ) {
 			return;
 		}
-
-		update_post_meta( $post_id, RNRD_META_HASH, $new_hash );
 
 		// Use WP-Cron only (single path, no double-fire).
 		wp_clear_scheduled_hook( RNRD_CRON_HOOK, array( $post_id ) );
 		wp_schedule_single_event( time() + 5, RNRD_CRON_HOOK, array( $post_id ) );
+		self::mark_autogen_queued( 'summary', $post_id );
 		spawn_cron();
+	}
+
+	/**
+	 * Remember that an automatic run was queued, so the metabox can say so.
+	 * WP-Cron drops the event the moment it starts, which leaves the seconds
+	 * of the AI call itself invisible, so the queue time is kept for 3 minutes.
+	 *
+	 * @param string $kind summary|faq
+	 */
+	public static function mark_autogen_queued( string $kind, int $post_id ): void {
+		delete_transient( 'rnrd_autogen_err_' . $kind . '_' . $post_id );
+		set_transient( 'rnrd_autogen_' . $kind . '_' . $post_id, time(), 3 * MINUTE_IN_SECONDS );
+	}
+
+	/**
+	 * Remember that an automatic run failed, and why, so the metabox can show
+	 * the actual error instead of the "queued" notice quietly disappearing and
+	 * leaving the author to wonder whether anything happened.
+	 *
+	 * Ends the queued state at once, and keeps the reason for 10 minutes: long
+	 * enough to be seen on the next look at the post, short enough that it never
+	 * outlives the moment it explains.
+	 *
+	 * @param string $kind   summary|faq
+	 * @param string $detail Why it failed, already written for a person.
+	 */
+	public static function mark_autogen_failed( string $kind, int $post_id, string $detail ): void {
+		delete_transient( 'rnrd_autogen_' . $kind . '_' . $post_id );
+		$detail = trim( wp_strip_all_tags( $detail ) );
+		// Providers answer errors with a JSON body ("DeepSeek HTTP 401: {"error":
+		// {"message":"..."}}"). A person should read the message, not the braces.
+		if ( preg_match( '/^(.*?HTTP\s+\d{3}):\s*(\{.*\})\s*$/s', $detail, $m ) ) {
+			$body   = json_decode( $m[2], true );
+			$reason = '';
+			if ( is_array( $body ) ) {
+				if ( isset( $body['error']['message'] ) && is_string( $body['error']['message'] ) ) {
+					$reason = $body['error']['message'];
+				} elseif ( isset( $body['error'] ) && is_string( $body['error'] ) ) {
+					$reason = $body['error'];
+				} elseif ( isset( $body['message'] ) && is_string( $body['message'] ) ) {
+					$reason = $body['message'];
+				}
+			}
+			$detail = '' !== trim( $reason ) ? $m[1] . ': ' . trim( $reason ) : $m[1];
+		}
+		if ( '' === $detail ) {
+			$detail = __( 'The AI provider did not return a usable answer. Try again in a moment.', 'rankready-ai-llm-seo' );
+		}
+		set_transient( 'rnrd_autogen_err_' . $kind . '_' . $post_id, mb_substr( $detail, 0, 300 ), 10 * MINUTE_IN_SECONDS );
+	}
+
+	/**
+	 * The sentence the metabox shows when the last automatic run failed, or an
+	 * empty string when it did not (or a newer run has been queued since).
+	 *
+	 * @param string $kind summary|faq
+	 */
+	public static function autogen_error( string $kind, int $post_id ): string {
+		$detail = get_transient( 'rnrd_autogen_err_' . $kind . '_' . $post_id );
+		if ( ! is_string( $detail ) || '' === $detail ) {
+			return '';
+		}
+		return sprintf(
+			/* translators: %s: the reason, e.g. "DeepSeek returned an unexpected response. Try again in a moment." */
+			__( 'Auto-generation failed: %s', 'rankready-ai-llm-seo' ),
+			$detail
+		);
+	}
+
+	/**
+	 * Whether an automatic Summary or FAQ run is queued or in flight for a post.
+	 * Ends as soon as the generated timestamp passes the queue time, so a
+	 * finished run never leaves a stale notice behind.
+	 *
+	 * @param string $kind summary|faq
+	 */
+	public static function autogen_pending( string $kind, int $post_id ): bool {
+		$hook = 'faq' === $kind ? 'rnrd_async_faq_generate' : RNRD_CRON_HOOK;
+		$done = (int) get_post_meta( $post_id, 'faq' === $kind ? RNRD_META_FAQ_GENERATED : RNRD_META_GENERATED, true );
+		$queued = (int) get_transient( 'rnrd_autogen_' . $kind . '_' . $post_id );
+		if ( $queued > 0 && $done >= $queued ) {
+			return false;
+		}
+		return false !== wp_next_scheduled( $hook, array( $post_id ) ) || $queued > 0;
 	}
 
 
@@ -137,9 +237,21 @@ class RNRD_Generator {
 		$content = self::get_content_string( $post );
 		$result  = self::call_openai( $content, $post );
 
-		if ( $result ) {
-			update_post_meta( $post_id, RNRD_META_SUMMARY,   $result );
+		if ( $result && ! is_wp_error( $result ) ) {
+			// The hash is stamped here, not at schedule time, and it records the
+			// content this summary was actually made from — which is the content
+			// as of now, not as of when the event was queued. A failure writes
+			// nothing, so maybe_schedule() will try this post again.
+			update_post_meta( $post_id, RNRD_META_SUMMARY,   wp_slash( $result ) ); // wp_slash: core unslashes meta, which would strip the escapes out of the stored JSON.
+			update_post_meta( $post_id, RNRD_META_HASH,      md5( $content ) );
 			update_post_meta( $post_id, RNRD_META_GENERATED, time() );
+			delete_transient( 'rnrd_autogen_err_summary_' . $post_id );
+			// Neither path fires save_post, so /post.md would keep serving the old summary.
+			if ( class_exists( 'RNRD_Rest' ) ) {
+				RNRD_Rest::purge_derived_output( (int) $post_id );
+			}
+		} else {
+			self::mark_autogen_failed( 'summary', $post_id, self::$last_error );
 		}
 
 		self::$generating = false;
@@ -182,9 +294,12 @@ class RNRD_Generator {
 		$result = self::call_openai( $content, $post );
 
 		if ( $result && ! is_wp_error( $result ) ) {
-			update_post_meta( $post_id, RNRD_META_SUMMARY,   $result );
+			update_post_meta( $post_id, RNRD_META_SUMMARY,   wp_slash( $result ) ); // wp_slash: core unslashes meta, which would strip the escapes out of the stored JSON.
 			update_post_meta( $post_id, RNRD_META_HASH,      $new_hash );
 			update_post_meta( $post_id, RNRD_META_GENERATED, time() );
+			if ( class_exists( 'RNRD_Rest' ) ) {
+				RNRD_Rest::purge_derived_output( (int) $post_id );
+			}
 		}
 
 		return $result;
@@ -198,7 +313,20 @@ class RNRD_Generator {
 	// `$api_key` parameter is ignored — the active provider's own key is
 	// fetched by RNRD_LLM. Callers can pass an empty string.
 
+	/**
+	 * Why the most recent call_openai() returned false, written for a person.
+	 * Read by run_generation() so a failed automatic run can say what happened.
+	 *
+	 * @var string
+	 */
+	private static $last_error = '';
+
 	public static function call_openai( $content, $post, $api_key = '' ) {
+		self::$last_error = '';
+		$post             = get_post( $post );
+		if ( ! $post ) {
+			return false;
+		}
 		$word_count   = preg_match_all( '/\S+/', $content );
 		$word_count   = false !== $word_count ? $word_count : 0;
 		$bullet_count = 3;
@@ -224,7 +352,7 @@ class RNRD_Generator {
 		// field. Falls back to legacy rnrd_product_context for back-compat with
 		// installs that filled in the old field before rc.3.
 		$product_context = '';
-		if ( class_exists( 'RNRD_Llms_Txt' ) ) {
+		if ( class_exists( 'RNRD_Brand_Identity' ) ) {
 			$product_context = RNRD_Brand_Identity::get_brand_about();
 		}
 		if ( '' === $product_context ) {
@@ -236,7 +364,7 @@ class RNRD_Generator {
 
 		// Inject canonical brand terms (v1.2.0) — single source from AI Crawlers tab.
 		// Wires same one input through every LLM call so brand naming stays consistent.
-		if ( class_exists( 'RNRD_Llms_Txt' ) ) {
+		if ( class_exists( 'RNRD_Brand_Identity' ) ) {
 			$brand_terms = RNRD_Brand_Identity::get_brand_terms_string();
 			if ( '' !== $brand_terms ) {
 				$system_prompt .= "\n\nCANONICAL BRAND NAMES (use these exact spellings — never abbreviate, paraphrase, or use variants):\n" . $brand_terms;
@@ -285,6 +413,7 @@ Blog Post:
 
 		if ( empty( $result['ok'] ) ) {
 			self::log_error( $source_label, (string) $result['error'], $post->ID );
+			self::$last_error = (string) $result['error'];
 			return false;
 		}
 
@@ -295,12 +424,14 @@ Blog Post:
 		$raw = (string) $result['content'];
 		if ( '' === $raw ) {
 			self::log_error( $source_label, 'Empty content from provider.', $post->ID );
+			self::$last_error = self::unexpected_response_text( (string) ( $result['provider'] ?? '' ) );
 			return false;
 		}
 
 		$decoded = json_decode( $raw, true );
 		if ( ! is_array( $decoded ) || empty( $decoded['bullets'] ) || ! is_array( $decoded['bullets'] ) ) {
 			self::log_error( $source_label, 'Unexpected JSON structure: ' . mb_substr( $raw, 0, 200 ), $post->ID );
+			self::$last_error = self::unexpected_response_text( (string) ( $result['provider'] ?? '' ) );
 			return false;
 		}
 
@@ -320,6 +451,20 @@ Blog Post:
 		return wp_json_encode( $decoded, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES );
 	}
 
+	/**
+	 * "DeepSeek returned an unexpected response. Try again in a moment."
+	 *
+	 * @param string $provider Provider slug; falls back to a generic name.
+	 */
+	private static function unexpected_response_text( string $provider ): string {
+		$label = '' !== $provider ? RNRD_LLM::get_provider_label( $provider ) : __( 'The AI provider', 'rankready-ai-llm-seo' );
+		return sprintf(
+			/* translators: %s: AI provider name, e.g. DeepSeek. */
+			__( '%s returned an unexpected response. Try again in a moment.', 'rankready-ai-llm-seo' ),
+			$label
+		);
+	}
+
 	// ── Connection test ───────────────────────────────────────────────────────
 
 	/**
@@ -328,6 +473,12 @@ Blog Post:
 	 *
 	 * Routes through `RNRD_LLM::generate()` so adding a new provider needs no
 	 * changes here.
+	 *
+	 * No caller inside the plugin as of 1.4.0: the admin's own connection test
+	 * is the `/verify-key` REST route, and the dead notice that used to call
+	 * this was removed. Kept because it is a `public static` on a class other
+	 * plugins can reach, and removing a public method is a breaking change for
+	 * anything that does.
 	 */
 	public static function test_api_connection() {
 		if ( ! RNRD_LLM::active_provider_ready() ) {
@@ -355,10 +506,92 @@ Blog Post:
 	// ── Helpers ───────────────────────────────────────────────────────────────
 
 	public static function get_content_string( $post ): string {
+		// issue #9 — page builders (Elementor etc.) leave post_content empty or
+		// near-empty, which used to feed the LLM an empty/near-empty string for
+		// a real, published page. Resolve through resolve_post_content() first.
+		$raw_content = ( $post instanceof WP_Post ) ? self::resolve_post_content( $post ) : (string) $post->post_content;
+
 		// strip_shortcodes() avoids side-effects from WooCommerce / form / cron-unsafe
 		// shortcodes when this runs under WP-Cron. We only need the raw text for the LLM.
-		$body = wp_strip_all_tags( strip_shortcodes( $post->post_content ) );
+		$body = wp_strip_all_tags( strip_shortcodes( $raw_content ) );
 		return $post->post_title . "\n\n" . $body;
+	}
+
+	/**
+	 * Resolve the real rendered body of a post, for any caller that needs the
+	 * ACTUAL content rather than the raw `post_content` column.
+	 *
+	 * issue #9 — page builders (Elementor, and anything else that stores its
+	 * body in postmeta instead of `post_content`) leave `post_content` empty or
+	 * a near-empty placeholder even on a fully rendered, published page. Every
+	 * content path that read `$post->post_content` directly therefore silently
+	 * produced an empty AI summary, an empty llms.txt/llms-full.txt entry, or an
+	 * empty .md file for a page that has real content on the frontend.
+	 *
+	 * Resolution order, cheapest and most reliable first:
+	 *   1. `post_content` itself, when it is real text — length is checked
+	 *      AFTER stripping tags/shortcodes so a lone `[elementor-template]`-style
+	 *      shortcode wrapper (which page builders sometimes leave behind) does
+	 *      not count as "real" content.
+	 *   2. Elementor's own render pipeline, when Elementor is active and the
+	 *      post carries Elementor data — the only reliable way to read a
+	 *      builder page's actual body without booting the full frontend
+	 *      template. Fully guarded (class/property/method existence + try/catch)
+	 *      since this has not been exercised against a live Elementor install in
+	 *      this environment; any failure falls straight through to step 3.
+	 *   3. The `the_content` filter chain as a last-resort fallback — covers
+	 *      every other page builder (Bricks, Oxygen, Divi, Beaver Builder,
+	 *      WPBakery) that hooks `the_content` rather than storing its own meta.
+	 *      Run defensively: buffered output, and the `$post` global plus loop
+	 *      state are saved and restored so a filter that depends on (or
+	 *      echoes via) the global query loop cannot leak state into the caller.
+	 *
+	 * @param WP_Post $post
+	 * @return string Resolved HTML/text body, or '' if nothing could be resolved.
+	 */
+	public static function resolve_post_content( WP_Post $post ): string {
+		// 1. Raw post_content, if it is actually real text.
+		$raw      = (string) $post->post_content;
+		$stripped = trim( wp_strip_all_tags( strip_shortcodes( $raw ) ) );
+		if ( mb_strlen( $stripped ) > 20 ) {
+			return $raw;
+		}
+
+		// 2. Elementor fast path.
+		if ( class_exists( '\Elementor\Plugin' ) && '' !== (string) get_post_meta( $post->ID, '_elementor_data', true ) ) {
+			try {
+				$instance = \Elementor\Plugin::$instance;
+				if ( $instance && isset( $instance->frontend ) && method_exists( $instance->frontend, 'get_builder_content_for_display' ) ) {
+					$rendered = (string) $instance->frontend->get_builder_content_for_display( $post->ID );
+					if ( mb_strlen( trim( wp_strip_all_tags( $rendered ) ) ) > 20 ) {
+						return $rendered;
+					}
+				}
+			} catch ( \Throwable $e ) {
+				// Fall through to the the_content fallback below.
+			}
+		}
+
+		// 3. Defensive the_content fallback.
+		$prev_global_post = $GLOBALS['post'] ?? null;
+		$GLOBALS['post']  = $post;
+		setup_postdata( $post );
+
+		ob_start();
+		$filtered = apply_filters( 'the_content', $raw );
+		$echoed   = ob_get_clean();
+
+		wp_reset_postdata();
+		if ( null !== $prev_global_post ) {
+			$GLOBALS['post'] = $prev_global_post;
+		} else {
+			unset( $GLOBALS['post'] );
+		}
+
+		if ( is_string( $filtered ) && '' !== trim( $filtered ) ) {
+			return $filtered;
+		}
+		return is_string( $echoed ) ? $echoed : '';
 	}
 
 	public static function decode_summary( $raw ): array {
@@ -404,26 +637,55 @@ Blog Post:
 
 	// ── Token tracking ───────────────────────────────────────────────────────
 
+	/**
+	 * Option names of the atomic token counters.
+	 *
+	 * These replace the three fields that used to live inside the single
+	 * serialised `rnrd_token_usage` array. A serialised array cannot be
+	 * incremented atomically: every write was
+	 * `get_option() -> modify -> update_option()`, so bulk generation running
+	 * beside the editor lost updates, and the figure this feeds is presented to
+	 * the user as spend. `rnrd_token_usage` itself is a shipped option and is
+	 * still READ by get_token_usage() below, so upgrades keep their history; it
+	 * is simply never written again.
+	 */
+	const OPT_TOK_SUMMARY = 'rnrd_tok_summary';
+	const OPT_TOK_FAQ     = 'rnrd_tok_faq';
+	const OPT_TOK_CALLS   = 'rnrd_tok_calls';
+
 	public static function track_tokens( int $tokens, int $post_id, string $type ): void {
-		// Per-post tracking.
-		$meta_key = '_rnrd_tokens_used';
-		$current  = (int) get_post_meta( $post_id, $meta_key, true );
-		update_post_meta( $post_id, $meta_key, $current + $tokens );
+		// Per-post tracking. Atomic: two generators can finish on the same post
+		// (editor and bulk), and this project has already been bitten by a real
+		// concurrent post-meta bug.
+		RNRD_Atomic::bump_post_meta_int( $post_id, '_rnrd_tokens_used', $tokens );
 
 		// Global cumulative tracking.
-		$totals = (array) get_option( 'rnrd_token_usage', array(
-			'summary_tokens' => 0,
-			'faq_tokens'     => 0,
-			'total_calls'    => 0,
-		) );
+		RNRD_Atomic::bump_option_int(
+			'summary' === $type ? self::OPT_TOK_SUMMARY : self::OPT_TOK_FAQ,
+			$tokens
+		);
+		RNRD_Atomic::bump_option_int( self::OPT_TOK_CALLS, 1 );
+	}
 
-		if ( 'summary' === $type ) {
-			$totals['summary_tokens'] = ( isset( $totals['summary_tokens'] ) ? (int) $totals['summary_tokens'] : 0 ) + $tokens;
-		} else {
-			$totals['faq_tokens'] = ( isset( $totals['faq_tokens'] ) ? (int) $totals['faq_tokens'] : 0 ) + $tokens;
-		}
-		$totals['total_calls'] = ( isset( $totals['total_calls'] ) ? (int) $totals['total_calls'] : 0 ) + 1;
+	/**
+	 * Cumulative token usage, folding pre-1.4.0 history in.
+	 *
+	 * The legacy serialised option is read and added, never written, so a site
+	 * that generated before the counters were split keeps its totals instead of
+	 * appearing to reset to zero on update.
+	 *
+	 * @return array{summary_tokens:int,faq_tokens:int,total_calls:int}
+	 */
+	public static function get_token_usage(): array {
+		$legacy = (array) get_option( 'rnrd_token_usage', array() );
 
-		update_option( 'rnrd_token_usage', $totals, false );
+		return array(
+			'summary_tokens' => ( isset( $legacy['summary_tokens'] ) ? (int) $legacy['summary_tokens'] : 0 )
+				+ RNRD_Atomic::read_int( self::OPT_TOK_SUMMARY ),
+			'faq_tokens'     => ( isset( $legacy['faq_tokens'] ) ? (int) $legacy['faq_tokens'] : 0 )
+				+ RNRD_Atomic::read_int( self::OPT_TOK_FAQ ),
+			'total_calls'    => ( isset( $legacy['total_calls'] ) ? (int) $legacy['total_calls'] : 0 )
+				+ RNRD_Atomic::read_int( self::OPT_TOK_CALLS ),
+		);
 	}
 }
