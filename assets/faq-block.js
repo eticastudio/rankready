@@ -30,6 +30,31 @@
 	var t    = i18n.t;
 	var tr   = i18n.tr;
 
+	// Editor-only: why this block renders nothing on the front end (feature or post type off).
+	function rnrdFeatureHint( key, name, tabName ) {
+		var f = ( cfg.features || {} )[ key ];
+		if ( ! f ) return '';
+		if ( ! f.on ) {
+			return tr( 'featureOffHint', '%1$s is off. Turn it on in AI Content, then %2$s.', name, tabName );
+		}
+		var ed = wp.data.select( 'core/editor' );
+		var type = ed && ed.getCurrentPostType ? ed.getCurrentPostType() : '';
+		if ( type && 0 !== String( type ).indexOf( 'wp_' ) && f.types && ( ! f.types.length || -1 === f.types.indexOf( type ) ) ) {
+			return tr( 'typeOffHint', '%1$s is not enabled for this post type. Turn it on in AI Content, then %2$s, Post types.', name, tabName );
+		}
+		return '';
+	}
+
+	// A numeric ID only: the Site Editor reports a template slug here, and no REST route exists for it.
+	function rnrdRealPostId( select ) {
+		var ed = select( 'core/editor' );
+		if ( ! ed ) return 0;
+		var id = ed.getCurrentPostId();
+		var type = ed.getCurrentPostType ? ed.getCurrentPostType() : '';
+		if ( ! id || ! /^\d+$/.test( String( id ) ) || ( type && 0 === String( type ).indexOf( 'wp_' ) ) ) return 0;
+		return parseInt( id, 10 );
+	}
+
 	function colorControl( label, value, onChange ) {
 		return el( BaseControl, { label: label, __nextHasNoMarginBottom: true },
 			el( ColorPalette, {
@@ -133,9 +158,7 @@
 			var _dragOver  = useState( -1 );
 			var dragOver   = _dragOver[0]; var setDragOver = _dragOver[1];
 
-			var postId = useSelect( function ( select ) {
-				return select( 'core/editor' ).getCurrentPostId();
-			}, [] );
+			var postId = useSelect( rnrdRealPostId, [] );
 
 			// Load existing FAQ on mount.
 			useEffect( function () {
@@ -299,7 +322,7 @@
 								disabled: loading || ! postId,
 								onClick: handleGenerate,
 								style: { width: '100%', justifyContent: 'center' },
-							}, loading ? t( 'generatingFaq', 'Generating FAQ…' ) : faq.length ? t( 'regenerateFaq', 'Regenerate FAQ' ) : t( 'generateFaq', 'Generate FAQ' ) )
+							}, ! postId ? t( 'openPostToGenerate', 'Open a post to generate' ) : loading ? t( 'generatingFaq', 'Generating FAQ…' ) : faq.length ? t( 'regenerateFaq', 'Regenerate FAQ' ) : t( 'generateFaq', 'Generate FAQ' ) )
 						),
 
 						generated && el( 'p', { style: { color: '#757575', fontSize: '11px', margin: '8px 0 0', fontStyle: 'italic' } },
@@ -343,7 +366,7 @@
 						colorControl( t( 'color', 'Color' ), attrs.questionColor, function ( v ) { setAttrs( { questionColor: v } ); } ),
 						el( SelectControl, {
 							label: t( 'fontFamily', 'Font Family' ),
-							help: t( 'fontFamilyHelp', 'Pulls from your theme.json fonts (Kadence, or any block theme). Leave blank to inherit from theme.' ),
+							help: t( 'fontFamilyHelp', 'Pulls from your theme.json fonts (any block theme). Leave blank to inherit from theme.' ),
 							value: attrs.questionFontFamily || '',
 							options: rnrdGlobalFontOptions(),
 							onChange: function ( v ) { setAttrs( { questionFontFamily: v } ); },
@@ -414,6 +437,8 @@
 
 				// Editor Preview
 				el( 'div', blockProps,
+
+					rnrdFeatureHint( 'faq', 'AI FAQ', 'AI FAQ' ) && el( Notice, { status: 'warning', isDismissible: false }, rnrdFeatureHint( 'faq', 'AI FAQ', 'AI FAQ' ) ),
 
 					attrs.showTitle && el( HeadingTag, {
 						className: 'rnrd-faq-title',

@@ -57,6 +57,9 @@ defined( 'ABSPATH' ) || exit;
 
 class RNRD_Cache {
 
+	/** True once a site-wide purge has run in this request. */
+	private static $site_wide_purged = false;
+
 	/**
 	 * Wire compatibility hooks for asset optimisers and minifiers.
 	 *
@@ -476,6 +479,12 @@ class RNRD_Cache {
 	 * @param string $url Absolute URL to purge (e.g. home_url('/robots.txt')).
 	 */
 	public static function purge_url( string $url ): void {
+		// Site-wide purges (full flushes with no per-URL API) run once per
+		// request. A settings save purges five to eight URLs and each used to
+		// trigger its own full-site flush.
+		$first_site_wide = ! self::$site_wide_purged;
+		self::$site_wide_purged = true;
+
 		// WP Rocket — precise single-file purge.
 		if ( function_exists( 'rocket_clean_files' ) ) {
 			rocket_clean_files( [ $url ] );
@@ -490,12 +499,12 @@ class RNRD_Cache {
 		do_action( 'w3tc_flush_url', $url );
 
 		// WP Super Cache — no per-URL API; clears the full site cache.
-		if ( function_exists( 'wp_cache_clear_cache' ) ) {
+		if ( $first_site_wide && function_exists( 'wp_cache_clear_cache' ) ) {
 			wp_cache_clear_cache();
 		}
 
 		// WP Fastest Cache.
-		if ( class_exists( 'WpFastestCache' ) && method_exists( 'WpFastestCache', 'deleteCache' ) ) {
+		if ( $first_site_wide && class_exists( 'WpFastestCache' ) && method_exists( 'WpFastestCache', 'deleteCache' ) ) {
 			( new \WpFastestCache() )->deleteCache( true );
 		}
 
@@ -532,13 +541,15 @@ class RNRD_Cache {
 		do_action( 'rt_nginx_helper_purge_url', $url );
 
 		// SG Optimizer (SiteGround).
-		if ( function_exists( 'sg_cachepress_purge_cache' ) ) {
+		if ( $first_site_wide && function_exists( 'sg_cachepress_purge_cache' ) ) {
 			sg_cachepress_purge_cache();
 		}
 
 		// Breeze (Cloudways).
 		// phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- Breeze published action; integration.
-		do_action( 'breeze_clear_all_cache' );
+		if ( $first_site_wide ) {
+			do_action( 'breeze_clear_all_cache' );
+		}
 
 		// Hummingbird (WPMU Dev).
 		// phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- Hummingbird published action; integration.
@@ -553,16 +564,20 @@ class RNRD_Cache {
 		}
 
 		// Comet Cache.
-		if ( class_exists( 'comet_cache' ) && method_exists( 'comet_cache', 'clear' ) ) {
+		if ( $first_site_wide && class_exists( 'comet_cache' ) && method_exists( 'comet_cache', 'clear' ) ) {
 			\comet_cache::clear();
 		}
 
 		// Swift Performance.
-		do_action( 'swift_performance_after_clear_all_cache' );
+		if ( $first_site_wide ) {
+			do_action( 'swift_performance_after_clear_all_cache' );
+		}
 
 		// Autoptimize — handles CSS/JS asset cache, relevant when URL changes
 		// invalidate inlined or combined assets.
-		do_action( 'autoptimize_action_cachepurged' );
+		if ( $first_site_wide ) {
+			do_action( 'autoptimize_action_cachepurged' );
+		}
 
 		// Pantheon / Pressable hosting edge cache.
 		if ( function_exists( 'pantheon_clear_edge_paths' ) ) {
@@ -576,7 +591,7 @@ class RNRD_Cache {
 		do_action( 'nitropack_purge_individual_url', $url );
 
 		// Kinsta — full-site purge (Kinsta has no per-URL PHP API exposed).
-		if ( class_exists( '\\Kinsta\\Cache' ) && method_exists( '\\Kinsta\\Cache', 'purge_complete_caches' ) ) {
+		if ( $first_site_wide && class_exists( '\\Kinsta\\Cache' ) && method_exists( '\\Kinsta\\Cache', 'purge_complete_caches' ) ) {
 			try {
 				\Kinsta\Cache::purge_complete_caches();
 			} catch ( \Throwable $e ) {
@@ -585,7 +600,7 @@ class RNRD_Cache {
 		}
 
 		// WP Engine — edge cache via WpeCommon helper (present on WPE hosts).
-		if ( class_exists( '\\WpeCommon' ) && method_exists( '\\WpeCommon', 'purge_varnish_cache' ) ) {
+		if ( $first_site_wide && class_exists( '\\WpeCommon' ) && method_exists( '\\WpeCommon', 'purge_varnish_cache' ) ) {
 			try {
 				\WpeCommon::purge_varnish_cache();
 			} catch ( \Throwable $e ) {
@@ -644,6 +659,31 @@ class RNRD_Cache {
 	 * @since 1.2.2
 	 */
 	public static function purge_all_endpoints(): void {
+		// Debounce: many option updates call this in one request and in quick
+		// succession. Coalesce them into one scheduled purge, or, where WP-Cron
+		// is disabled and nothing would ever fire it, run once per 15 seconds.
+		if ( defined( 'DISABLE_WP_CRON' ) && DISABLE_WP_CRON ) {
+			if ( false === get_transient( 'rnrd_purge_endpoints_ran' ) ) {
+				set_transient( 'rnrd_purge_endpoints_ran', 1, 15 );
+				self::run_purge_all_endpoints();
+			}
+			return;
+		}
+		if ( ! wp_next_scheduled( 'rnrd_purge_endpoints' ) ) {
+			if ( false === wp_schedule_single_event( time() + 15, 'rnrd_purge_endpoints' ) ) {
+				self::run_purge_all_endpoints();
+			}
+		}
+	}
+
+	/**
+	 * Run the endpoint purge now. Hooked to the single scheduled event that
+	 * purge_all_endpoints() queues; call it directly only when an immediate
+	 * purge is required.
+	 *
+	 * @since 1.4.2
+	 */
+	public static function run_purge_all_endpoints(): void {
 		$urls = array(
 			home_url( '/llms.txt' ),
 			home_url( '/llms-full.txt' ),
@@ -1030,3 +1070,5 @@ class RNRD_Cache {
 		return implode( "\n", $lines );
 	}
 }
+
+add_action( 'rnrd_purge_endpoints', array( 'RNRD_Cache', 'run_purge_all_endpoints' ) );

@@ -263,7 +263,7 @@ class RNRD_Author_Box {
 					<?php if ( $profile_is_pro ) : ?>
 					<?php esc_html_e( 'Every field below is published as Schema.org Person data that search engines and AI crawlers can read. Fill in only what applies. RankReady merges into Rank Math, Yoast, and AIOSEO Person schema automatically when those plugins are active.', 'rankready-ai-llm-seo' ); ?>
 					<?php else : ?>
-					<?php esc_html_e( 'These fields power the on-page Author Box and the basic Person schema that ships with every post. Each input below says which Schema.org property it becomes. Extended schema for credentials, verified identity, and social profiles is listed below, and ships in RankReady Pro.', 'rankready-ai-llm-seo' ); ?>
+					<?php esc_html_e( 'These fields power the on-page Author Box and the basic Person schema published on author archive pages. Each input below says which Schema.org property it becomes. Extended schema for credentials, verified identity, and social profiles is listed below, and ships in RankReady Pro.', 'rankready-ai-llm-seo' ); ?>
 					<?php endif; ?>
 				</p>
 				<?php
@@ -293,7 +293,7 @@ class RNRD_Author_Box {
 				<th><label for="rnrd_author_job_title"><?php esc_html_e( 'Job Title', 'rankready-ai-llm-seo' ); ?></label></th>
 				<td>
 					<input type="text" name="rnrd_author_job_title" id="rnrd_author_job_title" value="<?php echo esc_attr( $m( 'rnrd_author_job_title' ) ); ?>" class="regular-text" />
-					<p class="description"><?php esc_html_e( 'Your professional role. Emits as Person.jobTitle — a primary EEAT signal.', 'rankready-ai-llm-seo' ); ?></p>
+					<p class="description"><?php esc_html_e( 'Your professional role. Emits as Person.jobTitle in the structured data crawlers read.', 'rankready-ai-llm-seo' ); ?></p>
 				</td>
 			</tr>
 			<tr>
@@ -489,7 +489,7 @@ class RNRD_Author_Box {
 				<th><label for="rnrd_author_wikipedia"><?php esc_html_e( 'Wikipedia URL', 'rankready-ai-llm-seo' ); ?></label></th>
 				<td>
 					<input type="url" name="rnrd_author_wikipedia" id="rnrd_author_wikipedia" value="<?php echo esc_attr( $m( 'rnrd_author_wikipedia' ) ); ?>" class="regular-text" placeholder="https://en.wikipedia.org/wiki/…" />
-					<p class="description"><?php esc_html_e( 'Wikipedia article URL about you, if one exists. Emits early in sameAs[] — strong entity anchor for Google and LLMs.', 'rankready-ai-llm-seo' ); ?></p>
+					<p class="description"><?php esc_html_e( 'Wikipedia article URL about you, if one exists. Emits early in sameAs[] as a machine-readable link to your identity.', 'rankready-ai-llm-seo' ); ?></p>
 				</td>
 			</tr>
 			<tr>
@@ -510,7 +510,7 @@ class RNRD_Author_Box {
 				<th><label for="rnrd_author_linkedin"><?php esc_html_e( 'LinkedIn URL', 'rankready-ai-llm-seo' ); ?></label></th>
 				<td>
 					<input type="url" name="rnrd_author_linkedin" id="rnrd_author_linkedin" value="<?php echo esc_attr( $m( 'rnrd_author_linkedin' ) ); ?>" class="regular-text" placeholder="https://www.linkedin.com/in/…" />
-					<p class="description"><?php esc_html_e( 'LinkedIn profile. Emits in sameAs[] — the most widely recognised professional identity link.', 'rankready-ai-llm-seo' ); ?></p>
+					<p class="description"><?php esc_html_e( 'LinkedIn profile. Emits in sameAs[] as a machine-readable link to your professional profile.', 'rankready-ai-llm-seo' ); ?></p>
 				</td>
 			</tr>
 
@@ -572,7 +572,7 @@ class RNRD_Author_Box {
 			'rnrd-author-profile',
 			RNRD_URL . 'assets/author-profile.js',
 			array( 'rnrd-i18n' ),
-			RNRD_VERSION,
+			rnrd_asset_ver( 'assets/author-profile.js' ),
 			true
 		);
 		wp_localize_script( 'rnrd-author-profile', 'rnrdAuthorProfile', array(

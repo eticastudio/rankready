@@ -34,6 +34,7 @@ class RNRD_OKF {
 	 *  rebuilds the full O(N) bundle on a normal request — only after content changes. */
 	const CACHE_INDEX = 'rnrd_okf_index';
 	const CACHE_LOG   = 'rnrd_okf_log';
+	const CACHE_SLUGS = 'rnrd_okf_slugs';
 
 	/** admin-post action for the bundle .zip download. */
 	const EXPORT_ACTION = 'rnrd_okf_export';
@@ -65,9 +66,9 @@ class RNRD_OKF {
 		// Bundle freshness: drop the cached manifest + log whenever content or the
 		// included-types setting changes, so the bundle genuinely refreshes on publish/
 		// edit/delete and the origin only does the O(N) rebuild after a real change.
-		add_action( 'save_post', array( self::class, 'flush_cache' ) );
-		add_action( 'deleted_post', array( self::class, 'flush_cache' ) );
-		add_action( 'transition_post_status', array( self::class, 'flush_cache' ) );
+		add_action( 'save_post', array( self::class, 'on_save_post' ), 10, 2 );
+		add_action( 'deleted_post', array( self::class, 'on_deleted_post' ), 10, 2 );
+		add_action( 'transition_post_status', array( self::class, 'on_transition_post_status' ), 10, 3 );
 		add_action( 'update_option_' . RNRD_OPT_OKF_POST_TYPES, array( self::class, 'flush_cache' ) );
 		add_action( 'update_option_' . RNRD_OPT_OKF_ENABLE, array( self::class, 'on_enable_change' ) );
 	}
@@ -100,6 +101,36 @@ class RNRD_OKF {
 	 * to 15 seconds to a post save. Instead one single cron event is scheduled,
 	 * which also coalesces a bulk edit of 50 posts into a single purge.
 	 */
+	public static function on_save_post( $post_id, $post = null ): void {
+		if ( wp_is_post_autosave( $post_id ) || wp_is_post_revision( $post_id ) ) {
+			return;
+		}
+		$post = $post instanceof WP_Post ? $post : get_post( $post_id );
+		if ( ! $post instanceof WP_Post || 'publish' !== $post->post_status ) {
+			return;
+		}
+		self::flush_cache();
+	}
+
+	/** A deleted draft changes nothing the bundle shows; a deleted published post does. */
+	public static function on_deleted_post( $post_id, $post = null ): void {
+		if ( $post instanceof WP_Post && 'publish' !== $post->post_status ) {
+			return;
+		}
+		self::flush_cache();
+	}
+
+	/** Only a change into or out of "publish" alters the bundle. */
+	public static function on_transition_post_status( $new_status, $old_status, $post = null ): void {
+		if ( 'publish' !== $new_status && 'publish' !== $old_status ) {
+			return;
+		}
+		if ( $post instanceof WP_Post && wp_is_post_revision( $post ) ) {
+			return;
+		}
+		self::flush_cache();
+	}
+
 	public static function flush_cache(): void {
 		// Drop the per-request slug map too: a save that invalidates the bundle
 		// can also have changed a post_name, and a stale map would hand the rest
@@ -109,6 +140,7 @@ class RNRD_OKF {
 
 		delete_transient( self::CACHE_INDEX );
 		delete_transient( self::CACHE_LOG );
+		delete_transient( self::CACHE_SLUGS );
 
 		if ( ! self::enabled() ) {
 			return;
@@ -269,7 +301,8 @@ class RNRD_OKF {
 				if ( '' === $slug ) {
 					continue; // No slug, no URL. Same guard as slug_map().
 				}
-				$lines[] = '* [' . self::clean( get_the_title( $post ) ) . '](' . self::concept_path( $slug ) . ') - ' . self::clean( self::excerpt( $post ) );
+				$desc    = self::clean( self::excerpt( $post ) );
+				$lines[] = '* [' . self::clean( get_the_title( $post ) ) . '](' . self::concept_path( $slug ) . ')' . ( '' !== trim( $desc ) ? ' - ' . $desc : '' );
 			}
 			$lines[] = '';
 		}
@@ -392,9 +425,12 @@ class RNRD_OKF {
 
 	private static function excerpt( WP_Post $post ): string {
 		if ( ! empty( $post->post_excerpt ) ) {
-			return $post->post_excerpt;
+			$excerpt = RNRD_Util::strip_shortcode_markup( (string) $post->post_excerpt );
+			if ( '' !== trim( wp_strip_all_tags( $excerpt ) ) ) {
+				return $excerpt;
+			}
 		}
-		return wp_trim_words( wp_strip_all_tags( $post->post_content ), 30, '…' );
+		return wp_trim_words( RNRD_Util::strip_tags_spaced( RNRD_Util::strip_shortcode_markup( (string) $post->post_content ) ), 30, '…' );
 	}
 
 	// ── Post lookup ────────────────────────────────────────────────────────
@@ -448,6 +484,14 @@ class RNRD_OKF {
 		}
 		if ( class_exists( 'RNRD_Llms_Txt' ) && RNRD_Llms_Txt::should_exclude_from_llms( $post ) ) {
 			return false;
+		}
+		// 1.4.1 — the normal .md endpoint answers 404 for a post with no real body
+		// (for example an empty WooCommerce shop page). Do not serve it under /okf/ either.
+		if ( class_exists( 'RNRD_Generator' ) && method_exists( 'RNRD_Generator', 'resolve_post_content' ) ) {
+			$body = RNRD_Generator::resolve_post_content( $post );
+			if ( is_string( $body ) && '' === trim( wp_strip_all_tags( $body ) ) ) {
+				return false;
+			}
 		}
 		return true;
 	}
@@ -551,9 +595,37 @@ class RNRD_OKF {
 		// Either zero matches (a disambiguated `<slug>-<type>` URL) or two-plus
 		// (a real collision). Both need the same map the index and the zip are
 		// keyed from, so the URL resolves to exactly the post published under it.
-		$map = self::slug_map();
+		// A disambiguated URL always ends in `-<post type>` or `-<post type>-<id>`.
+		// With no direct match and no such suffix the slug cannot be in the map,
+		// so answer 404 without loading every post.
+		if ( 0 === count( $direct ) && ! self::slug_has_type_suffix( $slug ) ) {
+			return null;
+		}
 
-		return isset( $map[ $slug ] ) ? $map[ $slug ] : null;
+		$ids = get_transient( self::CACHE_SLUGS );
+		if ( ! is_array( $ids ) ) {
+			$ids = array();
+			foreach ( self::slug_map() as $key => $mapped ) {
+				$ids[ $key ] = (int) $mapped->ID;
+			}
+			set_transient( self::CACHE_SLUGS, $ids, HOUR_IN_SECONDS );
+		}
+		if ( ! isset( $ids[ $slug ] ) ) {
+			return null;
+		}
+		$found = get_post( (int) $ids[ $slug ] );
+
+		return ( $found instanceof WP_Post && 'publish' === $found->post_status && self::is_includable( $found ) ) ? $found : null;
+	}
+
+	/** Does the slug end in `-<enabled post type>` with an optional numeric id? */
+	private static function slug_has_type_suffix( string $slug ): bool {
+		foreach ( self::post_types() as $pt ) {
+			if ( preg_match( '/-' . preg_quote( (string) $pt, '/' ) . '(-\d+)?$/', $slug ) ) {
+				return true;
+			}
+		}
+		return false;
 	}
 
 	// ── Serving ────────────────────────────────────────────────────────────

@@ -366,6 +366,7 @@ if ( ! function_exists( 'rnrd_uninstall_site' ) ) {
 		// ── Delete post meta ──────────────────────────────────────────────────────────
 		$rnrd_meta_keys = array(
 			'_rnrd_summary',
+			'_rnrd_md_ver',           // v1.4.1 per-post .md cache version
 			'_rnrd_content_hash',
 			'_rnrd_last_generated',
 			'_rnrd_last_attempt',      // v1.4.0 regeneration cooldown clock
@@ -394,6 +395,9 @@ if ( ! function_exists( 'rnrd_uninstall_site' ) ) {
 			$wpdb->delete( $wpdb->postmeta, array( 'meta_key' => $rnrd_key ) ); // phpcs:ignore WordPress.DB.SlowDBQuery.slow_db_query_meta_key
 		}
 
+		// Catch-all for any _rnrd_* post meta added after the list above was written.
+		$wpdb->query( "DELETE FROM {$wpdb->postmeta} WHERE meta_key LIKE '\\_rnrd\\_%'" ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery,WordPress.DB.PreparedSQL.NotPrepared,WordPress.DB.SlowDBQuery.slow_db_query_meta_key
+
 		// ── Clear scheduled cron ──────────────────────────────────────────────────────
 		wp_unschedule_hook( 'rnrd_async_generate' ); // scheduled with a post id arg; clear_scheduled_hook() without args misses them.
 		wp_unschedule_hook( 'rnrd_async_faq_generate' ); // scheduled with a post id arg; clear_scheduled_hook() without args misses them.
@@ -402,7 +406,7 @@ if ( ! function_exists( 'rnrd_uninstall_site' ) ) {
 		wp_clear_scheduled_hook( 'rnrd_cron_bulk_faq' );
 		wp_clear_scheduled_hook( 'rnrd_cron_bulk_summary' );
 		wp_clear_scheduled_hook( 'rnrd_crawler_log_prune' );  // v0.6.6 daily prune cron
-		wp_clear_scheduled_hook( 'rnrd_okf_purge_edge' );
+		wp_unschedule_hook( 'rnrd_okf_purge_edge' ); // may carry args; clear_scheduled_hook() without args misses them.
 		wp_clear_scheduled_hook( 'rnrd_unicode_meta_migrate' );
 
 		// ── Drop the crawler-log table (v0.6.6) ──────────────────────────────────────

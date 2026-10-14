@@ -81,6 +81,20 @@ class RNRD_Markdown {
 		add_action( 'transition_post_status', array( self::class, 'purge_post_md_on_status' ), 20, 3 );
 		add_action( 'before_delete_post',     array( self::class, 'purge_post_md_url' ), 20, 1 );
 
+		// v1.4.1 - per-post cache VERSION, bumped when output-affecting meta or
+		// terms change without touching post_modified. Works on any object cache.
+		add_action( 'added_post_meta',   array( self::class, 'on_watched_meta_change' ), 20, 3 );
+		add_action( 'updated_post_meta', array( self::class, 'on_watched_meta_change' ), 20, 3 );
+		add_action( 'deleted_post_meta', array( self::class, 'on_watched_meta_change' ), 20, 3 );
+		add_action( 'set_object_terms',  array( self::class, 'on_terms_change' ), 20, 1 );
+
+		// Settings that change the rendered body of EVERY post: a stale body
+		// survived un-ticking and re-ticking the frontmatter toggle.
+		foreach ( array( RNRD_OPT_MD_INCLUDE_META, RNRD_OPT_LABEL ) as $rnrd_md_opt ) {
+			add_action( 'update_option_' . $rnrd_md_opt, array( self::class, 'bump_md_settings_version' ) );
+			add_action( 'add_option_' . $rnrd_md_opt, array( self::class, 'bump_md_settings_version' ) );
+		}
+
 		// v1.0.1 — The Cloudflare APO ↔ content-negotiation notice
 		// (maybe_cloudflare_apo_notice) is registered above, inside the is_admin()
 		// guard. APO's cache key ignores the Accept request header, so once a URL's
@@ -235,6 +249,163 @@ class RNRD_Markdown {
 	}
 
 
+	/** Post meta key holding the per-post .md cache version. Permanent once shipped. */
+	const MD_VERSION_META = '_rnrd_md_ver';
+
+	/** @var array<int,bool> Posts already version-bumped in this request. */
+	private static $md_bumped = array();
+
+	/**
+	 * Current per-post .md cache version (0 when never bumped).
+	 */
+	public static function md_cache_version( int $post_id ): int {
+		return max( 0, (int) get_post_meta( $post_id, self::MD_VERSION_META, true ) );
+	}
+
+	/**
+	 * Transient key for a post's rendered Markdown. Includes the per-post
+	 * version so a bump invalidates every locale variant on ANY cache backend
+	 * (Redis, Memcached, DB); the old LIKE sweep only ever saw the options table.
+	 */
+	public static function md_cache_key( WP_Post $post, string $locale ): string {
+		// A key read means this request is about to serve or store output; a later
+		// change in the same request must bump again, not be swallowed as a duplicate.
+		unset( self::$md_bumped[ (int) $post->ID ] );
+		/**
+		 * Extra cache salt for add-ons whose settings change every post's output
+		 * (Pro custom fields allowlist). Empty by default; changing the value
+		 * invalidates all cached Markdown on any cache backend.
+		 *
+		 * @since 1.4.1
+		 *
+		 * @param string $salt Salt, digits and letters only.
+		 */
+		$salt = preg_replace( '/[^A-Za-z0-9]/', '', (string) apply_filters( 'rankready_md_cache_salt', '' ) );
+		$settings_ver = preg_replace( '/[^A-Za-z0-9]/', '', (string) get_option( self::MD_SETTINGS_VER_OPT, '' ) );
+		return 'rnrd_md_' . $post->ID . '_' . $locale . '_' . strtotime( $post->post_modified ) . '_v' . self::md_cache_version( (int) $post->ID ) . ( '' !== $settings_ver ? '_o' . $settings_ver : '' ) . ( '' !== $salt ? '_s' . $salt : '' );
+	}
+
+	/** Option holding the global Markdown-settings cache version. Permanent once shipped. */
+	const MD_SETTINGS_VER_OPT = 'rnrd_md_settings_ver';
+
+	/** @var bool A settings bump already ran in this request (several options save together). */
+	private static $md_settings_bumped = false;
+
+	/**
+	 * Invalidate every cached Markdown body after an output-affecting setting
+	 * changed (frontmatter on/off, summary label). Debounced to one write per
+	 * request, because a settings form saves several options at once. The new
+	 * value is part of the transient key, so it works on any object cache and
+	 * the old entries simply expire.
+	 */
+	public static function bump_md_settings_version(): void {
+		if ( self::$md_settings_bumped ) {
+			return;
+		}
+		self::$md_settings_bumped = true;
+		update_option( self::MD_SETTINGS_VER_OPT, substr( md5( uniqid( '', true ) ), 0, 12 ), false );
+	}
+
+	/**
+	 * Atomically bump a post's .md cache version. Once per post per request.
+	 * Old-key transients simply expire (5 min TTL); nothing is migrated.
+	 */
+	public static function bump_md_version( int $post_id ): void {
+		if ( $post_id <= 0 || isset( self::$md_bumped[ $post_id ] ) ) {
+			return;
+		}
+		if ( wp_is_post_revision( $post_id ) || wp_is_post_autosave( $post_id ) ) {
+			return;
+		}
+		if ( ! class_exists( 'RNRD_Atomic' ) ) {
+			return;
+		}
+		self::$md_bumped[ $post_id ] = true;
+		try {
+			RNRD_Atomic::bump_post_meta_int( $post_id, self::MD_VERSION_META, 1 );
+		} catch ( \Throwable $e ) {
+			unset( self::$md_bumped[ $post_id ] );
+		}
+	}
+
+	/**
+	 * Meta keys whose change alters the rendered Markdown.
+	 *
+	 * RankReady's own output-affecting keys, plus anything a third party (Pro:
+	 * ACF fields) registers. Bookkeeping keys (hashes, cooldown clocks, the
+	 * version counter itself) are deliberately excluded so meta write storms do
+	 * not purge the cache.
+	 *
+	 * @param int $post_id Post whose meta changed.
+	 * @return string[] Exact meta keys.
+	 */
+	public static function watched_meta_keys( int $post_id ): array {
+		$keys = array(
+			'_rnrd_summary',
+			'_rnrd_faq',
+			'_rnrd_disable_summary',
+			'_rnrd_faq_disable',
+			'_rnrd_llms_exclude',
+			'_rnrd_schema_type',
+			'_rnrd_schema_data',
+			'_rnrd_max_snippet',
+		);
+		/**
+		 * Meta keys that invalidate a post's cached Markdown when written.
+		 *
+		 * Exact keys only (no wildcards). Pro registers ACF field keys here.
+		 * RankReady's own output-affecting keys are always watched; this adds to them.
+		 * Permanent public contract: the signature will not change.
+		 *
+		 * @since 1.4.1
+		 * @param string[] $keys    Exact meta keys, empty by default.
+		 * @param int      $post_id Post whose meta changed.
+		 */
+		$extra = apply_filters( 'rankready_md_watched_meta_keys', array(), $post_id );
+		if ( is_array( $extra ) ) {
+			foreach ( $extra as $k ) {
+				if ( is_string( $k ) && '' !== $k ) {
+					$keys[] = $k;
+				}
+			}
+		}
+		return $keys;
+	}
+
+	/**
+	 * added/updated/deleted_post_meta handler. Cheap early exits so unrelated
+	 * meta write storms cost one in_array.
+	 *
+	 * @param mixed  $meta_id  Meta ID (or IDs on delete). Unused.
+	 * @param int    $post_id  Post ID.
+	 * @param string $meta_key Meta key.
+	 */
+	public static function on_watched_meta_change( $meta_id, $post_id = 0, $meta_key = '' ): void {
+		$post_id = (int) $post_id;
+		if ( $post_id <= 0 || ! is_string( $meta_key ) || '' === $meta_key || self::MD_VERSION_META === $meta_key ) {
+			return;
+		}
+		if ( 'on' !== get_option( RNRD_OPT_MD_ENABLE, 'off' ) ) {
+			return;
+		}
+		if ( ! in_array( $meta_key, self::watched_meta_keys( $post_id ), true ) ) {
+			return;
+		}
+		self::bump_md_version( $post_id );
+	}
+
+	/**
+	 * set_object_terms handler (categories and tags appear in frontmatter).
+	 *
+	 * @param int $object_id Object whose terms were set.
+	 */
+	public static function on_terms_change( $object_id = 0 ): void {
+		if ( 'on' !== get_option( RNRD_OPT_MD_ENABLE, 'off' ) ) {
+			return;
+		}
+		self::bump_md_version( (int) $object_id );
+	}
+
 	/**
 	 * Purge a post's .md URL across every cache layer when its content changes.
 	 * No-op when markdown endpoints are disabled, when the post type isn't
@@ -253,6 +424,9 @@ class RNRD_Markdown {
 		if ( 'on' !== get_option( RNRD_OPT_MD_ENABLE, 'off' ) ) {
 			return;
 		}
+
+		// v1.4.1 - bump the per-post cache version (object-cache safe).
+		self::bump_md_version( (int) $post_id );
 
 		// v1.1.5 (#6) — listing transients (homepage /index.md and Posts-page .md)
 		// depend only on permalink_structure, so they were never invalidated and
@@ -487,22 +661,25 @@ class RNRD_Markdown {
 		// even that resolves to nothing, there is no real body to serve. A 200
 		// with an empty content section reads to an AI crawler as confirmed thin
 		// content, which is worse than a 404 — so 404 rather than serve it.
-		if ( class_exists( 'RNRD_Generator' ) ) {
-			$rnrd_resolved_body = trim( wp_strip_all_tags( RNRD_Generator::resolve_post_content( $post ) ) );
-			if ( '' === $rnrd_resolved_body ) {
-				status_header( 404 );
-				header( 'Content-Type: text/plain; charset=utf-8' );
-				echo '# 404 Not Found';
-				exit;
-			}
-		}
-
 		// Log with the resolved post so CPT, title, and ID are captured.
 		RNRD_Crawler_Log::log( 'markdown', $post );
 
-		$cache_key = 'rnrd_md_' . $post->ID . '_' . $locale . '_' . strtotime( $post->post_modified );
+		$cache_key = self::md_cache_key( $post, $locale );
 		$markdown  = get_transient( $cache_key );
 		if ( false === $markdown ) {
+			// Emptiness probe runs on a cache MISS only, so a cached hit costs
+			// nothing (builder pages used to pay a full render per crawler hit).
+			if ( class_exists( 'RNRD_Generator' ) && ! self::has_servable_facts( $post ) ) {
+				$rnrd_resolved_body = trim( wp_strip_all_tags( RNRD_Generator::resolve_post_content( $post ) ) );
+				// A post made of RankReady blocks that render nothing (feature off, no data yet) is still a real page: serve title and frontmatter.
+				$rnrd_has_own_blocks = false !== strpos( (string) $post->post_content, '<!-- wp:rankready/' );
+				if ( '' === $rnrd_resolved_body && ! $rnrd_has_own_blocks ) {
+					status_header( 404 );
+					header( 'Content-Type: text/plain; charset=utf-8' );
+					echo '# 404 Not Found';
+					exit;
+				}
+			}
 			$markdown = self::post_to_markdown( $post );
 			set_transient( $cache_key, $markdown, 5 * MINUTE_IN_SECONDS );
 		}
@@ -664,7 +841,7 @@ class RNRD_Markdown {
 		// Log Accept-header markdown hit with the resolved post (CPT + title captured).
 		RNRD_Crawler_Log::log( 'markdown', $post );
 
-		$cache_key = 'rnrd_md_' . $post->ID . '_' . $locale . '_' . strtotime( $post->post_modified );
+		$cache_key = self::md_cache_key( $post, $locale );
 		$markdown  = get_transient( $cache_key );
 		if ( false === $markdown ) {
 			$markdown = self::post_to_markdown( $post );
@@ -744,7 +921,42 @@ class RNRD_Markdown {
 			}
 		}
 
+		// A page with no body at all (the WooCommerce shop page is the usual
+		// one: an archive with empty post_content) is answered with a 404 by
+		// handle_request(), so it must not be advertised as a .md link.
+		// Pages that carry a shortcode, a block comment or builder data may
+		// still render real content, so only a truly empty page is skipped.
+		$raw = (string) $post->post_content;
+		if ( '' === trim( wp_strip_all_tags( $raw ) ) && false === strpos( $raw, '[' ) && false === strpos( $raw, '<!-- wp:' )
+			&& '' === (string) get_post_meta( $post->ID, '_elementor_data', true )
+			&& ! self::has_servable_facts( $post ) ) {
+			return false;
+		}
+
 		return true;
+	}
+
+	/**
+	 * Whether an add-on supplies facts for a post whose body is empty, so its
+	 * .md is worth serving (a WooCommerce product with a price and stock but no
+	 * description). False by default: an empty page stays a 404.
+	 *
+	 * @since 1.4.2
+	 *
+	 * @param WP_Post $post Post being served.
+	 */
+	public static function has_servable_facts( WP_Post $post ): bool {
+		/**
+		 * Return true when the add-on will write real facts into this post's
+		 * Markdown even though its body is empty. Pro returns true for a
+		 * WooCommerce product that has product facts.
+		 *
+		 * @since 1.4.2
+		 *
+		 * @param bool    $has_facts Default false.
+		 * @param WP_Post $post      Post being served.
+		 */
+		return (bool) apply_filters( 'rankready_md_has_facts', false, $post );
 	}
 
 	/**
@@ -990,7 +1202,7 @@ class RNRD_Markdown {
 			$locale = self::resolved_locale( $post );
 			RNRD_Crawler_Log::log( 'markdown', $post );
 
-			$cache_key = 'rnrd_md_' . $post->ID . '_' . $locale . '_' . strtotime( $post->post_modified );
+			$cache_key = self::md_cache_key( $post, $locale );
 			$markdown  = get_transient( $cache_key );
 			if ( false === $markdown ) {
 				$markdown = self::post_to_markdown( $post );
@@ -1312,6 +1524,12 @@ class RNRD_Markdown {
 			return;
 		}
 
+		// A .md response is itself the alternate; advertising the front page's
+		// index.md here pointed every post's Markdown at the homepage.
+		if ( '' !== (string) get_query_var( 'rnrd_md_path', '' ) ) {
+			return;
+		}
+
 		if ( self::home_surfaces_enabled() && is_front_page() ) {
 			self::send_homepage_md_link_headers();
 			return;
@@ -1411,7 +1629,11 @@ class RNRD_Markdown {
 
 		// WPML — `wpml_object_id` returns translated post ID for the given lang.
 		if ( has_filter( 'wpml_object_id' ) ) {
-			$translated_id = apply_filters( 'wpml_object_id', $post->ID, $post->post_type, false, $lang ?: null );
+			try {
+				$translated_id = apply_filters( 'wpml_object_id', $post->ID, $post->post_type, false, $lang ?: null );
+			} catch ( \Throwable $e ) {
+				$translated_id = 0;
+			}
 			if ( $translated_id && (int) $translated_id !== $post->ID ) {
 				$translated = get_post( (int) $translated_id );
 				if ( $translated instanceof WP_Post && self::post_has_servable_md_url( $translated ) ) {
@@ -1423,7 +1645,11 @@ class RNRD_Markdown {
 
 		// Polylang — `pll_get_post` returns translated post ID for given slug.
 		if ( $lang && function_exists( 'pll_get_post' ) ) {
-			$translated_id = pll_get_post( $post->ID, $lang );
+			try {
+				$translated_id = pll_get_post( $post->ID, $lang );
+			} catch ( \Throwable $e ) {
+				$translated_id = 0;
+			}
 			if ( $translated_id && (int) $translated_id !== $post->ID ) {
 				$translated = get_post( (int) $translated_id );
 				if ( $translated instanceof WP_Post && self::post_has_servable_md_url( $translated ) ) {
@@ -1724,6 +1950,15 @@ class RNRD_Markdown {
 		// and load-bearing: Vary (RFC 9110), Link rel=canonical (RFC 8288),
 		// X-Robots-Tag noindex (de-facto since 2007, stops `.md` duplicates
 		// indexing), CORS (W3C), nosniff.
+		// Content Signals (contentsignals.org) also travel as a response header, so an
+		// agent that only fetched this .md sees the same ai-train/search/ai-input
+		// policy robots.txt declares. Absent when the feature is off.
+		if ( class_exists( 'RNRD_Content_Signals' ) ) {
+			$rnrd_signal = (string) RNRD_Content_Signals::get_directive();
+			if ( '' !== $rnrd_signal ) {
+				header( $rnrd_signal );
+			}
+		}
 		header( 'X-Markdown-Tokens: ' . max( 1, (int) ceil( mb_strlen( $markdown, 'UTF-8' ) / 4 ) ) );
 
 		echo $markdown; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped
@@ -1864,9 +2099,13 @@ class RNRD_Markdown {
 			$lines[] = 'author: "' . self::yaml_escape( get_the_author_meta( 'display_name', $post->post_author ) ) . '"';
 
 			// Excerpt.
-			$excerpt = ! empty( $post->post_excerpt )
-				? $post->post_excerpt
-				: wp_trim_words( wp_strip_all_tags( $post->post_content ), 30, '...' );
+			$excerpt = '';
+			if ( ! empty( $post->post_excerpt ) ) {
+				$excerpt = RNRD_Util::strip_shortcode_markup( (string) $post->post_excerpt );
+			}
+			if ( '' === trim( wp_strip_all_tags( $excerpt ) ) ) {
+				$excerpt = wp_trim_words( RNRD_Util::strip_tags_spaced( RNRD_Util::strip_shortcode_markup( (string) $post->post_content ) ), 30, '...' );
+			}
 			$lines[] = 'description: "' . self::yaml_escape( $excerpt ) . '"';
 
 			// Categories.

@@ -31,6 +31,31 @@
 	var t    = i18n.t;
 	var tr   = i18n.tr;
 
+	// Editor-only: why this block renders nothing on the front end (feature or post type off).
+	function rnrdFeatureHint( key, name, tabName ) {
+		var f = ( cfg.features || {} )[ key ];
+		if ( ! f ) return '';
+		if ( ! f.on ) {
+			return tr( 'featureOffHint', '%1$s is off. Turn it on in AI Content, then %2$s.', name, tabName );
+		}
+		var ed = wp.data.select( 'core/editor' );
+		var type = ed && ed.getCurrentPostType ? ed.getCurrentPostType() : '';
+		if ( type && 0 !== String( type ).indexOf( 'wp_' ) && f.types && ( ! f.types.length || -1 === f.types.indexOf( type ) ) ) {
+			return tr( 'typeOffHint', '%1$s is not enabled for this post type. Turn it on in AI Content, then %2$s, Post types.', name, tabName );
+		}
+		return '';
+	}
+
+	// A numeric ID only: the Site Editor reports a template slug here, and no REST route exists for it.
+	function rnrdRealPostId( select ) {
+		var ed = select( 'core/editor' );
+		if ( ! ed ) return 0;
+		var id = ed.getCurrentPostId();
+		var type = ed.getCurrentPostType ? ed.getCurrentPostType() : '';
+		if ( ! id || ! /^\d+$/.test( String( id ) ) || ( type && 0 === String( type ).indexOf( 'wp_' ) ) ) return 0;
+		return parseInt( id, 10 );
+	}
+
 	var defaults = cfg.defaults || {
 		label: 'Key Takeaways', showLabel: true, headingTag: 'h4'
 	};
@@ -162,9 +187,7 @@
 			var _cooldown  = useState( 0 );
 			var cooldown   = _cooldown[0]; var setCooldown = _cooldown[1];
 
-			var postId = useSelect( function ( select ) {
-				return select( 'core/editor' ).getCurrentPostId();
-			}, [] );
+			var postId = useSelect( rnrdRealPostId, [] );
 
 			useEffect( function () {
 				if ( ! postId ) return;
@@ -309,7 +332,7 @@
 								disabled: loading || cooldown > 0 || ! postId || ! hasKey,
 								onClick: handleRegenerate,
 								style: { width: '100%', justifyContent: 'center' },
-							}, regenLabel ),
+							}, ! postId ? t( 'openPostToGenerate', 'Open a post to generate' ) : regenLabel ),
 							cooldown > 0 && el( 'p', { style: { color: '#757575', fontSize: '11px', margin: '8px 0 0' } },
 								tr( 'regenIn', 'Regenerate available in %ds.', cooldown )
 							)
@@ -373,7 +396,7 @@
 
 						el( SelectControl, {
 							label: t( 'fontFamily', 'Font Family' ),
-							help: t( 'fontFamilyHelp', 'Pulls from your theme.json fonts (Kadence, or any block theme). Leave blank to inherit from theme.' ),
+							help: t( 'fontFamilyHelp', 'Pulls from your theme.json fonts (any block theme). Leave blank to inherit from theme.' ),
 							value: attrs.labelFontFamily || '',
 							options: rnrdGlobalFontOptions(),
 							onChange: function ( v ) { setAttrs( { labelFontFamily: v } ); },
@@ -486,6 +509,8 @@
 
 				// ── Editor Preview ────────────────────────────────────────────
 				el( 'div', blockProps,
+
+					rnrdFeatureHint( 'summary', 'AI Summary', 'AI Summary' ) && el( Notice, { status: 'warning', isDismissible: false }, rnrdFeatureHint( 'summary', 'AI Summary', 'AI Summary' ) ),
 
 					effectiveShowLabel && el( HeadingTag, { className: 'rnrd-label', style: labelStyle }, effectiveLabel ),
 

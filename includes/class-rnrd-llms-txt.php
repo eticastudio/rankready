@@ -472,7 +472,7 @@ class RNRD_Llms_Txt {
 
 		// ── Blockquote: Brief summary (RECOMMENDED per spec) ──────────────
 		if ( '' !== $brand['summary'] ) {
-			$lines[] = '> ' . self::clean_text( $brand['summary'] );
+			$lines[] = '> ' . trim( (string) preg_replace( '/\s+/u', ' ', self::clean_text( $brand['summary'] ) ) );
 			$lines[] = '';
 		}
 
@@ -564,7 +564,8 @@ class RNRD_Llms_Txt {
 				$excerpt  = self::get_post_description( $post );
 				$lastmod  = get_post_modified_time( 'Y-m-d', false, $post );
 
-				$lines[] = '- [' . $title . '](' . $url . '): ' . $excerpt . ' (updated: ' . $lastmod . ')';
+				// No description means no ": " either, so the line never dangles.
+				$lines[] = '- [' . $title . '](' . $url . ')' . ( '' !== trim( $excerpt ) ? ': ' . trim( $excerpt ) : '' ) . ' (updated: ' . $lastmod . ')';
 			}
 
 			$lines[] = '';
@@ -601,10 +602,15 @@ class RNRD_Llms_Txt {
 		}
 
 		// ── Footer ────────────────────────────────────────────────────────
-		$lines[] = '---';
-		// rc.11 — Unbranded credit line. Hide entirely when Pro toggle on.
+		// rc.11 — Unbranded credit line. Hide entirely when Pro toggle on, and then
+		// the separator goes with it so the file never ends on a lone "---".
 		if ( ! self::should_hide_branding() ) {
+			$lines[] = '---';
 			$lines[] = 'Generated from RankReady';
+		} else {
+			while ( ! empty( $lines ) && in_array( end( $lines ), array( '', '---' ), true ) ) {
+				array_pop( $lines );
+			}
 		}
 
 		return implode( "\n", $lines );
@@ -632,7 +638,7 @@ class RNRD_Llms_Txt {
 		$lines[] = '';
 
 		if ( '' !== $brand['summary'] ) {
-			$lines[] = '> ' . self::clean_text( $brand['summary'] );
+			$lines[] = '> ' . trim( (string) preg_replace( '/\s+/u', ' ', self::clean_text( $brand['summary'] ) ) );
 			$lines[] = '';
 		}
 
@@ -709,9 +715,14 @@ class RNRD_Llms_Txt {
 			}
 		}
 
-		// rc.11 — Unbranded credit line. Hide entirely when Pro toggle on.
+		// rc.11 — Unbranded credit line. Hide entirely when Pro toggle on; the trailing
+		// per-page separator goes with it.
 		if ( ! self::should_hide_branding() ) {
 			$lines[] = 'Generated from RankReady';
+		} else {
+			while ( ! empty( $lines ) && in_array( end( $lines ), array( '', '---' ), true ) ) {
+				array_pop( $lines );
+			}
 		}
 
 		return implode( "\n", $lines );
@@ -851,11 +862,38 @@ class RNRD_Llms_Txt {
 			return '';
 		}
 
+		// v1.4.1 - resolve_post_content() hands back RAW post_content when it has real
+		// text, so dynamic blocks (latest-posts, reusable refs, ACF blocks) would be
+		// deleted with their comments in Step 1. Render them first. Gains content only:
+		// any failure returns the raw HTML unchanged.
+		if ( $post instanceof WP_Post && class_exists( 'RNRD_Generator' ) && (string) $post->post_content === (string) $html ) {
+			$html = RNRD_Generator::render_dynamic_blocks( $post, (string) $html );
+		}
+
 		// ── Step 1: Strip Gutenberg block comments ────────────────────────
 		$html = preg_replace( '/<!--\s*\/?wp:[^\>]+-->/s', '', $html );
 
 		// ── Step 2: Shortcodes — run them for individual requests, strip for bulk ──
 		$html = $run_shortcodes ? do_shortcode( $html ) : strip_shortcodes( $html );
+
+		// Drop script, style, noscript and template elements WITH their contents.
+		// Stripping only the tags left the code as plain words ("alert(1)") in the
+		// body. An unclosed opener removes everything after it, as a browser would.
+		$html = preg_replace( '#<(script|style|noscript|template)\b[^>]*>.*?</\1\s*>#si', '', $html );
+		$html = preg_replace( '#<(script|style|noscript|template)\b[^>]*>.*$#si', '', (string) $html );
+		$html = (string) $html;
+
+		// Author Box: topic chips are adjacent spans, which ran together as "WordPressTesting"
+		// once the class attributes were stripped; and the bio is plain text, so Markdown
+		// punctuation in it must not turn into live syntax. Both need the class, so run first.
+		$html = preg_replace( '#</span>\s*(?=<span\b[^>]*class="[^"]*rnrd-ab-topic)#i', '</span>, ', $html );
+		$html = preg_replace_callback(
+			'#(<p\b[^>]*class="[^"]*rnrd-ab-bio[^"]*"[^>]*>)(.*?)(</p>)#si',
+			static function ( $m ) {
+				return $m[1] . preg_replace( '/([\\\\\[\]*_`])/', '\\\\$1', $m[2] ) . $m[3];
+			},
+			$html
+		);
 
 		// ── Step 3: Strip ALL page builder wrapper elements ───────────────
 		// Elementor: div.elementor-*, section.elementor-*, div.e-*, etc.
@@ -1133,6 +1171,13 @@ class RNRD_Llms_Txt {
 			return true;
 		}
 
+		// ── WooCommerce cart, checkout and my-account (visitor session pages) ──
+		// One rule here covers llms.txt, llms-full.txt, the .md endpoint, the
+		// OKF bundle and the WebMCP manifest, because they all call this method.
+		if ( RNRD_Util::is_commerce_session_page( $post ) ) {
+			return true;
+		}
+
 		// ── Yoast noindex ────────────────────────────────────────────────
 		if ( defined( 'WPSEO_VERSION' ) ) {
 			$yoast_noindex = get_post_meta( $post_id, '_yoast_wpseo_meta-robots-noindex', true );
@@ -1231,28 +1276,33 @@ class RNRD_Llms_Txt {
 		// Try Yoast.
 		$yoast = get_post_meta( $post->ID, '_yoast_wpseo_metadesc', true );
 		if ( ! empty( $yoast ) ) {
-			return self::flatten_for_list_line( self::clean_text( $yoast ) );
+			return self::flatten_for_list_line( self::clean_text( RNRD_Util::strip_shortcode_markup( (string) $yoast ) ) );
 		}
 
 		// Try Rank Math.
 		$rankmath = get_post_meta( $post->ID, 'rank_math_description', true );
 		if ( ! empty( $rankmath ) ) {
-			return self::flatten_for_list_line( self::clean_text( $rankmath ) );
+			return self::flatten_for_list_line( self::clean_text( RNRD_Util::strip_shortcode_markup( (string) $rankmath ) ) );
 		}
 
 		// Try AIOSEO.
 		$aioseo = get_post_meta( $post->ID, '_aioseo_description', true );
 		if ( ! empty( $aioseo ) ) {
-			return self::flatten_for_list_line( self::clean_text( $aioseo ) );
+			return self::flatten_for_list_line( self::clean_text( RNRD_Util::strip_shortcode_markup( (string) $aioseo ) ) );
 		}
 
 		// Excerpt.
 		if ( ! empty( $post->post_excerpt ) ) {
-			return self::flatten_for_list_line( self::clean_text( $post->post_excerpt ) );
+			$excerpt = self::clean_text( RNRD_Util::strip_shortcode_markup( (string) $post->post_excerpt ) );
+			if ( '' !== $excerpt ) {
+				return self::flatten_for_list_line( $excerpt );
+			}
 		}
 
-		// Auto excerpt.
-		$content = wp_strip_all_tags( do_shortcode( $post->post_content ) );
+		// Auto excerpt. Shortcodes are stripped, not executed: running them
+		// here published whatever a shortcode printed for the current request
+		// (an account dashboard, a members-only block) as the page description.
+		$content = RNRD_Util::strip_tags_spaced( RNRD_Util::strip_shortcode_markup( (string) $post->post_content ) );
 		return self::flatten_for_list_line( self::clean_text( wp_trim_words( $content, 30, '...' ) ) );
 	}
 }

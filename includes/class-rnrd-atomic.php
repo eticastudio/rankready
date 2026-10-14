@@ -193,12 +193,14 @@ class RNRD_Atomic {
 	 *
 	 * @param string $name Option name used as the lock.
 	 * @param int    $ttl  Seconds after which a held lock counts as abandoned.
+	 * @param string $token Optional, by reference. Receives the owner token on success; pass it to release_lock() so a slow holder never deletes a successor's lock.
 	 * @return bool True when the caller now holds the lock.
 	 */
-	public static function acquire_lock( string $name, int $ttl = 300 ): bool {
+	public static function acquire_lock( string $name, int $ttl = 300, &$token = null ): bool {
 		global $wpdb;
 
-		$now = time();
+		$now   = time();
+		$token = (string) $now;
 		if ( self::claim_option( $name, (string) $now ) ) {
 			return true;
 		}
@@ -216,17 +218,33 @@ class RNRD_Atomic {
 		wp_cache_delete( $name, 'options' );
 		wp_cache_delete( 'alloptions', 'options' );
 
-		return 1 === (int) $taken;
+		if ( 1 !== (int) $taken ) {
+			$token = null;
+			return false;
+		}
+		return true;
 	}
 
 	/**
 	 * Release a lock taken with acquire_lock().
 	 *
-	 * @param string $name Option name used as the lock.
+	 * With an owner token the row is deleted only while it still holds that
+	 * token, so a holder whose lock expired cannot remove its successor's.
+	 *
+	 * @param string      $name  Option name used as the lock.
+	 * @param string|null $token Optional owner token from acquire_lock().
 	 * @return void
 	 */
-	public static function release_lock( string $name ): void {
-		delete_option( $name );
+	public static function release_lock( string $name, $token = null ): void {
+		if ( null === $token || '' === (string) $token ) {
+			delete_option( $name );
+			return;
+		}
+		global $wpdb;
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Conditional delete on the owner token, which the Options API cannot express. Cache invalidated below.
+		$wpdb->query( $wpdb->prepare( "DELETE FROM {$wpdb->options} WHERE option_name = %s AND option_value = %s", $name, (string) $token ) );
+		wp_cache_delete( $name, 'options' );
+		wp_cache_delete( 'alloptions', 'options' );
 	}
 
 	/**

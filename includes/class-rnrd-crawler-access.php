@@ -119,7 +119,7 @@ class RNRD_Crawler_Access {
 	 */
 	public static function get_search_social_crawlers(): array {
 		return array(
-			'Googlebot'           => array( 'Google', 'Google Search + AI Overviews' ),
+			'Googlebot'           => array( 'Google', 'Google Search' ),
 			'FacebookExternalHit' => array( 'Meta', 'Facebook / WhatsApp link previews' ),
 		);
 	}

@@ -66,6 +66,24 @@
 	.rnrd-tabs { top: 46px; }
 }
 
+/* Phone: one scrollable row instead of tabs wrapping under each other or
+   clipping at the edge (375px). */
+@media screen and (max-width: 600px) {
+	.rnrd-tabs {
+		display: flex;
+		flex-wrap: nowrap;
+		overflow-x: auto;
+		overflow-y: hidden;
+		-webkit-overflow-scrolling: touch;
+		scrollbar-width: thin;
+	}
+	.rnrd-tabs .nav-tab {
+		flex: 0 0 auto;
+		white-space: nowrap;
+		float: none;
+	}
+}
+
 .rnrd-tabs .nav-tab {
 	font-size: 13px;
 	font-weight: 500;
@@ -6159,3 +6177,31 @@ body.admin_page_rankready-pro-upgrade .fs-plugin-title { display: none !importan
 		white-space: nowrap;
 	}
 }
+
+/* Phone width: the AI Crawlers rows are a radio trio plus a crawler name and a
+ * description in one flex line, which left the name one letter per line and the
+ * description clipped. Wrap each row so the radios sit on the first line and
+ * the name and description take full-width lines below. */
+@media (max-width: 600px) {
+	.rnrd-wrap .rnrd-crawler-row {
+		flex-wrap: wrap;
+		row-gap: 2px;
+	}
+	.rnrd-wrap .rnrd-crawler-row > code,
+	.rnrd-wrap .rnrd-crawler-row > .rnrd-crawler-desc {
+		flex: 1 1 100%;
+		min-width: 0;
+		overflow-wrap: anywhere;
+	}
+	.rnrd-wrap .rnrd-crawler-row > .rnrd-crawler-desc {
+		margin-bottom: 6px;
+	}
+	.rnrd-wrap .rnrd-crawler-head > span:last-child {
+		flex: 1 1 100%;
+		margin-left: 0 !important;
+	}
+}
+
+.rnrd-save-status{margin-left:10px;font-size:13px;font-weight:600;vertical-align:middle}
+.rnrd-save-status[data-kind="success"]{color:#0f7a4f}
+.rnrd-save-status[data-kind="error"]{color:#b91c1c}

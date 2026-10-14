@@ -26,9 +26,9 @@
 	var cooldowns        = {}; // postId:kind → unix timestamp when next run allowed
 
 	var editorCfg = window.rnrdElEditor || {};
-	var i18n      = window.rnrdI18n.bind( editorCfg.i18n || {} );
-	var t         = i18n.t;
-	var tr        = i18n.tr;
+	var i18n      = window.rnrdI18n ? window.rnrdI18n.bind( editorCfg.i18n || {} ) : null;
+	var t         = i18n ? i18n.t : function ( key, fallback ) { return fallback; };
+	var tr        = i18n ? i18n.tr : function ( key, fallback ) { return fallback; };
 
 	function statusEl( wrap ) { return wrap.querySelector( '.rnrd-el-regen__status' ); }
 	function btnEl( wrap )    { return wrap.querySelector( '.rnrd-el-regen__btn' ); }
@@ -163,21 +163,33 @@
 	}
 
 	function handleClick( e ) {
-		var btn = e.target.closest && e.target.closest( '.rnrd-el-regen__btn' );
+		var target = e.target && e.target.nodeType === 1 ? e.target : ( e.target && e.target.parentElement );
+		var btn    = target && target.closest && target.closest( '.rnrd-el-regen__btn' );
 		if ( ! btn ) return;
 		e.preventDefault();
+		e.stopPropagation(); // Elementor's panel views listen on the same click; one run per click.
 
 		var wrap   = btn.closest( '.rnrd-el-regen' );
-		var postId = getPostId() || ( wrap && wrap.getAttribute( 'data-post-id' ) );
-		if ( ! wrap || ! postId ) return;
+		if ( ! wrap ) return;
+		var postId = getPostId() || wrap.getAttribute( 'data-post-id' );
+		if ( ! postId ) {
+			setStatus( wrap, t( 'noPostId', 'Save the page once, then try again.' ), 'error' );
+			return;
+		}
+
+		if ( ! window.rnrdElEditor || ! window.rnrdElEditor.restUrl ) {
+			setStatus( wrap, t( 'configMissing', 'RankReady editor settings did not load. Reload the editor and try again.' ), 'error' );
+			return;
+		}
 
 		var kind = kindOf( wrap );
 		var c    = cfg( kind );
 		var key  = postId + ':' + kind;
 
 		if ( cooldowns[ key ] && Date.now() < cooldowns[ key ] ) {
-			return; // still cooling down
+			return; // still cooling down; the status line already shows the countdown
 		}
+		if ( btn.disabled ) return;
 
 		var settings = window.rnrdElEditor || {};
 		if ( ! settings.restUrl ) {
@@ -205,7 +217,8 @@
 
 		fetch( settings.restUrl + c.genPath + encodeURIComponent( postId ), fetchOpts )
 			.then( function ( r ) {
-				return r.json().then( function ( body ) { return { status: r.status, body: body }; } );
+				// A non-JSON reply (a security plugin's HTML page, a 500) must read as an error, not a silent no-op.
+				return r.json().then( function ( body ) { return { status: r.status, body: body }; }, function () { return { status: r.status || 500, body: null }; } );
 			} )
 			.then( function ( res ) {
 				var ok = res.status >= 200 && res.status < 300 && ( ! res.body || res.body.success !== false );
@@ -226,7 +239,7 @@
 			} );
 	}
 
-	document.addEventListener( 'click', handleClick, false );
+	document.addEventListener( 'click', handleClick, true ); // Capture: runs before any panel handler can swallow the click.
 
 	// The panel control is (re)inserted whenever the user selects/edits the
 	// widget. Watch for it and resolve the label each time it appears.

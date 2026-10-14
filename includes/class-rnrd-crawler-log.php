@@ -194,6 +194,7 @@ class RNRD_Crawler_Log {
 		// which must not trigger translated cron labels before init (WP 6.7+).
 		add_action( 'init', array( self::class, 'maybe_schedule_prune' ), 10 );
 		add_action( 'rnrd_crawler_log_prune', array( self::class, 'prune' ) );
+		add_action( 'admin_init', array( self::class, 'add_privacy_policy_content' ) );
 	}
 
 	/** Schedule the daily prune cron once, after init. */
@@ -201,6 +202,30 @@ class RNRD_Crawler_Log {
 		if ( ! wp_next_scheduled( 'rnrd_crawler_log_prune' ) ) {
 			wp_schedule_event( time(), 'daily', 'rnrd_crawler_log_prune' );
 		}
+	}
+
+	/**
+	 * Suggested text for Settings > Privacy: what the crawler log keeps, plus the external
+	 * services RankReady can contact (the chosen AI provider, DataForSEO, Cloudflare, the tips
+	 * email and the Freemius opt-in), mirrored from the readme External services section.
+	 * Nothing the log stores identifies a visitor, so no exporter or eraser is registered:
+	 * there is no personal data for one to find.
+	 */
+	public static function add_privacy_policy_content(): void {
+		if ( ! function_exists( 'wp_add_privacy_policy_content' ) ) {
+			return;
+		}
+		$text = '<h2>' . esc_html__( 'AI crawler activity', 'rankready-ai-llm-seo' ) . '</h2>'
+			. '<p>' . esc_html__( 'RankReady records when a known AI crawler requests a page, llms.txt or a Markdown version: the crawler name, the page path, the endpoint and the time. It does not store IP addresses, user agents, cookies or any information about human visitors. Entries are pruned automatically.', 'rankready-ai-llm-seo' ) . '</p>'
+			. '<h2>' . esc_html__( 'AI referral counts', 'rankready-ai-llm-seo' ) . '</h2>'
+			. '<p>' . esc_html__( 'RankReady counts visits that arrive from AI assistants such as ChatGPT, Perplexity, Claude and Gemini as totals by source. These counts are anonymous and are not linked to a person.', 'rankready-ai-llm-seo' ) . '</p>'
+			. '<h2>' . esc_html__( 'AI providers', 'rankready-ai-llm-seo' ) . '</h2>'
+			. '<p>' . esc_html__( 'When a site administrator or editor clicks Generate for an AI summary or FAQ, RankReady sends that post\'s title and text to the AI provider the site has chosen (OpenAI, Anthropic Claude, Google Gemini or DeepSeek) using the site\'s own API key, and saves the reply on the site. No visitor data is sent. The provider\'s own privacy policy applies to what it receives.', 'rankready-ai-llm-seo' ) . '</p>'
+			. '<h2>' . esc_html__( 'Optional services', 'rankready-ai-llm-seo' ) . '</h2>'
+			. '<p>' . esc_html__( 'These only run if the site owner sets them up. DataForSEO: when a FAQ is generated with a DataForSEO login saved, the post\'s focus keyword (never the article text) is sent to api.dataforseo.com. Cloudflare: if an API token is saved, RankReady sends the zone ID and token to api.cloudflare.com to add or remove one cache rule and to clear cached pages; no post content is sent. Tips email: if an administrator ticks the opt-in box, their first name and email address are sent once to webhook.hostmy.blog.', 'rankready-ai-llm-seo' ) . '</p>'
+			. '<h2>' . esc_html__( 'Plugin usage data', 'rankready-ai-llm-seo' ) . '</h2>'
+			. '<p>' . esc_html__( 'If an administrator accepts the optional opt-in from Freemius, usage data is shared with Freemius (api.freemius.com): the site URL, WordPress and PHP versions, the administrator\'s name and email, active plugins and theme, and activation events. It is never post content, API keys or visitor data, and it can be turned off at any time from the Plugins page.', 'rankready-ai-llm-seo' ) . '</p>';
+		wp_add_privacy_policy_content( 'RankReady', wp_kses_post( $text ) );
 	}
 
 	// ── Table management ───────────────────────────────────────────────────

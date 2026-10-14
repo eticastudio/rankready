@@ -3,7 +3,7 @@
  * Plugin Name:       RankReady – AI SEO, Schema, llms.txt, AEO and GEO for ChatGPT, Gemini and Perplexity
  * Plugin URI:        https://hostmy.blog/plugins/rankready/
  * Description:       Make your WordPress content readable by ChatGPT, Perplexity, Claude, Gemini, and Google AI Overviews. AI summaries, FAQ schema, llms.txt, Markdown endpoints, agent discovery headers, WebMCP, and crawler controls — in one plugin.
- * Version:           1.4.0
+ * Version:           1.4.1
  * Requires at least: 6.9
  * Requires PHP:      7.4
  * Author:            HostMyBlog
@@ -167,7 +167,17 @@ if ( ! function_exists( 'rnrd_fs' ) ) {
             add_action(
                 'init',
                 function () use ( $rnrd_fs ) {
-                    $rnrd_fs->override_i18n( array( 'upgrade' => __( 'Upgrade Pro', 'rankready-ai-llm-seo' ) ) );
+                    // With the Pro add-on installed the page is where the licence is entered,
+                    // so the plugin-row link reads "Activate License" (label only, same URL).
+                    $rnrd_fs->override_i18n(
+                        array(
+                            'upgrade' => defined( 'RNRD_PRO_VERSION' )
+                                ? ( function_exists( 'rnrd_pro_is_licensed' ) && rnrd_pro_is_licensed()
+                                    ? __( 'Manage License', 'rankready-ai-llm-seo' ) // Already licensed: the page is a status page, not an activation form.
+                                    : __( 'Activate License', 'rankready-ai-llm-seo' ) )
+                                : __( 'Upgrade Pro', 'rankready-ai-llm-seo' ),
+                        )
+                    );
                 }
             );
 
@@ -279,7 +289,7 @@ if ( defined( 'RNRD_VERSION' ) ) {
 
 // ── Constants (guarded to prevent conflicts) ─────────────────────────────────
 if ( ! defined( 'RNRD_VERSION' ) ) {
-	define( 'RNRD_VERSION',  '1.4.0' );
+	define( 'RNRD_VERSION',  '1.4.1' );
 	define( 'RNRD_FILE',     __FILE__ );
 	define( 'RNRD_DIR',      plugin_dir_path( __FILE__ ) );
 	define( 'RNRD_URL',      plugin_dir_url( __FILE__ ) );
@@ -492,7 +502,8 @@ if ( ! defined( 'RNRD_VERSION' ) ) {
 	define( 'RNRD_OPT_MD_HOME_ENABLE',        'rnrd_md_home_enable' );        // 'on' | 'off' — homepage / posts-page markdown surfaces
 	define( 'RNRD_OPT_MD_HINT_DIV',           'rnrd_md_hint_div' );         // 'on' | 'off' — hidden AI-hint div in body
 	define( 'RNRD_OPT_MD_BOT_AUTO_SERVE',     'rnrd_md_bot_auto_serve' );   // 'on' | 'off' — UA-based forced markdown for AI bots
-	// v1.1.2 — Same-URL Accept-header content negotiation. DEFAULT OFF.
+	// v1.1.2 — Same-URL Accept-header content negotiation. Default ON (matches
+	// every get_option() read site); auto-guarded off on Cloudflare APO.
 	// When ON, a request to the canonical URL (/, /post-slug/) sending
 	// `Accept: text/markdown` (or a known AI-bot UA) receives markdown INLINE on
 	// that URL. This is UNSAFE behind any cache that ignores `Vary: Accept` —
@@ -575,12 +586,26 @@ if ( ! defined( 'RNRD_VERSION' ) ) {
 // (or any third party with permission) opts in by attaching to the
 // `rnrd_is_pro` filter:
 //
-//     add_filter( 'rnrd_is_pro', '__return_true' );
+//     add_filter( 'rnrd_is_pro', $callback_returning_true );
 //
 // This filter pattern means Pro never needs to win a function_exists race,
 // never needs a mu-plugin trick, never needs to load before Free in the
 // plugin order — it just hooks in like any other WordPress filter. Free
 // stays the single source of truth for the function itself.
+if ( ! function_exists( 'rnrd_asset_ver' ) ) {
+	/**
+	 * Cache-busting version for a RankReady-owned asset: plugin version plus the file's mtime, so an
+	 * edited file gets a new URL. Falls back to the plugin version when the file is missing.
+	 *
+	 * @param string $relative_path Path under the plugin folder, e.g. 'assets/block.js'.
+	 */
+	function rnrd_asset_ver( string $relative_path ): string {
+		$full = RNRD_DIR . ltrim( $relative_path, '/' );
+		$mt   = is_readable( $full ) ? (int) filemtime( $full ) : 0;
+		return $mt ? RNRD_VERSION . '.' . $mt : RNRD_VERSION;
+	}
+}
+
 if ( ! function_exists( 'rnrd_is_pro' ) ) {
 	function rnrd_is_pro(): bool {
 		return (bool) apply_filters( 'rnrd_is_pro', false );
@@ -994,10 +1019,14 @@ add_filter( 'submenu_file', function ( $file ) {
  * Registered with a null parent so it never adds a second visible row.
  */
 add_action( 'admin_menu', function (): void {
+	// Page title follows the add-on state: "Pro License" once Pro is installed.
+	$rnrd_upgrade_title = defined( 'RNRD_PRO_VERSION' )
+		? __( 'Pro License', 'rankready-ai-llm-seo' )
+		: __( 'Upgrade Pro', 'rankready-ai-llm-seo' );
 	$hook = add_submenu_page(
 		'',
-		__( 'Upgrade Pro', 'rankready-ai-llm-seo' ),
-		__( 'Upgrade Pro', 'rankready-ai-llm-seo' ),
+		$rnrd_upgrade_title,
+		$rnrd_upgrade_title,
 		'manage_options',
 		'rankready-pro-upgrade',
 		function (): void {
@@ -1031,10 +1060,10 @@ add_action( 'admin_menu', function (): void {
 	if ( $hook ) {
 		add_action(
 			'load-' . $hook,
-			function (): void {
+			function () use ( $rnrd_upgrade_title ): void {
 				global $title;
 				// phpcs:ignore WordPress.WP.GlobalVariablesOverride.Prohibited -- core reads $title for the tab; this page has no menu row to derive it from.
-				$title = __( 'Upgrade Pro', 'rankready-ai-llm-seo' );
+				$title = $rnrd_upgrade_title;
 			}
 		);
 	}
@@ -1154,7 +1183,7 @@ add_action( 'admin_head', function (): void {
 		$mark  = '<span class="rnrd-menu-dot" aria-hidden="true"></span>';
 		$state = 'needs-action';
 	} elseif ( $pro_installed ) {
-		$label = __( 'Activate Now', 'rankready-ai-llm-seo' );
+		$label = __( 'Activate License', 'rankready-ai-llm-seo' );
 		$mark  = '<span class="rnrd-menu-dot" aria-hidden="true"></span>';
 		$state = 'needs-action';
 	} else {
@@ -1460,6 +1489,11 @@ add_action( 'plugins_loaded', function (): void {
 	// Auto-flush rewrite rules after plugin update (activation hook doesn't fire on updates).
 	$stored_version = get_option( 'rnrd_installed_version', '' );
 	if ( $stored_version !== RNRD_VERSION ) {
+		// 1.4.1 — existing installs keep today's effective behaviour: the option
+		// was never required to exist and every read site defaulted to 'on'.
+		if ( '' !== $stored_version && false === get_option( RNRD_OPT_MD_ACCEPT_NEGOTIATION ) ) {
+			update_option( RNRD_OPT_MD_ACCEPT_NEGOTIATION, 'on' );
+		}
 		// v1.2.0-rc.1 — silent-upgrade safety. Existing v1.1.x installs
 		// should NOT auto-flip new behaviour-changing toggles on. The
 		// register_setting() defaults make these ON for fresh installs;
@@ -1872,6 +1906,14 @@ add_action( 'plugins_loaded', function (): void {
 			) );
 		} );
 
+		// Editor-panel script (Generate buttons). Hooked here at boot, never from a
+		// widget constructor: Elementor 4.x can fire the enqueue action before any
+		// widget is constructed, so a late hook meant the script never loaded.
+		add_action( 'elementor/editor/after_enqueue_scripts', function (): void {
+			require_once RNRD_DIR . 'includes/class-rnrd-elementor.php';
+			RNRD_Elementor_Widget::enqueue_editor_assets();
+		} );
+
 		add_action( 'elementor/widgets/register', function ( $widgets_manager ): void {
 			require_once RNRD_DIR . 'includes/class-rnrd-elementor.php';
 			$widgets_manager->register( new RNRD_Elementor_Widget() );
@@ -2009,8 +2051,11 @@ register_activation_hook( RNRD_FILE, function (): void {
 	if ( false === get_option( RNRD_OPT_MD_POST_TYPES ) ) {
 		update_option( RNRD_OPT_MD_POST_TYPES, array( 'post', 'page' ) );
 	}
+	// 1.4.1: NEW installs default same-URL negotiation OFF (caches that ignore
+	// Vary: Accept can serve Markdown to visitors). Existing installs are seeded
+	// 'on' in the upgrade block below so their behaviour is unchanged.
 	if ( false === get_option( RNRD_OPT_MD_ACCEPT_NEGOTIATION ) ) {
-		update_option( RNRD_OPT_MD_ACCEPT_NEGOTIATION, 'on' );
+		update_option( RNRD_OPT_MD_ACCEPT_NEGOTIATION, 'off' );
 	}
 	if ( false === get_option( RNRD_OPT_MD_BOT_AUTO_SERVE ) ) {
 		update_option( RNRD_OPT_MD_BOT_AUTO_SERVE, 'on' );

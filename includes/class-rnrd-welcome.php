@@ -243,8 +243,8 @@ class RNRD_Welcome {
 		if ( '' === self::$hook_suffix || $hook !== self::$hook_suffix ) {
 			return;
 		}
-		wp_enqueue_style( 'rnrd-onboarding', RNRD_URL . 'assets/onboarding.css', array(), RNRD_VERSION );
-		wp_enqueue_script( 'rnrd-onboarding', RNRD_URL . 'assets/onboarding.js', array(), RNRD_VERSION, true );
+		wp_enqueue_style( 'rnrd-onboarding', RNRD_URL . 'assets/onboarding.css', array(), rnrd_asset_ver( 'assets/onboarding.css' ) );
+		wp_enqueue_script( 'rnrd-onboarding', RNRD_URL . 'assets/onboarding.js', array(), rnrd_asset_ver( 'assets/onboarding.js' ), true );
 		wp_localize_script(
 			'rnrd-onboarding',
 			'rnrdOnboard',
@@ -368,7 +368,7 @@ class RNRD_Welcome {
 					array(
 						'option'  => RNRD_OPT_MCP_ENABLE,
 						'label'   => __( 'WebMCP', 'rankready-ai-llm-seo' ),
-						'hint'    => __( 'Publishes /.well-known/mcp.json for Claude, Cursor and VS Code. Opt in when you are ready', 'rankready-ai-llm-seo' ),
+						'hint'    => __( 'Off by default. Tick it to publish /.well-known/mcp.json for Claude, Cursor and VS Code', 'rankready-ai-llm-seo' ),
 						'default' => false,
 						'opt_in'  => true,
 					),
@@ -497,8 +497,13 @@ class RNRD_Welcome {
 
 	private static function apply_feature_dependents(): void {
 		if ( self::is_option_on( RNRD_OPT_MD_ENABLE, false ) ) {
-			update_option( RNRD_OPT_MD_HINT_DIV, 'on' );
-			update_option( RNRD_OPT_MD_BOT_AUTO_SERVE, 'on' );
+			// Only when unset: a re-run of the wizard must not undo a choice the
+			// site owner made later on the settings screen.
+			foreach ( array( RNRD_OPT_MD_HINT_DIV, RNRD_OPT_MD_BOT_AUTO_SERVE ) as $md_opt ) {
+				if ( '__rnrd_unset__' === get_option( $md_opt, '__rnrd_unset__' ) ) {
+					update_option( $md_opt, 'on' );
+				}
+			}
 		}
 
 		if ( self::is_option_on( RNRD_OPT_MCP_ENABLE, false ) ) {
@@ -514,7 +519,9 @@ class RNRD_Welcome {
 				RNRD_OPT_MCP_EXPOSE_FRESHNESS,
 			);
 			foreach ( $mcp_safe as $opt ) {
-				update_option( $opt, 'on' );
+				if ( '__rnrd_unset__' === get_option( $opt, '__rnrd_unset__' ) ) {
+					update_option( $opt, 'on' );
+				}
 			}
 		}
 	}
@@ -747,7 +754,11 @@ class RNRD_Welcome {
 
 		// phpcs:ignore WordPress.Security.NonceVerification.Recommended
 		$step = isset( $_GET['step'] ) ? absint( wp_unslash( $_GET['step'] ) ) : 1;
-		$step = max( 1, min( 3, $step ) );
+		// F11: an out-of-range step (4, 99, 0) goes back to step 1 instead of
+		// being clamped onto the step 3 success page.
+		if ( $step < 1 || $step > 3 ) {
+			$step = 1;
+		}
 
 		// Defensive: maybe_redirect() already bounces this on admin_init.
 		// If we still reach here with no completion flag, do not render Done.
@@ -1007,7 +1018,7 @@ class RNRD_Welcome {
 						</li>
 						<li>
 							<code>/.well-known/mcp.json</code>
-							<span><?php esc_html_e( 'WebMCP ability "rankready/get-site-info" returns brand name + canonical terms to Claude Desktop, Cursor, VS Code.', 'rankready-ai-llm-seo' ); ?></span>
+							<span><?php esc_html_e( 'WebMCP ability "rankready-ai-llm-seo/get-site-info" returns brand name + canonical terms to Claude Desktop, Cursor, VS Code.', 'rankready-ai-llm-seo' ); ?></span>
 						</li>
 						<li>
 							<?php esc_html_e( 'Homepage Markdown', 'rankready-ai-llm-seo' ); ?>
@@ -1065,7 +1076,8 @@ class RNRD_Welcome {
 		$opt_in_labels = array();
 		foreach ( self::get_feature_groups() as $group ) {
 			foreach ( $group['items'] as $item ) {
-				if ( ! empty( $item['opt_in'] ) ) {
+				// F11: only name the opt-in features that are really off right now.
+				if ( ! empty( $item['opt_in'] ) && ! self::is_option_on( $item['option'], ! empty( $item['default'] ) ) ) {
 					$opt_in_labels[] = (string) $item['label'];
 				}
 			}
@@ -1085,13 +1097,17 @@ class RNRD_Welcome {
 			?>
 		</p>
 
+		<p class="rnrd-onboard__lede rnrd-onboard__lede--note">
+			<?php esc_html_e( 'Select recommended only ticks the boxes below. Nothing is switched on until you press Continue, and it is a starting set, not the plugin defaults: WebMCP and LLMs-full.txt stay off unless you tick them.', 'rankready-ai-llm-seo' ); ?>
+		</p>
+
 		<form method="post" action="" class="rnrd-onboard__form" id="rnrd-onboard-features">
 			<?php wp_nonce_field( 'rnrd_onboard_2', '_rnrd_onboard_nonce' ); ?>
 			<input type="hidden" name="rnrd_onboard_step" value="2" />
 
 			<div class="rnrd-onboard__feat-bulk">
 				<button type="button" class="rnrd-onboard__feat-bulk-btn" data-rnrd-feat-preset="recommended">
-					<?php esc_html_e( 'Enable recommended', 'rankready-ai-llm-seo' ); ?>
+					<?php esc_html_e( 'Select recommended', 'rankready-ai-llm-seo' ); ?>
 				</button>
 				<span class="rnrd-onboard__feat-bulk-sep" aria-hidden="true">·</span>
 				<button type="button" class="rnrd-onboard__feat-bulk-btn" data-rnrd-feat-preset="all-on">
@@ -1166,7 +1182,7 @@ class RNRD_Welcome {
 				printf(
 					/* translators: %s: link to the AI Content settings screen */
 					esc_html__( 'AI Summary and AI FAQ Generator need an API provider. Set that up any time under %s.', 'rankready-ai-llm-seo' ),
-					'<a href="' . esc_url( admin_url( 'admin.php?page=' . self::SETTINGS_SLUG . '&tab=content&sub=summary' ) ) . '">' . esc_html__( 'AI Content', 'rankready-ai-llm-seo' ) . '</a>'
+					'<a href="' . esc_url( admin_url( 'admin.php?page=' . self::SETTINGS_SLUG . '&tab=settings&sub=api-keys' ) ) . '">' . esc_html__( 'API Keys', 'rankready-ai-llm-seo' ) . '</a>'
 				);
 				?>
 			</p>
@@ -1320,7 +1336,7 @@ class RNRD_Welcome {
 					<?php esc_html_e( 'Go to Dashboard', 'rankready-ai-llm-seo' ); ?>
 				</a>
 			<?php else : ?>
-				<a href="<?php echo esc_url( admin_url( 'admin.php?page=' . self::SETTINGS_SLUG . '&tab=content&sub=summary' ) ); ?>" class="rnrd-onboard__btn rnrd-onboard__btn--primary">
+				<a href="<?php echo esc_url( admin_url( 'admin.php?page=' . self::SETTINGS_SLUG . '&tab=settings&sub=api-keys' ) ); ?>" class="rnrd-onboard__btn rnrd-onboard__btn--primary">
 					<?php esc_html_e( 'Connect an AI provider', 'rankready-ai-llm-seo' ); ?>
 				</a>
 				<a href="<?php echo esc_url( admin_url( 'admin.php?page=rankready-ai-llm-seo' ) ); ?>" class="rnrd-onboard__skip">

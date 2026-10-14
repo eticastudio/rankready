@@ -38,7 +38,19 @@
 				'X-WP-Nonce':   nonce,
 			},
 			body: body ? JSON.stringify( body ) : undefined,
-		} ).then( function ( r ) { return r.json(); } );
+		} ).then( function ( r ) {
+			// A REST error body resolves so isApiError() can read it. Anything
+			// that is not JSON (a WAF or host HTML page) or a failed response
+			// without an error body rejects, so every caller reaches .catch().
+			return r.json().catch( function () {
+				throw new Error( 'HTTP ' + r.status );
+			} ).then( function ( data ) {
+				if ( ! r.ok && ! ( data && typeof data.code === 'string' ) ) {
+					throw new Error( 'HTTP ' + r.status );
+				}
+				return data;
+			} );
+		} );
 	}
 
 	/**
@@ -49,6 +61,25 @@
 	function isApiError( data ) {
 		return !! ( data && typeof data.code === 'string' && data.data && data.data.status >= 400 );
 	}
+
+	/**
+	 * Saved API keys are rendered masked (first characters plus bullets). Clear
+	 * the mask on focus so a pasted key replaces it instead of being appended to
+	 * it, and put the mask back if the field is left empty.
+	 */
+	document.querySelectorAll( 'input[data-rnrd-key-for]' ).forEach( function ( input ) {
+		var masked = input.value;
+		if ( masked.indexOf( '\u2022\u2022\u2022\u2022' ) === -1 && masked !== '__UNCHANGED__' ) { return; }
+		input.addEventListener( 'focus', function () {
+			if ( input.value === masked ) {
+				input.value       = '';
+				input.placeholder = masked === '__UNCHANGED__' ? '' : masked;
+			}
+		} );
+		input.addEventListener( 'blur', function () {
+			if ( input.value === '' ) { input.value = masked; }
+		} );
+	} );
 
 	/* ═══════════════════════════════════════════════════════════════════════
 	 * TOGGLE FIELDS (data-toggle-target)
@@ -97,13 +128,21 @@
 		};
 	}
 
+	function bacShowInvalid( msg ) {
+		if ( ! bacPrevResult ) return;
+		bacPrevResult.textContent   = msg;
+		bacPrevResult.className     = 'rnrd-notice rnrd-notice--inline rnrd-notice--warn';
+		bacPrevResult.style.display = 'block';
+		bacPrevResult.setAttribute( 'role', 'alert' );
+	}
+
 	function bacValidate( params ) {
 		if ( ! params.post_types.length ) {
-			alert( t( 'minOnePostType', 'Select at least one post type.' ) );
+			bacShowInvalid( t( 'minOnePostType', 'Select at least one post type.' ) );
 			return false;
 		}
 		if ( ! params.to_author ) {
-			alert( t( 'selectTargetAuthor', 'Select a target author (To).' ) );
+			bacShowInvalid( t( 'selectTargetAuthor', 'Select a target author (To).' ) );
 			return false;
 		}
 		return true;
@@ -183,9 +222,13 @@
 
 		bacStop.addEventListener( 'click', function () {
 			bacRunning = false;
-			rnrdFetch( '/author/stop', 'POST' );
-			bacStatus.textContent = t( 'stopped', 'Stopped.' );
-			bacSetFinished();
+			rnrdFetch( '/author/stop', 'POST' ).then( function ( data ) {
+				bacStatus.textContent = isApiError( data ) ? String( data.message || '' ) : t( 'stopped', 'Stopped.' );
+				bacSetFinished();
+			} ).catch( function () {
+				bacStatus.textContent = t( 'requestFailed', 'Request failed.' );
+				bacSetFinished();
+			} );
 		} );
 	}
 
@@ -271,11 +314,9 @@
 					flushBtn.textContent = flushLabelDefault;
 					if ( flushStatus ) {
 						flushStatus.classList.add( 'is-success' );
+						// F10: the confirmation stays until the next click, so it
+						// cannot vanish before it is read.
 						setStatus( flushStatus, 'ok', flushSuccessMsg );
-						setTimeout( function () {
-							setStatus( flushStatus, '', '' );
-							flushStatus.classList.remove( 'is-success' );
-						}, 3000 );
 					}
 				} )
 				.catch( function ( err ) {
@@ -485,6 +526,10 @@
 				errorsStatus.textContent   = t( 'logCleared', 'Log cleared.' );
 				errorsStatus.style.color   = '#0F9C70';
 				errorsStatus.style.display = 'inline';
+			} ).catch( function () {
+				errorsStatus.textContent   = t( 'requestFailed', 'Request failed.' );
+				errorsStatus.style.color   = '#B42318';
+				errorsStatus.style.display = 'inline';
 			} );
 		} );
 	}
@@ -554,6 +599,12 @@
 			btn.addEventListener( 'click', function () {
 				var state = btn.getAttribute( 'data-rnrd-state' );
 				if ( ! state ) {
+					return;
+				}
+				// Bulk Block also blocks Bingbot (Bing Search). Same pattern as the other
+				// destructive buttons: confirm first, change nothing on cancel.
+				var confirmMsg = btn.getAttribute( 'data-rnrd-confirm' );
+				if ( confirmMsg && ! window.confirm( confirmMsg ) ) {
 					return;
 				}
 				document.querySelectorAll( '.rnrd-crawler-state' ).forEach( function ( radio ) {
@@ -699,6 +750,11 @@
 					setStatus( diagCopyStatus, 'ok', t( 'copiedToClipboard', 'Copied to clipboard' ) );
 					diagCopyStatus.style.color   = '#0F9C70'; // mint-700
 					diagCopyStatus.style.display = 'inline';
+					// Button label flips too, so the confirmation is visible
+					// even when the status text sits off-screen.
+					var diagBtnHtml = diagCopyBtn.innerHTML;
+					diagCopyBtn.textContent = t( 'copied', 'Copied' );
+					setTimeout( function () { diagCopyBtn.innerHTML = diagBtnHtml; }, 2500 );
 					// Auto-dismiss after 4s — copy feedback shouldn't linger.
 					setTimeout( function () {
 						diagCopyStatus.style.display = 'none';
@@ -745,6 +801,20 @@
 	var freshResults = document.getElementById( 'rnrd-freshness-results' );
 	var freshTbody   = document.getElementById( 'rnrd-freshness-tbody' );
 
+	// F20: remember the chosen stale threshold per browser. The control is a
+	// per-scan picker, so without this a chosen 180 reloaded as 90.
+	if ( freshDays ) {
+		try {
+			var savedDays = window.localStorage.getItem( 'rnrdFreshnessDays' );
+			if ( savedDays && freshDays.querySelector( 'option[value="' + savedDays + '"]' ) ) {
+				freshDays.value = savedDays;
+			}
+		} catch ( e ) { /* storage blocked: keep the default */ }
+		freshDays.addEventListener( 'change', function () {
+			try { window.localStorage.setItem( 'rnrdFreshnessDays', freshDays.value ); } catch ( e ) { /* ignore */ }
+		} );
+	}
+
 	if ( freshBtn ) {
 		freshBtn.addEventListener( 'click', function () {
 			freshBtn.disabled    = true;
@@ -769,6 +839,11 @@
 					freshBtn.disabled    = false;
 					freshBtn.textContent = t( 'scanContentFreshness', 'Scan Content Freshness' );
 
+					if ( isApiError( data ) || ! data || ! data.summary ) {
+						freshStatus.textContent = ( data && data.message ) ? String( data.message ) : t( 'requestFailed', 'Request failed.' );
+						freshStatus.className   = 'rnrd-fw-status is-visible is-err';
+						return;
+					}
 					var s = data.summary;
 					var freshPct = s.fresh_pct;
 
@@ -1060,6 +1135,23 @@
 					setBtn( originalText, '' );
 				}
 
+				// A persistent, announced result next to the button: the label above reverts after
+				// two seconds, so a save was easy to miss and invisible to screen readers.
+				function announce( text, kind ) {
+					var note = btn.parentNode && btn.parentNode.querySelector( '.rnrd-save-status' );
+					if ( ! note && btn.parentNode ) {
+						note = document.createElement( 'span' );
+						note.className = 'rnrd-save-status';
+						note.setAttribute( 'role', 'status' );
+						btn.parentNode.insertBefore( note, btn.nextSibling );
+					}
+					if ( ! note ) { return; }
+					note.setAttribute( 'data-kind', kind );
+					note.textContent = text;
+					clearTimeout( note._rnrdTimer );
+					note._rnrdTimer = setTimeout( function () { note.textContent = ''; }, 8000 );
+				}
+
 				btn.disabled = true;
 				setBtn( t( 'saving', 'Saving…' ), 'rnrd-saving' );
 
@@ -1083,10 +1175,13 @@
 						// v1.2 — verify the save actually persisted (options.php adds settings-updated=true only on success; a stale nonce / admin_init fatal returns 200 without it). Fixes 'Saved but reverts to disabled' (Keith, 1/5).
 							if ( response.url && response.url.indexOf( 'settings-updated=true' ) === -1 ) { throw new Error( 'not-saved' ); }
 							setBtn( t( 'saved', 'Saved' ), 'rnrd-saved' );
+						announce( t( 'settingsSaved', 'Settings saved.' ), 'success' );
 						setTimeout( restoreBtn, 2000 );
 					} )
 					.catch( function ( err ) {
-						setBtn( ( err && err.message === 'not-saved' ) ? t( 'notSavedReload', 'Not saved — reload page' ) : t( 'saveFailed', 'Save failed' ), 'rnrd-save-error' );
+						var failText = ( err && err.message === 'not-saved' ) ? t( 'notSavedReload', 'Not saved — reload page' ) : t( 'saveFailed', 'Save failed' );
+						setBtn( failText, 'rnrd-save-error' );
+						announce( failText, 'error' );
 						setTimeout( restoreBtn, 4500 );
 					} );
 			} );

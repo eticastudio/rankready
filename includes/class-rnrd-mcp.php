@@ -184,7 +184,7 @@ class RNRD_MCP {
 
 		return array(
 			'name'        => get_bloginfo( 'name' ),
-			'description' => get_bloginfo( 'description' ),
+			'description' => self::manifest_description(),
 			'url'         => home_url( '/' ),
 			'generator'   => 'RankReady',
 			'abilities'   => $abilities,
@@ -703,7 +703,7 @@ class RNRD_MCP {
 		// 14. get-author — EEAT Person schema fields for an author.
 		self::add_ability( self::NS . '/get-author', array(
 			'label'               => __( 'Get author (EEAT Person schema)', 'rankready-ai-llm-seo' ),
-			'description'         => __( 'Returns full EEAT Person schema for a WordPress author: name, bio, job title, employer, credentials, education, awards, social profiles. Published as Schema.org Person data.', 'rankready-ai-llm-seo' ),
+			'description'         => __( 'Returns the Schema.org Person data RankReady publishes for a WordPress author: name, bio, job title, employer and headshot. RankReady Pro adds credentials, education, awards and social profiles.', 'rankready-ai-llm-seo' ),
 			'input_schema'        => array(
 				'type'       => 'object',
 				'properties' => array(
@@ -736,7 +736,7 @@ class RNRD_MCP {
 		// 16. get-fresh-content — posts modified in last N days.
 		self::add_ability( self::NS . '/get-fresh-content', array(
 			'label'               => __( 'Get fresh content', 'rankready-ai-llm-seo' ),
-			'description'         => __( 'Posts and pages modified within the last N days. AI engines prioritise fresh content — this ability surfaces what to read first when context is limited.', 'rankready-ai-llm-seo' ),
+			'description'         => __( 'Posts and pages modified within the last N days. This ability surfaces what changed most recently, so an agent can read it first when context is limited.', 'rankready-ai-llm-seo' ),
 			'input_schema'        => array(
 				'type'       => 'object',
 				'properties' => array(
@@ -1349,5 +1349,15 @@ class RNRD_MCP {
 			'count'       => count( $out ),
 			'items'       => $out,
 		);
+	}
+
+	/** Tagline when the site has one, else a plain sentence, so the manifest never ships an empty description. */
+	private static function manifest_description(): string {
+		$tagline = trim( (string) get_bloginfo( 'description' ) );
+		if ( '' !== $tagline ) {
+			return $tagline;
+		}
+		/* translators: %s: site name */
+		return sprintf( __( 'Read-only access to the published content of %s for AI agents.', 'rankready-ai-llm-seo' ), get_bloginfo( 'name' ) );
 	}
 }

@@ -10,6 +10,74 @@ defined( 'ABSPATH' ) || exit;
 class RNRD_Util {
 
 	/**
+	 * Strip HTML to plain text without gluing neighbouring blocks together.
+	 *
+	 * wp_strip_all_tags() turns "<p>One</p><p>Two</p>" into "OneTwo". Block level
+	 * tags become a space first, then whitespace is collapsed.
+	 *
+	 * @param string $html HTML.
+	 * @return string Single-line plain text.
+	 */
+	public static function strip_tags_spaced( string $html ): string {
+		$html = preg_replace( '#</?(?:p|div|h[1-6]|li|ul|ol|br|hr|tr|td|th|table|blockquote|section|article|aside|header|footer|figure|figcaption|pre|dt|dd)\b[^>]*>#i', ' ', $html );
+		$text = wp_strip_all_tags( (string) $html );
+		return trim( (string) preg_replace( '/\s+/u', ' ', $text ) );
+	}
+
+	/**
+	 * Remove shortcode markup from text that is about to be published as a
+	 * plain description (llms.txt, .md front matter, OKF).
+	 *
+	 * strip_shortcodes() only knows shortcodes that are registered right now,
+	 * so a page built with a plugin that has since been deactivated, or a
+	 * shortcode registered late, kept its raw `[woocommerce_my_account]` in
+	 * the description. The second pass drops anything that is shaped like a
+	 * shortcode: a lower-case name containing an underscore or hyphen, or any
+	 * name followed by key=value attributes. Plain bracketed text such as
+	 * "[sic]" or "[1]" is left alone.
+	 *
+	 * @param string $text Text that may contain shortcodes.
+	 * @return string Text without shortcode markup.
+	 */
+	public static function strip_shortcode_markup( string $text ): string {
+		if ( false === strpos( $text, '[' ) ) {
+			return $text;
+		}
+		$text = strip_shortcodes( $text );
+		$text = (string) preg_replace( '/\[\/?[a-z][a-z0-9]*(?:[_-][a-z0-9]+)+(?:\s[^\[\]]*)?\]/i', ' ', $text );
+		$text = (string) preg_replace( '/\[\/?[a-z][a-z0-9_-]*\s+[a-z_-]+=[^\[\]]*\]/i', ' ', $text );
+		return trim( (string) preg_replace( '/[ \t]{2,}/', ' ', $text ) );
+	}
+
+	/**
+	 * Is this one of the WooCommerce pages that belong to a visitor session
+	 * (cart, checkout, my account) rather than to the site's public content?
+	 *
+	 * These pages hold no public information and their stored content is a
+	 * bare shortcode or block, so they only add noise to AI surfaces. The
+	 * `rankready_exclude_commerce_pages` filter lets a site opt back in.
+	 *
+	 * @param WP_Post $post Post to test.
+	 * @return bool
+	 */
+	public static function is_commerce_session_page( WP_Post $post ): bool {
+		if ( 'page' !== $post->post_type || ! function_exists( 'wc_get_page_id' ) ) {
+			return false;
+		}
+		$ids = array_filter( array(
+			(int) wc_get_page_id( 'cart' ),
+			(int) wc_get_page_id( 'checkout' ),
+			(int) wc_get_page_id( 'myaccount' ),
+		), static function ( $id ) {
+			return $id > 0;
+		} );
+		if ( ! in_array( (int) $post->ID, $ids, true ) ) {
+			return false;
+		}
+		return (bool) apply_filters( 'rankready_exclude_commerce_pages', true, $post );
+	}
+
+	/**
 	 * Check if a theme builder (Elementor Pro or Nexter) renders this page.
 	 * The blog post itself is NOT built with Elementor — the theme builder template is.
 	 */
@@ -227,5 +295,51 @@ class RNRD_Util {
 				kses_init_filters();
 			}
 		}
+	}
+
+	/**
+	 * 1.4.1 — true when a webhook URL does not point at a private, loopback or
+	 * link-local address (127/8, 10/8, 172.16/12, 192.168/16, 169.254/16, ::1,
+	 * fc00::/7, fe80::/10) or a name that resolves to one. Fails closed when a
+	 * hostname cannot be resolved to any address.
+	 */
+	public static function is_public_webhook_url( string $url ): bool {
+		$parts = wp_parse_url( $url );
+		if ( ! is_array( $parts ) || empty( $parts['host'] ) || empty( $parts['scheme'] ) || ! in_array( strtolower( (string) $parts['scheme'] ), array( 'http', 'https' ), true ) ) {
+			return false;
+		}
+		$host = trim( strtolower( (string) $parts['host'] ), '[]' );
+		if ( 'localhost' === $host || '.localhost' === substr( $host, -10 ) ) {
+			return false;
+		}
+		$ips = array();
+		if ( false !== filter_var( $host, FILTER_VALIDATE_IP ) ) {
+			$ips[] = $host;
+		} else {
+			$v4 = function_exists( 'gethostbynamel' ) ? gethostbynamel( $host ) : false;
+			if ( is_array( $v4 ) ) {
+				$ips = array_merge( $ips, $v4 );
+			}
+			if ( function_exists( 'dns_get_record' ) && defined( 'DNS_AAAA' ) ) {
+				$v6 = @dns_get_record( $host, DNS_AAAA ); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged -- resolver failure is handled by the empty check below.
+				foreach ( is_array( $v6 ) ? $v6 : array() as $rec ) {
+					if ( ! empty( $rec['ipv6'] ) ) {
+						$ips[] = (string) $rec['ipv6'];
+					}
+				}
+			}
+		}
+		if ( ! $ips ) {
+			return false;
+		}
+		foreach ( $ips as $ip ) {
+			if ( false === filter_var( $ip, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE ) ) {
+				return false;
+			}
+			if ( 0 === strpos( strtolower( $ip ), 'fe80' ) || 0 === strpos( strtolower( $ip ), '::ffff:' ) ) {
+				return false; // Link-local v6 and v4-mapped v6 are never a public webhook target.
+			}
+		}
+		return true;
 	}
 }

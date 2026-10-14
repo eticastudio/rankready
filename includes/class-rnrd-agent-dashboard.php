@@ -19,7 +19,9 @@ class RNRD_Agent_Dashboard {
 	}
 
 	public static function register_widget(): void {
-		if ( ! current_user_can( 'edit_others_posts' ) ) {
+		// The links in the widget open the RankReady admin screen, which needs
+		// manage_options. Show the widget only to people who can follow them.
+		if ( ! current_user_can( 'manage_options' ) ) {
 			return;
 		}
 		wp_add_dashboard_widget(
@@ -35,7 +37,7 @@ class RNRD_Agent_Dashboard {
 	 * @param string $hook Current admin page hook.
 	 */
 	public static function enqueue_assets( string $hook ): void {
-		if ( 'index.php' !== $hook || ! current_user_can( 'edit_others_posts' ) ) {
+		if ( 'index.php' !== $hook || ! current_user_can( 'manage_options' ) ) {
 			return;
 		}
 		$path = RNRD_DIR . 'assets/dashboard-widget.css';
@@ -89,9 +91,9 @@ class RNRD_Agent_Dashboard {
 						<div class="rnrd-kpi__foot"><?php echo esc_html( $training_on ? __( 'llms.txt and Markdown are off', 'rankready-ai-llm-seo' ) : __( 'Training bot logging paused', 'rankready-ai-llm-seo' ) ); ?></div>
 					<?php endif; ?>
 				</a>
-				<a class="rnrd-kpi rnrd-kpi--link" href="<?php echo esc_url( $insights_url . '&sub=citation' ); ?>" aria-label="<?php esc_attr_e( 'Citation Bots — open Insights', 'rankready-ai-llm-seo' ); ?>">
+				<a class="rnrd-kpi rnrd-kpi--link" href="<?php echo esc_url( $insights_url . '&sub=citation' ); ?>" aria-label="<?php esc_attr_e( 'Answer-engine bots — open Insights', 'rankready-ai-llm-seo' ); ?>">
 					<div class="rnrd-kpi__title">
-						<div class="rnrd-kpi__label"><?php esc_html_e( 'Citation Bots', 'rankready-ai-llm-seo' ); ?></div>
+						<div class="rnrd-kpi__label"><?php esc_html_e( 'Answer-engine bots', 'rankready-ai-llm-seo' ); ?></div>
 						<span class="rnrd-kpi__go" aria-hidden="true"></span>
 					</div>
 					<?php if ( $citation_active ) : ?>
@@ -101,7 +103,7 @@ class RNRD_Agent_Dashboard {
 					<?php else : ?>
 						<div class="rnrd-kpi__period"><?php esc_html_e( 'Disabled', 'rankready-ai-llm-seo' ); ?></div>
 						<div class="rnrd-kpi__value"><?php esc_html_e( 'Off', 'rankready-ai-llm-seo' ); ?></div>
-						<div class="rnrd-kpi__foot"><?php echo esc_html( $citation_on ? __( 'llms.txt and Markdown are off', 'rankready-ai-llm-seo' ) : __( 'Citation bot logging paused', 'rankready-ai-llm-seo' ) ); ?></div>
+						<div class="rnrd-kpi__foot"><?php echo esc_html( $citation_on ? __( 'llms.txt and Markdown are off', 'rankready-ai-llm-seo' ) : __( 'Answer-engine bot logging paused', 'rankready-ai-llm-seo' ) ); ?></div>
 					<?php endif; ?>
 				</a>
 				<a class="rnrd-kpi rnrd-kpi--link" href="<?php echo esc_url( $insights_url . '&sub=referral' ); ?>" aria-label="<?php esc_attr_e( 'Real AI Referrals — open Insights', 'rankready-ai-llm-seo' ); ?>">
@@ -126,7 +128,7 @@ class RNRD_Agent_Dashboard {
 					</div>
 					<div class="rnrd-kpi__period"><?php
 					/* translators: %d: number of days after which a post counts as stale */
-					echo esc_html( sprintf( __( '%d+ days old', 'rankready-ai-llm-seo' ), RNRD_Freshness::stale_days() ) );
+					echo esc_html( sprintf( __( '%d+ days old', 'rankready-ai-llm-seo' ), ( class_exists( 'RNRD_Freshness' ) ? RNRD_Freshness::stale_days() : 0 ) ) );
 					?></div>
 					<div class="rnrd-kpi__value"><?php echo esc_html( number_format_i18n( $stale ) ); ?></div>
 					<div class="rnrd-kpi__foot"><?php esc_html_e( 'posts going stale', 'rankready-ai-llm-seo' ); ?></div>

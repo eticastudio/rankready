@@ -170,6 +170,7 @@ class RNRD_Diagnostics {
 		$checks[] = self::probe_seo_plugin();
 		$checks[] = self::probe_cache_constants();
 		$checks[] = self::probe_edge_cache_hit();           // FREE-99 — external HIT detection
+		$checks[] = self::probe_negotiation_cache_layer();
 		$checks[] = self::probe_markdown_negotiation();     // FREE-108 — Accept: text/markdown end-to-end
 		$checks[] = self::probe_template_redirect_race();   // FREE-99 — Bricks/Oxygen priority race
 
@@ -178,6 +179,17 @@ class RNRD_Diagnostics {
 		$checks[] = self::probe_secret_encryption();  // 1.4.0 — the only security property with no check
 		$checks[] = self::probe_php_version();
 		$checks[] = self::probe_wp_version();
+
+		// Pro (and any add-on) can append information rows. Anything that is not a
+		// well-formed row is dropped, so a bad add-on cannot break the report.
+		$extra = apply_filters( 'rnrd_diagnostics_checks', array() );
+		if ( is_array( $extra ) ) {
+			foreach ( $extra as $row ) {
+				if ( is_array( $row ) && isset( $row['id'], $row['label'], $row['status'], $row['detail'] ) ) {
+					$checks[] = self::result( (string) $row['id'], (string) $row['label'], (string) $row['status'], (string) $row['detail'], isset( $row['fix'] ) ? (string) $row['fix'] : null );
+				}
+			}
+		}
 
 		// Group 5 — LLM provider reachability (opt-in, costs API calls).
 		// Only probe the ACTIVE provider — probing all four flagged a "no key"
@@ -454,6 +466,7 @@ class RNRD_Diagnostics {
 			'numberposts' => 1,
 			'post_status' => 'publish',
 			'post_type'   => 'post',
+			'has_password' => false, // A password-protected post never serves Markdown; sampling one gave a false 404.
 			'fields'      => 'ids',
 		) );
 
@@ -1098,15 +1111,53 @@ class RNRD_Diagnostics {
 	 *
 	 * @since 1.0.1
 	 */
+	/**
+	 * 1.4.1 — warn when a caching layer is detected while same-URL Accept
+	 * negotiation is on. Reads response headers of a plain homepage request.
+	 */
+	private static function probe_negotiation_cache_layer(): array {
+		$label = 'Caching layer vs same-URL negotiation';
+		if ( 'on' !== get_option( RNRD_OPT_MD_ENABLE, 'off' ) || 'on' !== get_option( RNRD_OPT_MD_ACCEPT_NEGOTIATION, 'on' ) ) {
+			return self::result( 'md_negotiation_cache', $label, 'info', 'Same-URL Accept negotiation is off or Markdown is disabled; nothing to check.', null );
+		}
+		$response = wp_remote_get( home_url( '/' ), array( 'timeout' => 5, 'redirection' => 2, 'user-agent' => 'RankReady-Diagnostic/1.0' ) );
+		if ( is_wp_error( $response ) ) {
+			return self::result( 'md_negotiation_cache', $label, 'info', 'Header probe could not run (' . $response->get_error_message() . '). Common in Docker / local dev — not a real-site issue.', null );
+		}
+		$h      = static function ( string $k ) use ( $response ): string {
+			return strtolower( (string) wp_remote_retrieve_header( $response, $k ) );
+		};
+		$found = array();
+		if ( '' !== $h( 'cf-ray' ) || '' !== $h( 'cf-cache-status' ) || false !== strpos( $h( 'server' ), 'cloudflare' ) ) {
+			$found[] = 'Cloudflare';
+		}
+		if ( '' !== $h( 'x-varnish' ) || false !== strpos( $h( 'via' ), 'varnish' ) ) {
+			$found[] = 'Varnish';
+		}
+		if ( '' !== $h( 'x-served-by' ) || '' !== $h( 'fastly-debug-digest' ) || false !== strpos( $h( 'via' ), 'fastly' ) ) {
+			$found[] = 'Fastly';
+		}
+		if ( '' !== $h( 'x-litespeed-cache' ) || false !== strpos( $h( 'server' ), 'litespeed' ) ) {
+			$found[] = 'LiteSpeed';
+		}
+		if ( ! $found ) {
+			return self::result( 'md_negotiation_cache', $label, 'pass', 'No Cloudflare, Varnish, Fastly or LiteSpeed cache headers detected.', null );
+		}
+		return self::result( 'md_negotiation_cache', $label, 'warn',
+			'Detected ' . implode( ', ', $found ) . ' while same-URL negotiation is on. Caches that ignore Vary: Accept can serve Markdown to visitors.',
+			'Turn off Same-URL content negotiation under Settings > llms.txt and Markdown, or make sure the cache keys on the Accept header. The .md URLs keep working either way.',
+			array( 'layers' => $found ) );
+	}
+
 	private static function probe_markdown_negotiation(): array {
 		if ( 'on' !== get_option( RNRD_OPT_MD_ENABLE, 'off' ) ) {
 			return self::result( 'md_negotiation', 'Accept: text/markdown end-to-end', 'info',
 				'Markdown endpoints disabled; skipped.', null );
 		}
 
-		// v1.1.2 — Default mode: same-URL Accept negotiation is OFF (it poisons
-		// caches that ignore Vary: Accept, e.g. Cloudflare APO). The canonical
-		// URL correctly returns HTML; markdown is served at the distinct `.md`
+		// Same-URL Accept negotiation is ON by default (RankReady turns it off by
+		// itself on Cloudflare APO) but can poison caches that ignore Vary: Accept.
+		// When it is off, the canonical URL correctly returns HTML; markdown is served at the distinct `.md`
 		// URL, which is cache-safe. So when negotiation is off we probe `/index.md`
 		// (the real agent path) and pass when it returns text/markdown. We only
 		// probe the homepage Accept-header path when the user has opted in.
@@ -1140,7 +1191,7 @@ class RNRD_Diagnostics {
 			}
 			if ( 'text/markdown' === $ctype_short ) {
 				return self::result( 'md_negotiation', 'Markdown endpoint (/index.md)', 'pass',
-					'Markdown is served at the distinct /index.md URL (cache-safe path). Same-URL Accept negotiation is off by default — the canonical homepage correctly returns HTML, so no cache can be poisoned. AI agents discover /index.md via the Link header and llms.txt.',
+					'Markdown is served at the distinct /index.md URL (cache-safe path). Same-URL Accept negotiation is switched off on this site, so the canonical homepage correctly returns HTML, so no cache can be poisoned. AI agents discover /index.md via the Link header and llms.txt.',
 					null,
 					array( 'content-type' => $ctype ) );
 			}
@@ -1555,7 +1606,7 @@ class RNRD_Diagnostics {
 
 		if ( '' === $plugin ) {
 			return self::result( 'seo_plugin', 'SEO plugin', 'info',
-				'No SEO plugin detected — RankReady will emit standalone Article, Speakable and FAQ schema.',
+				'No SEO plugin detected — RankReady will emit its own Article, Speakable and FAQ schema. Article and Speakable are emitted for posts that have an AI summary; FAQPage for posts that have FAQ items.',
 				null
 			);
 		}
@@ -1613,7 +1664,7 @@ class RNRD_Diagnostics {
 
 		return self::result( 'brand_identity', 'Brand Identity filled', 'warn',
 			'Missing: ' . implode( ', ', $missing ) . '.',
-			'Fill in E-E-A-T → Brand Identity. These feed llms.txt, FAQ prompts, AI summaries, MCP abilities.',
+			'Fill in AI Visibility → Brand Identity. These feed llms.txt, FAQ prompts, AI summaries, MCP abilities.',
 			array( 'missing' => $missing )
 		);
 	}

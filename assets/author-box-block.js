@@ -30,6 +30,19 @@
 	var i18n   = window.rnrdI18n.bind( rrData.i18n || {} );
 	var t      = i18n.t;
 
+	// Editor-only: why this block renders nothing on the front end (feature or post type off).
+	function rnrdAuthorHint() {
+		var f = ( rrData.features || {} ).author;
+		if ( ! f ) return '';
+		if ( ! f.on ) return t( 'authorOffHint', 'Author Box is off. Turn it on in AI Content, then Author Box.' );
+		var ed = wp.data.select( 'core/editor' );
+		var type = ed && ed.getCurrentPostType ? ed.getCurrentPostType() : '';
+		if ( type && 0 !== String( type ).indexOf( 'wp_' ) && f.types && ( ! f.types.length || -1 === f.types.indexOf( type ) ) ) {
+			return t( 'authorTypeOffHint', 'Author Box is not enabled for this post type. Turn it on in AI Content, then Author Box, Post types.' );
+		}
+		return '';
+	}
+
 	// ── Helpers ───────────────────────────────────────────────────────────────
 	function colorControl( label, value, onChange, help ) {
 		return el( BaseControl, { label: label, help: help || '', __nextHasNoMarginBottom: true },
@@ -105,7 +118,7 @@
 			} ),
 			el( SelectControl, {
 				label: t( 'fontFamily', 'Font Family' ),
-				help: t( 'fontFamilyHelp', 'Pulls from your theme.json fonts (Kadence, or any block theme). Leave blank to inherit from theme.' ),
+				help: t( 'fontFamilyHelp', 'Pulls from your theme.json fonts (any block theme). Leave blank to inherit from theme.' ),
 				value: attrs[ prefix + 'FontFamily' ] || '',
 				options: fontOptions,
 				onChange: function ( v ) { var p = {}; p[ prefix + 'FontFamily' ] = v; setAttrs( p ); },
@@ -135,7 +148,7 @@
 		title:       t( 'authorBlockTitle', 'Author Box — RankReady' ),
 		icon:        'businessperson',
 		category:    'rankready',
-		description: t( 'authorBlockDescription', 'Author box with Person JSON-LD schema (name, job title, employer, bio, headshot). Pulls from user profile fields added by RankReady. Profile links, topics, credentials, memberships and awards are added by RankReady Pro.' ),
+		description: t( 'authorBlockDescription', 'Author box with name, job title, employer, bio and headshot from the user profile fields added by RankReady. A basic Person JSON-LD node for the same fields is published on author archive pages. Profile links, topics, credentials, memberships, awards and the extended Person schema are part of RankReady Pro.' ),
 		keywords:    [ 'author', 'box', 'bio', 'rankready', 'eeat', 'e-e-a-t', 'person', 'schema', 'ai seo', 'llm', 'geo' ],
 		supports:    { html: false, align: [ 'wide', 'full' ] },
 
@@ -428,8 +441,9 @@
 
 				// ── Editor Preview ──────────────────────────────────────
 				el( 'div', blockProps,
+					rnrdAuthorHint() && el( Notice, { status: 'warning', isDismissible: false }, rnrdAuthorHint() ),
 					! author && el( Notice, { status: 'info', isDismissible: false },
-						t( 'loadingAuthor', 'Loading author…' )
+						resolvedId ? t( 'loadingAuthor', 'Loading author…' ) : t( 'authorFromPost', 'Shows the author of the post this block is on.' )
 					),
 
 					author && el( 'div', { className: 'rnrd-ab-preview' },
@@ -453,7 +467,7 @@
 										return el( 'span', { className: 'rnrd-ab-topic', key: i }, t.trim() );
 									} )
 								),
-								el( 'p', { style: { fontSize: '11px', opacity: 0.55, fontStyle: 'italic', margin: '8px 0 0' } },
+								! rnrdAuthorHint() && el( 'p', { style: { fontSize: '11px', opacity: 0.55, fontStyle: 'italic', margin: '8px 0 0' } },
 									t( 'authorPreviewNote', 'Live render (socials, credentials, reviewed-by) appears on the front end.' )
 								)
 							)

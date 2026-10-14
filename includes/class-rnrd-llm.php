@@ -294,7 +294,7 @@ class RNRD_LLM {
 				'models'  => self::ensure_saved_in_list( $provider, $fallback, false ),
 				'source'  => 'fallback',
 				'count'   => count( $fallback ),
-				'message' => __( 'No API key available for this provider.', 'rankready-ai-llm-seo' ),
+				'message' => __( 'No API key stored for this provider. Add one under RankReady → Settings → API Keys, then try again.', 'rankready-ai-llm-seo' ),
 			);
 		}
 

@@ -100,7 +100,7 @@ class RNRD_Block {
 			'rnrd-block-editor',
 			RNRD_URL . 'assets/block.js',
 			$deps,
-			RNRD_VERSION,
+			rnrd_asset_ver( 'assets/block.js' ),
 			true
 		);
 
@@ -108,7 +108,7 @@ class RNRD_Block {
 			'rnrd-faq-block-editor',
 			RNRD_URL . 'assets/faq-block.js',
 			$deps,
-			RNRD_VERSION,
+			rnrd_asset_ver( 'assets/faq-block.js' ),
 			true
 		);
 
@@ -116,7 +116,7 @@ class RNRD_Block {
 			'rnrd-author-box-block-editor',
 			RNRD_URL . 'assets/author-box-block.js',
 			$deps,
-			RNRD_VERSION,
+			rnrd_asset_ver( 'assets/author-box-block.js' ),
 			true
 		);
 
@@ -141,7 +141,33 @@ class RNRD_Block {
 				'authorTag'     => (string) get_option( RNRD_OPT_AUTHOR_HEADING_TAG, 'h3' ),
 			),
 			'users' => $users_data,
+			// Editor-only hints: lets a block say why it renders nothing on the front end.
+			'features' => array(
+				'summary' => self::feature_state( 'RNRD_Summary' ),
+				'faq'     => self::feature_state( 'RNRD_Faq' ),
+				'author'  => self::feature_state( 'RNRD_Author_Box' ),
+			),
 		) );
+	}
+
+	/**
+	 * Whether a feature is on and for which public post types. Used only to word an editor placeholder.
+	 *
+	 * @param string $class_name RNRD_Summary, RNRD_Faq or RNRD_Author_Box.
+	 * @return array{on: bool, types: string[]}
+	 */
+	private static function feature_state( string $class_name ): array {
+		$state = array( 'on' => true, 'types' => array() );
+		if ( ! class_exists( $class_name ) || ! method_exists( $class_name, 'is_enabled' ) ) {
+			return $state; // Unknown: say nothing rather than a wrong hint.
+		}
+		$state['on'] = (bool) call_user_func( array( $class_name, 'is_enabled' ) );
+		foreach ( array_keys( get_post_types( array( 'public' => true ) ) ) as $pt ) {
+			if ( call_user_func( array( $class_name, 'is_post_type_enabled' ), (string) $pt ) ) {
+				$state['types'][] = (string) $pt;
+			}
+		}
+		return $state;
 	}
 
 	/**
@@ -150,7 +176,7 @@ class RNRD_Block {
 	 */
 	public static function register_style_handle(): void {
 		if ( ! wp_style_is( 'rankready-style', 'registered' ) ) {
-			wp_register_style( 'rankready-style', RNRD_URL . 'assets/style.css', array(), RNRD_VERSION );
+			wp_register_style( 'rankready-style', RNRD_URL . 'assets/style.css', array(), rnrd_asset_ver( 'assets/style.css' ) );
 		}
 	}
 
@@ -254,7 +280,7 @@ class RNRD_Block {
 		'authorPreviewNote'             => __( 'Live render (socials, credentials, reviewed-by) appears on the front end.', 'rankready-ai-llm-seo' ),
 		'aboutTheAuthor'                => __( 'About the Author', 'rankready-ai-llm-seo' ),
 		'authorBlockTitle'              => __( 'Author Box — RankReady', 'rankready-ai-llm-seo' ),
-		'authorBlockDescription'        => __( 'Author box with Person JSON-LD schema (name, job title, employer, bio, headshot). Pulls from user profile fields added by RankReady. Profile links, topics, credentials, memberships and awards are added by RankReady Pro.', 'rankready-ai-llm-seo' ),
+		'authorBlockDescription'        => __( 'Author box with name, job title, employer, bio and headshot from the user profile fields added by RankReady. A basic Person JSON-LD node for the same fields is published on author archive pages. Profile links, topics, credentials, memberships, awards and the extended Person schema are part of RankReady Pro.', 'rankready-ai-llm-seo' ),
 		// Shared inspector / typography (summary + FAQ + author box).
 		'themeDefault'                  => __( '— Theme default —', 'rankready-ai-llm-seo' ),
 		'inherit'                       => __( '— Inherit —', 'rankready-ai-llm-seo' ),
@@ -312,7 +338,7 @@ class RNRD_Block {
 		'borderRadius'                  => __( 'Border Radius', 'rankready-ai-llm-seo' ),
 		'padding'                       => __( 'Padding', 'rankready-ai-llm-seo' ),
 		'fontFamily'                    => __( 'Font Family', 'rankready-ai-llm-seo' ),
-		'fontFamilyHelp'                => __( 'Pulls from your theme.json fonts (Kadence, or any block theme). Leave blank to inherit from theme.', 'rankready-ai-llm-seo' ),
+		'fontFamilyHelp'                => __( 'Pulls from your theme.json fonts (any block theme). Leave blank to inherit from theme.', 'rankready-ai-llm-seo' ),
 		'fontFamilyHelpShort'           => __( 'Pulls from your theme.json fonts. Leave blank to inherit from theme.', 'rankready-ai-llm-seo' ),
 		'fontWeight'                    => __( 'Font Weight', 'rankready-ai-llm-seo' ),
 		'fontWeightHelp'                => __( 'Leave blank to inherit.', 'rankready-ai-llm-seo' ),

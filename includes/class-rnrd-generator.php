@@ -228,14 +228,28 @@ class RNRD_Generator {
 			return;
 		}
 
-		$last = (int) get_post_meta( $post_id, RNRD_META_GENERATED, true );
-		if ( $last && ( time() - $last ) < self::MIN_INTERVAL ) {
+		// Same per-post lock as the REST summary endpoints, taken before the
+		// interval check so a cron run and a click cannot both pass it.
+		$lock_name  = 'rnrd_lk_sum_' . $post_id;
+		$lock_token = null;
+		if ( ! RNRD_Atomic::acquire_lock( $lock_name, 180, $lock_token ) ) {
 			self::$generating = false;
 			return;
 		}
 
-		$content = self::get_content_string( $post );
-		$result  = self::call_openai( $content, $post );
+		$last = (int) get_post_meta( $post_id, RNRD_META_GENERATED, true );
+		if ( $last && ( time() - $last ) < self::MIN_INTERVAL ) {
+			RNRD_Atomic::release_lock( $lock_name, $lock_token );
+			self::$generating = false;
+			return;
+		}
+
+		try {
+			$content = self::get_content_string( $post );
+			$result  = self::call_openai( $content, $post );
+		} finally {
+			RNRD_Atomic::release_lock( $lock_name, $lock_token );
+		}
 
 		if ( $result && ! is_wp_error( $result ) ) {
 			// The hash is stamped here, not at schedule time, and it records the
@@ -592,6 +606,123 @@ Blog Post:
 			return $filtered;
 		}
 		return is_string( $echoed ) ? $echoed : '';
+	}
+
+	/** Max bytes of server-rendered block output accepted into Markdown. */
+	const BLOCK_RENDER_MAX_BYTES = 524288;
+
+	/** Max nested block-render depth (a block that renders another post's blocks). */
+	const BLOCK_RENDER_MAX_DEPTH = 3;
+
+	/** @var int[] Post IDs currently being block-rendered (re-entrancy guard). */
+	private static $block_render_active = array();
+
+	/**
+	 * Does this raw post_content contain at least one server-rendered (dynamic)
+	 * block? Static blocks already survive comment stripping, so only dynamic
+	 * ones (core/latest-posts, core/block reusable refs, ACF blocks, ...) need
+	 * rendering. Guarded: any registry/parser problem returns false.
+	 *
+	 * @param string $content Raw post_content.
+	 * @return bool
+	 */
+	public static function has_dynamic_blocks( string $content ): bool {
+		if ( '' === $content || false === strpos( $content, '<!-- wp:' ) ) {
+			return false;
+		}
+		if ( ! function_exists( 'parse_blocks' ) || ! class_exists( 'WP_Block_Type_Registry' ) ) {
+			return false;
+		}
+		try {
+			$registry = WP_Block_Type_Registry::get_instance();
+			$stack    = parse_blocks( $content );
+			while ( $stack ) {
+				$block = array_pop( $stack );
+				if ( ! is_array( $block ) ) {
+					continue;
+				}
+				$name = isset( $block['blockName'] ) && is_string( $block['blockName'] ) ? $block['blockName'] : '';
+				if ( '' !== $name ) {
+					$type = $registry->get_registered( $name );
+					if ( $type && method_exists( $type, 'is_dynamic' ) && $type->is_dynamic() ) {
+						return true;
+					}
+				}
+				if ( ! empty( $block['innerBlocks'] ) && is_array( $block['innerBlocks'] ) ) {
+					foreach ( $block['innerBlocks'] as $inner ) {
+						$stack[] = $inner;
+					}
+				}
+			}
+		} catch ( \Throwable $e ) {
+			return false;
+		}
+		return false;
+	}
+
+	/**
+	 * Render server-side (dynamic) blocks in raw post_content so they reach the
+	 * Markdown instead of being deleted with the block comments.
+	 *
+	 * Safe by construction: returns $raw unchanged on any problem (no dynamic
+	 * blocks, re-entrancy, depth cap, oversize or empty output, Throwable), so
+	 * the result can only GAIN content relative to the old raw path. Runs
+	 * do_blocks() only; shortcodes are NOT run here (the caller does that once),
+	 * so there are no double shortcode side effects. Preserves the global $post.
+	 *
+	 * @since 1.4.1
+	 * @param WP_Post $post Post being converted.
+	 * @param string  $raw  Its raw post_content.
+	 * @return string Rendered HTML, or $raw.
+	 */
+	public static function render_dynamic_blocks( WP_Post $post, string $raw ): string {
+		if ( ! function_exists( 'do_blocks' ) || ! self::has_dynamic_blocks( $raw ) ) {
+			return $raw;
+		}
+		$id = (int) $post->ID;
+		if ( in_array( $id, self::$block_render_active, true ) || count( self::$block_render_active ) >= self::BLOCK_RENDER_MAX_DEPTH ) {
+			return $raw;
+		}
+
+		self::$block_render_active[] = $id;
+		$had_post  = array_key_exists( 'post', $GLOBALS );
+		$prev_post = $had_post ? $GLOBALS['post'] : null;
+		$out       = '';
+		$buffering = false;
+		// The result is cached and served to anonymous crawlers, so render as a
+		// logged-out visitor: blocks like Query Loop must not leak what the
+		// current user (an editor opening /post.md) is allowed to see.
+		$prev_user = get_current_user_id();
+		wp_set_current_user( 0 );
+		try {
+			$GLOBALS['post'] = $post;
+			setup_postdata( $post );
+			ob_start();
+			$buffering = true;
+			$out       = do_blocks( $raw );
+			ob_end_clean();
+			$buffering = false;
+		} catch ( \Throwable $e ) {
+			if ( $buffering ) {
+				ob_end_clean();
+			}
+			$out = '';
+		}
+		array_pop( self::$block_render_active );
+		wp_set_current_user( $prev_user );
+		wp_reset_postdata();
+		if ( $had_post ) {
+			$GLOBALS['post'] = $prev_post;
+		} else {
+			unset( $GLOBALS['post'] );
+		}
+
+		if ( ! is_string( $out ) || '' === trim( wp_strip_all_tags( $out ) ) || strlen( $out ) > self::BLOCK_RENDER_MAX_BYTES ) {
+			return $raw;
+		}
+		// Blocks may emit inline script/style; neither belongs in Markdown.
+		$clean = preg_replace( '#<(script|style)\b[^>]*>.*?</\1\s*>#si', '', $out );
+		return ( is_string( $clean ) && '' !== trim( wp_strip_all_tags( $clean ) ) ) ? $clean : $raw;
 	}
 
 	public static function decode_summary( $raw ): array {

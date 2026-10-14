@@ -33,12 +33,31 @@ class RNRD_Elementor_Widget extends \Elementor\Widget_Base {
 		}
 		$registered = true;
 
-		add_action( 'elementor/editor/after_enqueue_scripts', function (): void {
+		add_action( 'elementor/editor/after_enqueue_scripts', array( __CLASS__, 'enqueue_editor_assets' ) );
+	}
+
+	/**
+	 * Enqueue the editor-panel script + CSS. Public so the plugin boot can hook it
+	 * directly: hooking it only from a widget constructor meant it was added after
+	 * Elementor 4.x had already fired the enqueue action, so the script never loaded.
+	 */
+	public static function enqueue_editor_assets(): void {
+		static $done = false;
+		if ( $done ) {
+			return;
+		}
+		$done = true;
+		{
 			$ver = file_exists( RNRD_DIR . 'assets/elementor-editor.js' )
 				? RNRD_VERSION . '.' . filemtime( RNRD_DIR . 'assets/elementor-editor.js' )
 				: RNRD_VERSION;
 
-			wp_register_script( 'rnrd-elementor-editor', RNRD_URL . 'assets/elementor-editor.js', array( 'rnrd-i18n' ), $ver, true );
+			// A script whose dependency handle is unregistered is silently never
+			// printed, so make sure the shared i18n helper exists first.
+			if ( ! wp_script_is( 'rnrd-i18n', 'registered' ) ) {
+				wp_register_script( 'rnrd-i18n', RNRD_URL . 'assets/rnrd-i18n.js', array(), RNRD_VERSION, false );
+			}
+			wp_register_script( 'rnrd-elementor-editor', RNRD_URL . 'assets/elementor-editor.js', array( 'rnrd-i18n' ), $ver, false );
 			wp_localize_script( 'rnrd-elementor-editor', 'rnrdElEditor', array(
 				'restUrl' => esc_url_raw( rest_url( 'rankready/v1' ) ),
 				'nonce'   => wp_create_nonce( 'wp_rest' ),
@@ -63,7 +82,7 @@ class RNRD_Elementor_Widget extends \Elementor\Widget_Base {
 			wp_register_style( 'rnrd-elementor-editor', false, array(), $ver );
 			wp_enqueue_style( 'rnrd-elementor-editor' );
 			wp_add_inline_style( 'rnrd-elementor-editor', $css );
-		} );
+		}
 	}
 
 	/**
@@ -98,6 +117,19 @@ class RNRD_Elementor_Widget extends \Elementor\Widget_Base {
 	 * @param string $default_label Initial button text before JS resolves state.
 	 * @param string $hint          Small helper line under the button.
 	 */
+	/**
+	 * Editor-only placeholder for a widget that would otherwise render nothing, so it can be seen and
+	 * selected. Prints nothing on the front end and nothing in a preview that is not the Elementor editor.
+	 *
+	 * @param string $message Already translated, escaped here.
+	 */
+	public static function editor_notice( string $message ): void {
+		if ( ! class_exists( '\Elementor\Plugin' ) || ! \Elementor\Plugin::$instance->editor->is_edit_mode() ) {
+			return;
+		}
+		echo '<div class="rnrd-el-placeholder" style="padding:12px 14px;border:1px dashed #8c8f94;color:#50575e;font-size:13px;line-height:1.5">' . esc_html( $message ) . '</div>';
+	}
+
 	public static function regen_control_html( string $kind, string $default_label, string $hint ): string {
 		return '<div class="rnrd-el-regen" data-rnrd-kind="' . esc_attr( $kind ) . '">'
 			. '<button type="button" class="elementor-button rnrd-el-regen__btn" data-idle-label="' . esc_attr( $default_label ) . '">' . esc_html( $default_label ) . '</button>'
@@ -278,6 +310,7 @@ class RNRD_Elementor_Widget extends \Elementor\Widget_Base {
 
 	protected function render(): void {
 		if ( class_exists( 'RNRD_Summary' ) && ! RNRD_Summary::is_enabled() ) {
+			self::editor_notice( __( 'AI Summary is off. Turn it on in AI Content, then AI Summary.', 'rankready-ai-llm-seo' ) );
 			return;
 		}
 		$settings = $this->get_settings_for_display();
@@ -287,22 +320,26 @@ class RNRD_Elementor_Widget extends \Elementor\Widget_Base {
 		// archive/loop) or no summary yet, render nothing — the manual
 		// Generate/Regenerate control lives in the panel, not the preview.
 		if ( ! $post_id ) {
+			self::editor_notice( __( 'AI Summary shows the summary of the post this page belongs to.', 'rankready-ai-llm-seo' ) );
 			return;
 		}
 
 		$post = get_post( $post_id );
 		if ( ! $post || ! RNRD_Summary::is_post_type_enabled( $post->post_type ) ) {
+			self::editor_notice( __( 'AI Summary is not enabled for this post type. Turn it on in AI Content, then AI Summary, Post types.', 'rankready-ai-llm-seo' ) );
 			return;
 		}
 		// Same opt-out and password rules the automatic path applies. A widget
 		// dropped into a Theme Builder template is a third emitter of the same
 		// stored text, and it used to ignore both.
 		if ( ! RNRD_Util::can_emit( (int) $post_id, RNRD_META_DISABLE ) ) {
+			self::editor_notice( __( 'AI Summary is switched off for this post.', 'rankready-ai-llm-seo' ) );
 			return;
 		}
 
 		$raw = (string) get_post_meta( $post_id, RNRD_META_SUMMARY, true );
 		if ( empty( $raw ) ) {
+			self::editor_notice( __( 'No summary yet. Use Generate Summary in the panel.', 'rankready-ai-llm-seo' ) );
 			return;
 		}
 
@@ -349,6 +386,8 @@ class RNRD_Elementor_Widget extends \Elementor\Widget_Base {
 			'updatedRefresh'   => __( 'Updated. Refresh the preview to see the result.', 'rankready-ai-llm-seo' ),
 			'generationFailed' => __( 'Generation failed.', 'rankready-ai-llm-seo' ),
 			'networkError'     => __( 'Network error. Try again.', 'rankready-ai-llm-seo' ),
+			'configMissing'    => __( 'RankReady editor settings did not load. Reload the editor and try again.', 'rankready-ai-llm-seo' ),
+			'noPostId'         => __( 'Save the page once, then try again.', 'rankready-ai-llm-seo' ),
 		);
 	}
 }

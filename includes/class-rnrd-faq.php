@@ -610,7 +610,7 @@ class RNRD_Faq {
 				'type_disabled',
 				sprintf(
 					/* translators: %s: post type label, e.g. "Page". */
-					__( 'AI FAQ is not enabled for the “%s” type. Turn it on in AI Content → AI FAQ Generator → Post types.', 'rankready-ai-llm-seo' ),
+					__( 'AI FAQ is not enabled for the “%s” type. Turn it on in RankReady → AI Content → AI FAQ → Post types.', 'rankready-ai-llm-seo' ),
 					$pt_label
 				)
 			);
@@ -1422,6 +1422,11 @@ class RNRD_Faq {
 		foreach ( $faq_data as $item ) {
 			$q = isset( $item['question'] ) ? $item['question'] : '';
 			$a = isset( $item['answer'] ) ? wp_strip_all_tags( $item['answer'] ) : '';
+			// The stored answer went through wp_kses_post(), which writes a bare
+			// ampersand as &amp;. Markdown is plain text, so decode once here or
+			// "Q&A" reaches an AI reader as "Q&amp;A". HTML output is untouched.
+			$q = html_entity_decode( (string) $q, ENT_QUOTES | ENT_HTML5, 'UTF-8' );
+			$a = html_entity_decode( $a, ENT_QUOTES | ENT_HTML5, 'UTF-8' );
 			if ( empty( $q ) || empty( $a ) ) {
 				continue;
 			}

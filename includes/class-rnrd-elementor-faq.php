@@ -196,6 +196,7 @@ class RNRD_Elementor_Faq_Widget extends \Elementor\Widget_Base {
 
 	protected function render(): void {
 		if ( class_exists( 'RNRD_Faq' ) && ! RNRD_Faq::is_enabled() ) {
+			RNRD_Elementor_Widget::editor_notice( __( 'AI FAQ is off. Turn it on in AI Content, then AI FAQ.', 'rankready-ai-llm-seo' ) );
 			return;
 		}
 		$settings = $this->get_settings_for_display();
@@ -204,22 +205,26 @@ class RNRD_Elementor_Faq_Widget extends \Elementor\Widget_Base {
 		// Canvas shows the FAQ ONLY. No post bound or no FAQ yet → render
 		// nothing; the manual Generate/Regenerate control lives in the panel.
 		if ( ! $post_id ) {
+			RNRD_Elementor_Widget::editor_notice( __( 'AI FAQ shows the FAQ of the post this page belongs to.', 'rankready-ai-llm-seo' ) );
 			return;
 		}
 
 		$post = get_post( $post_id );
 		if ( ! $post || ! RNRD_Faq::is_post_type_enabled( $post->post_type ) ) {
+			RNRD_Elementor_Widget::editor_notice( __( 'AI FAQ is not enabled for this post type. Turn it on in AI Content, then AI FAQ, Post types.', 'rankready-ai-llm-seo' ) );
 			return;
 		}
 		// Same opt-out and password rules the automatic path applies. A widget
 		// dropped into a Theme Builder template is a third emitter of the same
 		// stored text, and it used to ignore both.
 		if ( ! RNRD_Util::can_emit( (int) $post_id, RNRD_META_FAQ_DISABLE ) ) {
+			RNRD_Elementor_Widget::editor_notice( __( 'AI FAQ is switched off for this post.', 'rankready-ai-llm-seo' ) );
 			return;
 		}
 
 		$faq_data = RNRD_Faq::get_faq_data( $post_id );
 		if ( empty( $faq_data ) ) {
+			RNRD_Elementor_Widget::editor_notice( __( 'No FAQ yet. Use Generate FAQ in the panel.', 'rankready-ai-llm-seo' ) );
 			return;
 		}
 

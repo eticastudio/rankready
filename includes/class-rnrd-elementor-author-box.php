@@ -283,6 +283,7 @@ class RNRD_Elementor_Author_Box_Widget extends \Elementor\Widget_Base {
 
 	protected function render(): void {
 		if ( class_exists( 'RNRD_Author_Box' ) && ! RNRD_Author_Box::is_enabled() ) {
+			RNRD_Elementor_Widget::editor_notice( __( 'Author Box is off. Turn it on in AI Content, then Author Box.', 'rankready-ai-llm-seo' ) );
 			return;
 		}
 		$settings = $this->get_settings_for_display();
@@ -292,12 +293,14 @@ class RNRD_Elementor_Author_Box_Widget extends \Elementor\Widget_Base {
 		if ( $post_id ) {
 			$post = get_post( $post_id );
 			if ( ! $post || ! RNRD_Author_Box::is_post_type_enabled( $post->post_type ) ) {
+				RNRD_Elementor_Widget::editor_notice( __( 'Author Box is not enabled for this post type. Turn it on in AI Content, then Author Box, Post types.', 'rankready-ai-llm-seo' ) );
 				return;
 			}
 			// Same opt-out and password rules the automatic path applies.
 			// Guarded inside the $post_id branch because this widget also
 			// supports an explicit author with no post bound at all.
 			if ( ! RNRD_Util::can_emit( (int) $post_id, RNRD_META_AUTHOR_DISABLE ) ) {
+				RNRD_Elementor_Widget::editor_notice( __( 'Author Box is switched off for this post.', 'rankready-ai-llm-seo' ) );
 				return;
 			}
 		}

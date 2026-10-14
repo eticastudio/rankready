@@ -260,7 +260,7 @@ class RNRD_Pricing {
 		$is_pro = function_exists( 'rnrd_is_pro' ) && rnrd_is_pro();
 		?>
 		<div class="rnrd-pricing">
-			<h1 class="screen-reader-text"><?php esc_html_e( 'Upgrade to RankReady Pro', 'rankready-ai-llm-seo' ); ?></h1>
+			<h1 class="screen-reader-text"><?php echo $is_pro ? esc_html__( 'RankReady Pro', 'rankready-ai-llm-seo' ) : esc_html__( 'Upgrade to RankReady Pro', 'rankready-ai-llm-seo' ); ?></h1>
 
 			<?php
 			/*
@@ -383,6 +383,22 @@ class RNRD_Pricing {
 				</div>
 			<?php endif; ?>
 
+			<?php
+			// A licensed site has already bought: no launch offer, no Buy buttons, no price pitch.
+			if ( $is_pro ) :
+				$rnrd_license_url = admin_url( 'admin.php?page=rankready-ai-llm-seo&tab=settings&sub=license' );
+				?>
+				<div class="rnrd-pricing__head">
+					<h2><?php esc_html_e( 'RankReady Pro is active on this site.', 'rankready-ai-llm-seo' ); ?></h2>
+					<p><?php esc_html_e( 'Every Pro feature is on. Your license, its status and its renewal terms are on the License screen.', 'rankready-ai-llm-seo' ); ?></p>
+					<p><a class="button button-primary" href="<?php echo esc_url( $rnrd_license_url ); ?>"><?php esc_html_e( 'Open License', 'rankready-ai-llm-seo' ); ?></a></p>
+				</div>
+			</div>
+				<?php
+				return;
+			endif;
+			?>
+
 			<div class="rnrd-pricing__head">
 				<span class="rnrd-launch"><?php esc_html_e( 'Launch offer', 'rankready-ai-llm-seo' ); ?></span>
 				<h2><?php esc_html_e( 'Pay once. Keep it for the life of the product.', 'rankready-ai-llm-seo' ); ?></h2>
@@ -421,7 +437,7 @@ class RNRD_Pricing {
 						/* translators: %d is the number of AI crawlers RankReady can allow or block. */
 						echo esc_html( sprintf( _n( 'Allow or block %d AI crawler', 'Allow or block %d AI crawlers', $rnrd_crawlers, 'rankready-ai-llm-seo' ), $rnrd_crawlers ) );
 						?></li>
-						<li><?php esc_html_e( 'Article, FAQPage, Speakable and Person schema', 'rankready-ai-llm-seo' ); ?></li>
+						<li><?php esc_html_e( 'Article, FAQPage and Speakable schema, plus a basic Person node on author archives', 'rankready-ai-llm-seo' ); ?></li>
 					</ul>
 					<?php
 					/*
@@ -533,7 +549,7 @@ class RNRD_Pricing {
 			<ul class="rnrd-assure">
 				<li><strong><?php esc_html_e( 'Pay once', 'rankready-ai-llm-seo' ); ?></strong><?php esc_html_e( 'Your license does not renew. One payment, and it stays yours.', 'rankready-ai-llm-seo' ); ?></li>
 				<li><strong><?php esc_html_e( '14 day refund', 'rankready-ai-llm-seo' ); ?></strong><?php esc_html_e( 'No questions asked, and every summary and FAQ you generated stays on your site.', 'rankready-ai-llm-seo' ); ?></li>
-				<li><strong><?php esc_html_e( 'Works with your SEO plugin', 'rankready-ai-llm-seo' ); ?></strong><?php esc_html_e( 'Runs alongside Yoast, Rank Math and AIOSEO, no conflict.', 'rankready-ai-llm-seo' ); ?></li>
+				<li><strong><?php esc_html_e( 'Works with your SEO plugin', 'rankready-ai-llm-seo' ); ?></strong><?php esc_html_e( 'Runs alongside Yoast, Rank Math and AIOSEO.', 'rankready-ai-llm-seo' ); ?></li>
 			</ul>
 
 			<p class="rnrd-pricing__foot">

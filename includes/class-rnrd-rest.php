@@ -415,12 +415,25 @@ class RNRD_Rest {
 		// 5. Cooldown. Read both stamps and take the later one: Delete clears
 		// RNRD_META_GENERATED but leaves RNRD_META_COOLDOWN behind, so
 		// "Delete, then Generate" can no longer skip the throttle.
+		// Per-post lock, taken before the cooldown is read, so two simultaneous
+		// requests cannot both pass the check. The token keeps a slow request
+		// from releasing a lock a later one now holds.
+		$lock_name  = 'rnrd_lk_sum_' . $post_id;
+		$lock_token = null;
+		if ( ! RNRD_Atomic::acquire_lock( $lock_name, 180, $lock_token ) ) {
+			return new WP_Error(
+				'rnrd_rate_limited',
+				__( 'A generation for this post is already running. Wait for it to finish, then try again.', 'rankready-ai-llm-seo' ),
+				array( 'status' => 429 )
+			);
+		}
 		$last  = max(
 			(int) get_post_meta( $post_id, RNRD_META_GENERATED, true ),
 			(int) get_post_meta( $post_id, RNRD_META_COOLDOWN, true )
 		);
 		$since = time() - $last;
 		if ( $last > 0 && $since < self::REGEN_COOLDOWN ) {
+			RNRD_Atomic::release_lock( $lock_name, $lock_token );
 			return new WP_Error(
 				'rnrd_rate_limited',
 				/* translators: %d: remaining seconds before regeneration is allowed */
@@ -429,7 +442,11 @@ class RNRD_Rest {
 			);
 		}
 
-		$summary = RNRD_Generator::force_generate( $post_id );
+		try {
+			$summary = RNRD_Generator::force_generate( $post_id );
+		} finally {
+			RNRD_Atomic::release_lock( $lock_name, $lock_token );
+		}
 		if ( false === $summary || is_wp_error( $summary ) ) {
 			$raw = is_wp_error( $summary ) ? $summary->get_error_message() : self::last_generation_error();
 			return new WP_Error( 'rnrd_generation_failed', self::friendly_generation_error( $raw ), array( 'status' => 502 ) );
@@ -657,12 +674,25 @@ class RNRD_Rest {
 		// Same throttle as Regenerate and Generate FAQ. Start Over is the most
 		// expensive button in the plugin (two LLM calls), so leaving it as the
 		// one unthrottled path meant a held-down click could burn a quota.
+		// Per-post lock, taken before the cooldown is read, so two simultaneous
+		// requests cannot both pass the check. The token keeps a slow request
+		// from releasing a lock a later one now holds.
+		$lock_name  = 'rnrd_lk_sum_' . $post_id;
+		$lock_token = null;
+		if ( ! RNRD_Atomic::acquire_lock( $lock_name, 180, $lock_token ) ) {
+			return new WP_Error(
+				'rnrd_rate_limited',
+				__( 'A generation for this post is already running. Wait for it to finish, then try again.', 'rankready-ai-llm-seo' ),
+				array( 'status' => 429 )
+			);
+		}
 		$last  = max(
 			(int) get_post_meta( $post_id, RNRD_META_GENERATED, true ),
 			(int) get_post_meta( $post_id, RNRD_META_COOLDOWN, true )
 		);
 		$since = time() - $last;
 		if ( $last > 0 && $since < self::REGEN_COOLDOWN ) {
+			RNRD_Atomic::release_lock( $lock_name, $lock_token );
 			return new WP_Error(
 				'rnrd_rate_limited',
 				/* translators: %d: remaining seconds before regeneration is allowed */
@@ -671,7 +701,11 @@ class RNRD_Rest {
 			);
 		}
 
-		$status = self::regenerate_with_rollback( $post_id, $keyword );
+		try {
+			$status = self::regenerate_with_rollback( $post_id, $keyword );
+		} finally {
+			RNRD_Atomic::release_lock( $lock_name, $lock_token );
+		}
 
 		/*
 		 * `'success' => true` used to be hardcoded here. The body underneath it
@@ -1019,13 +1053,22 @@ class RNRD_Rest {
 			$keyword = $snapshot[ RNRD_META_FAQ_KEYWORD ];
 		}
 
-		foreach ( $meta_keys as $key ) {
-			delete_post_meta( $post_id, $key );
-		}
+		// Generate first, replace after success. The previous summary and FAQ stay
+		// in place while the provider call runs, so a timeout or a fatal mid-run
+		// loses nothing. force_generate() and generate_faq() overwrite on success
+		// only. The one thing cleared up front is the FAQ hash, because
+		// generate_faq() short-circuits when the hash matches the stored FAQ.
+		delete_post_meta( $post_id, RNRD_META_FAQ_HASH );
 
+		// Put back any key the failed run left empty. A key that holds a value is
+		// the live copy and is never overwritten here.
 		$restore = function ( array $keys ) use ( $post_id, $snapshot ) {
 			foreach ( $keys as $key ) {
-				if ( '' !== $snapshot[ $key ] && null !== $snapshot[ $key ] ) {
+				if ( '' === $snapshot[ $key ] || null === $snapshot[ $key ] ) {
+					continue;
+				}
+				$current = get_post_meta( $post_id, $key, true );
+				if ( '' === $current || null === $current || false === $current ) {
 					update_post_meta( $post_id, $key, wp_slash( $snapshot[ $key ] ) );
 				}
 			}
@@ -1293,7 +1336,15 @@ class RNRD_Rest {
 		);
 
 		if ( ! empty( $params['from_author'] ) ) {
+			// Reassigning an author's posts to themselves changes nothing.
+			if ( (int) $params['from_author'] === (int) ( $params['to_author'] ?? 0 ) ) {
+				return array();
+			}
+			// WP_Query ignores author__not_in when `author` is set, so the From filter alone applies.
 			$query_args['author'] = $params['from_author'];
+		} elseif ( ! empty( $params['to_author'] ) ) {
+			// 1.4.1 — posts the target author already owns are not "reassigned"; leave them out of the count.
+			$query_args['author__not_in'] = array( (int) $params['to_author'] );
 		}
 
 		if ( ! empty( $params['date_from'] ) || ! empty( $params['date_to'] ) ) {
@@ -1437,7 +1488,7 @@ class RNRD_Rest {
 		if ( empty( $key ) ) {
 			return new WP_REST_Response( array(
 				'valid'   => false,
-				'message' => __( 'No API key stored for this provider.', 'rankready-ai-llm-seo' ),
+				'message' => __( 'No API key stored for this provider. Add one under RankReady → Settings → API Keys, then try again.', 'rankready-ai-llm-seo' ),
 			), 200 );
 		}
 
@@ -1586,7 +1637,7 @@ class RNRD_Rest {
 		if ( empty( $login ) || empty( $password ) ) {
 			return new WP_REST_Response( array(
 				'valid'   => false,
-				'message' => __( 'DataForSEO login or password not configured.', 'rankready-ai-llm-seo' ),
+				'message' => __( 'DataForSEO login or password not configured. Add one under RankReady → Settings → API Keys, then try again.', 'rankready-ai-llm-seo' ),
 			), 200 );
 		}
 
@@ -1653,12 +1704,25 @@ class RNRD_Rest {
 
 		// Cooldown: prevent rapid-fire FAQ generation for the same post. Same
 		// two-stamp read as the summary endpoint, for the same reason.
+		// Per-post lock, taken before the cooldown is read, so two simultaneous
+		// requests cannot both pass the check. The token keeps a slow request
+		// from releasing a lock a later one now holds.
+		$lock_name  = 'rnrd_lk_faq_' . $post_id;
+		$lock_token = null;
+		if ( ! RNRD_Atomic::acquire_lock( $lock_name, 180, $lock_token ) ) {
+			return new WP_Error(
+				'rnrd_rate_limited',
+				__( 'A generation for this post is already running. Wait for it to finish, then try again.', 'rankready-ai-llm-seo' ),
+				array( 'status' => 429 )
+			);
+		}
 		$last  = max(
 			(int) get_post_meta( $post_id, RNRD_META_FAQ_GENERATED, true ),
 			(int) get_post_meta( $post_id, RNRD_META_FAQ_COOLDOWN, true )
 		);
 		$since = time() - $last;
 		if ( $last && $since < self::REGEN_COOLDOWN ) {
+			RNRD_Atomic::release_lock( $lock_name, $lock_token );
 			return new WP_Error(
 				'rnrd_rate_limited',
 				/* translators: %d: remaining seconds before regeneration is allowed */
@@ -1667,7 +1731,11 @@ class RNRD_Rest {
 			);
 		}
 
-		$result = RNRD_Faq::generate_faq( $post_id, $keyword, $count );
+		try {
+			$result = RNRD_Faq::generate_faq( $post_id, $keyword, $count );
+		} finally {
+			RNRD_Atomic::release_lock( $lock_name, $lock_token );
+		}
 
 		if ( is_wp_error( $result ) ) {
 			$code = $result->get_error_code();

@@ -122,7 +122,7 @@ class RNRD_Notices {
 		$key = isset( $_GET['notice'] ) ? sanitize_key( wp_unslash( $_GET['notice'] ) ) : '';
 		$do  = isset( $_GET['do'] ) ? sanitize_key( wp_unslash( $_GET['do'] ) ) : '';
 
-		if ( ! $key || ! current_user_can( 'edit_posts' ) || ! check_admin_referer( 'rnrd_notice_' . $key ) ) {
+		if ( ! $key || ! current_user_can( 'manage_options' ) || ! check_admin_referer( 'rnrd_notice_' . $key ) ) {
 			wp_safe_redirect( admin_url() );
 			exit;
 		}
@@ -180,7 +180,7 @@ class RNRD_Notices {
 	/* ── the notices ──────────────────────────────────────────────────────── */
 
 	public static function render(): void {
-		if ( ! current_user_can( 'edit_posts' ) || ! self::is_rankready_screen() ) {
+		if ( ! current_user_can( 'manage_options' ) || ! self::is_rankready_screen() ) {
 			return;
 		}
 		if ( self::is_notice_free_screen() ) {
