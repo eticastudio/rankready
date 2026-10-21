@@ -62,8 +62,27 @@ class RNRD_Robots {
 				if ( false !== get_transient( 'rnrd_robots_mirror_check' ) ) {
 					return;
 				}
+				/*
+				 * The transient guard is a read-then-set, so two admin
+				 * requests an instant apart both pass it. That matters more
+				 * here than for a cache fill: the sync writes a file in the
+				 * web root, and on a site where another plugin owns
+				 * /robots.txt it first fetches the live file over a loopback
+				 * request to seed from it. Two of those in flight means two
+				 * writers to one path and two loopback requests, and the
+				 * seeding read can observe a half-written file. The lock
+				 * makes the second one return instead.
+				 */
+				$robots_token = null;
+				if ( class_exists( 'RNRD_Atomic' )
+					&& ! RNRD_Atomic::acquire_lock( 'rnrd_robots_sync_lock', 30, $robots_token ) ) {
+					return;
+				}
 				set_transient( 'rnrd_robots_mirror_check', 1, HOUR_IN_SECONDS );
 				self::sync_physical_robots_txt();
+				if ( null !== $robots_token ) {
+					RNRD_Atomic::release_lock( 'rnrd_robots_sync_lock', $robots_token );
+				}
 			},
 			20
 		);

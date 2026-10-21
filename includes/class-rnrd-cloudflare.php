@@ -266,6 +266,16 @@ class RNRD_Cloudflare {
 			}
 		}
 
+		// A double-click on Connect would run delete-then-create twice and leave
+		// a second rule on Cloudflare whose id this site never stored.
+		$cf_lock_token = null;
+		if ( ! RNRD_Atomic::acquire_lock( 'rnrd_cf_connect_lock', 60, $cf_lock_token ) ) {
+			return new WP_REST_Response(
+				array( 'success' => false, 'error' => __( 'A Cloudflare connection is already in progress. Wait a moment and check the status.', 'rankready-ai-llm-seo' ) ),
+				409
+			);
+		}
+
 		// If we already had a stored rule_id, delete it first (re-connect path).
 		$existing_rule_id = (string) get_option( self::OPT_RULE_ID, '' );
 		if ( '' !== $existing_rule_id ) {
@@ -280,6 +290,7 @@ class RNRD_Cloudflare {
 
 		$rule_id = self::create_rule( $creds, $zone_id );
 		if ( is_wp_error( $rule_id ) ) {
+			RNRD_Atomic::release_lock( 'rnrd_cf_connect_lock', $cf_lock_token );
 			return new WP_REST_Response(
 				array(
 					'success' => false,
@@ -303,6 +314,7 @@ class RNRD_Cloudflare {
 		update_option( self::OPT_ZONE,    $zone_id );
 		update_option( self::OPT_RULE_ID, $rule_id );
 		delete_transient( 'rnrd_cf_detect_v1' );
+		RNRD_Atomic::release_lock( 'rnrd_cf_connect_lock', $cf_lock_token );
 
 		return new WP_REST_Response(
 			array(

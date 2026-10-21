@@ -4038,9 +4038,9 @@ a.rnrd-kpi--link:focus .rnrd-kpi__go {
 .rnrd-wrap .description a,
 .rnrd-wrap .rnrd-card-desc a,
 .rnrd-wrap .rnrd-card-goal a {
-    color: var(--rnrd-mint-700, #0F9C70);
+    color: var(--rnrd-mint-800, #0A6E50);
     text-decoration: underline;
-    text-decoration-color: rgba(15, 156, 112, 0.3);
+    text-decoration-color: rgba(10, 110, 80, 0.4);
     text-underline-offset: 2px;
 }
 
@@ -6205,3 +6205,78 @@ body.admin_page_rankready-pro-upgrade .fs-plugin-title { display: none !importan
 .rnrd-save-status{margin-left:10px;font-size:13px;font-weight:600;vertical-align:middle}
 .rnrd-save-status[data-kind="success"]{color:#0f7a4f}
 .rnrd-save-status[data-kind="error"]{color:#b91c1c}
+
+
+/* RAN-20 visual pass: additive only, no class renamed or removed. */
+.rnrd-wrap .button-primary,
+.rnrd-wrap .button.button-primary,
+.rnrd-wrap input[type="submit"].button-primary,
+.rnrd-wrap button.button-primary{background:var(--rnrd-mint-800,#0A6E50);border-color:#085a42}
+.rnrd-wrap .button-primary:hover,
+.rnrd-wrap .button.button-primary:hover{background:#085a42}
+.rnrd-wrap .button-primary:disabled,
+.rnrd-wrap .button.button-primary:disabled,
+.rnrd-wrap .button-primary[disabled]{background:#c3dcd3;border-color:#c3dcd3;color:#4a5a54}
+.rnrd-wrap .rnrd-notice{max-width:100%;box-sizing:border-box}
+@media (max-width:782px){
+	.rnrd-wrap .rnrd-bot-table{display:block;max-width:100%;overflow-x:auto;-webkit-overflow-scrolling:touch}
+	.rnrd-wrap .rnrd-fw-controlbar{flex-wrap:wrap;gap:8px}
+	.rnrd-wrap .rnrd-fw-controlbar select{max-width:100%;min-height:40px}
+	.rnrd-wrap input.small-text{width:5em;max-width:100%}
+}
+.rnrd-notice a.rnrd-notice__x,.rnrd-notice__x{color:#646970}
+.rnrd-wrap .rnrd-feature-list__go{color:var(--rnrd-mint-800,#0A6E50)}
+.rnrd-wrap code{color:#3c434a}
+.rnrd-wrap .rnrd-header__home-link,.rnrd-wrap .rnrd-doc-link,.rnrd-wrap .rnrd-crawler-setall,.rnrd-wrap .rnrd-feature-list__preview{display:inline-flex;align-items:center;min-height:24px}
+
+/* RAN-20 round 2 (RAN-29 critic list): additive only, no class renamed or removed. */
+/* B1-B5: the brand has no blue; map WP-core blue to mint/ink tokens. */
+.rnrd-wrap .rnrd-feature-list__badge{background:var(--rnrd-mint-50,#E8FBF4);color:var(--rnrd-mint-800,#0A6E50)}
+.rnrd-bar-fill--training{background:var(--rnrd-mint-800,#0A6E50)}
+.rnrd-intent-badge--training{background:#e8fbf4;color:var(--rnrd-mint-800,#0A6E50);border-color:#b4e2c4}
+.rnrd-progress-fill{background:var(--rnrd-mint-800,#0A6E50)}
+.rnrd-tabs .nav-tab:hover:not(.nav-tab-active){color:var(--rnrd-mint-800,#0A6E50);background:#f4faf7}
+.rnrd-dash-link{color:var(--rnrd-mint-800,#0A6E50)}
+.rnrd-dash-link:hover{color:#085a42}
+.rnrd-notice--info{border-left-color:var(--rnrd-mint-800,#0A6E50)}
+.rnrd-wrap a,.rnrd-wrap summary,.rnrd-mb a,.rnrd-mb .rnrd-mb__delete,.rnrd-mb summary,.rnrd-onboard a{color:var(--rnrd-mint-800,#0A6E50)}
+.rnrd-wrap a:hover,.rnrd-mb a:hover,.rnrd-mb .rnrd-mb__delete:hover{color:#085a42}
+.rnrd-wrap a.button-primary,.rnrd-wrap a.rnrd-onboard__btn--primary,.rnrd-onboard a.rnrd-onboard__btn--primary{color:#fff}
+.rnrd-mb .button,.rnrd-mb .button.button-secondary{color:var(--rnrd-mint-800,#0A6E50);border-color:var(--rnrd-mint-800,#0A6E50)}
+.rnrd-mb .button:hover{color:#085a42;border-color:#085a42;background:#f4faf7}
+/* T1-T5: 24px minimum hit area on small links and controls. */
+.rnrd-arrow-link,.rnrd-onboard__skip,.rnrd-mb__delete,.rnrd-mb__reveal>summary,.rnrd-mb__meta>summary{display:inline-flex;align-items:center;min-height:24px;box-sizing:border-box}
+/* .rnrd-crawler-state is a radio <input> (class-rnrd-admin.php:5844), not a
+ * link, and it is deliberately NOT sized here. It used to carry
+ * min-height/min-width:24px from the hit-area rule above with no matching
+ * :checked::before geometry, which is exactly the shape of the 1.4.1
+ * misaligned-tick bug. It was harmless only because the umbrella rule below
+ * (.rnrd-wrap input[type=radio], 25px WITH its glyph) wins on specificity, so
+ * the trap would have sprung the moment the markup moved outside .rnrd-wrap.
+ * The umbrella rule already clears the 24px minimum. One sizing rule, one
+ * glyph rule, no second copy. */
+.rnrd-mb__delete{padding:4px 2px;background:none;border:0;cursor:pointer;font-size:12px}
+/* Checkbox + radio hit area. The box is enlarged for T1-T5 (24px minimum),
+ * and the painted tick MUST be resized with it. core sets appearance:none and
+ * paints the check as a dashicon SVG in :checked::before, so a box that grows
+ * without its ::before leaves the glyph pinned in a corner with dead space.
+ * These are core's OWN enlarged-control numbers from wp-admin/css/forms.css
+ * (its @media (max-width:782px) block), not numbers chosen here: box 1.5625rem,
+ * check 1.875rem at margin -0.1875rem -0.3125rem, radio dot 0.5625rem at
+ * margin 0.4375rem. Lifted verbatim so this cannot drift from core again, and
+ * 25px still clears the 24px hit-area minimum the sizing rule exists for.
+ * One copy only: three copies with two different geometries is what shipped the
+ * misaligned tick in 1.4.1. qa/gate-checkbox-geometry.php asserts that. */
+.rnrd-wrap input[type="checkbox"],.rnrd-wrap input[type="radio"]{min-width:1.5625rem;min-height:1.5625rem;width:1.5625rem;height:1.5625rem;margin-block:0}
+.rnrd-wrap input[type="checkbox"]:checked::before{margin:-0.1875rem -0.3125rem;width:1.875rem;height:1.875rem}
+.rnrd-wrap input[type="radio"]:checked::before{margin:0.4375rem;width:0.5625rem;height:0.5625rem;line-height:0.76190476}
+.rnrd-wrap label:has(> input[type="checkbox"]),.rnrd-wrap label:has(> input[type="radio"]){display:inline-flex;align-items:center;gap:8px}
+@media (max-width:782px){
+	.rnrd-arrow-link,.rnrd-onboard__skip,.rnrd-mb__delete,.rnrd-mb__reveal>summary{min-height:44px}
+	/* M1-M2: wide data tables scroll inside their own box instead of squeezing columns. */
+	.rnrd-wrap table.widefat,.rnrd-wrap table.wp-list-table{display:block;max-width:100%;overflow-x:auto;-webkit-overflow-scrolling:touch}
+	.rnrd-wrap table.widefat th,.rnrd-wrap table.widefat td{white-space:nowrap}
+}
+
+/* RAN-20 round 3: the robots list scrolls inside a focusable region (tabindex, role, aria-label on the fieldset). */
+.rnrd-wrap fieldset[role="region"]:focus-visible{outline:2px solid var(--rnrd-mint-800,#0A6E50);outline-offset:2px}

@@ -42,7 +42,8 @@
     color: var(--rnrd-text-tertiary, #5C625E);
     margin-bottom: 4px;
 }
-.rnrd-mb__field select { width: 100%; }
+.rnrd-mb__field select,
+.rnrd-postbox select { width: 100%; max-width: 100%; box-sizing: border-box; margin-inline: 0; }
 .rnrd-mb__hint { margin: 4px 0 8px; font-size: 11px; color: var(--rnrd-text-tertiary, #5C625E); }
 .rnrd-mb__desc {
     margin: 16px 0 8px;
@@ -622,3 +623,29 @@ body.block-editor-page .rnrd-mb__desc {
 	margin: 4px 0 0;
 }
 
+
+/* RAN-20 round 3: metabox maps WP-core blue to mint-800 and keeps 24px hit areas (44px on phones). */
+.rnrd-mb a,.rnrd-mb .rnrd-mb__delete,.rnrd-mb summary{color:var(--rnrd-mint-800,#0A6E50)}
+.rnrd-mb a:hover,.rnrd-mb .rnrd-mb__delete:hover{color:#085a42}
+.rnrd-mb .button,.rnrd-mb .button.button-secondary{color:var(--rnrd-mint-800,#0A6E50);border-color:var(--rnrd-mint-800,#0A6E50)}
+.rnrd-mb .button:hover{color:#085a42;border-color:#085a42;background:#f4faf7}
+.rnrd-arrow-link,.rnrd-mb__delete,.rnrd-mb__reveal>summary,.rnrd-mb__meta>summary{display:inline-flex;align-items:center;min-height:24px;box-sizing:border-box}
+.rnrd-mb__delete{padding:4px 2px;background:none;border:0;cursor:pointer;font-size:12px}
+/* Checkbox + radio hit area. The box is enlarged for T1-T5 (24px minimum),
+ * and the painted tick MUST be resized with it. core sets appearance:none and
+ * paints the check as a dashicon SVG in :checked::before, so a box that grows
+ * without its ::before leaves the glyph pinned in a corner with dead space.
+ * These are core's OWN enlarged-control numbers from wp-admin/css/forms.css
+ * (its @media (max-width:782px) block), not numbers chosen here: box 1.5625rem,
+ * check 1.875rem at margin -0.1875rem -0.3125rem, radio dot 0.5625rem at
+ * margin 0.4375rem. Lifted verbatim so this cannot drift from core again, and
+ * 25px still clears the 24px hit-area minimum the sizing rule exists for.
+ * One copy only: three copies with two different geometries is what shipped the
+ * misaligned tick in 1.4.1. qa/gate-checkbox-geometry.php asserts that. */
+.rnrd-mb input[type="checkbox"],.rnrd-mb input[type="radio"]{min-width:1.5625rem;min-height:1.5625rem;width:1.5625rem;height:1.5625rem;margin-block:0}
+.rnrd-mb input[type="checkbox"]:checked::before{margin:-0.1875rem -0.3125rem;width:1.875rem;height:1.875rem}
+.rnrd-mb input[type="radio"]:checked::before{margin:0.4375rem;width:0.5625rem;height:0.5625rem;line-height:0.76190476}
+.rnrd-mb label:has(> input[type="checkbox"]),.rnrd-mb label:has(> input[type="radio"]){display:inline-flex;align-items:center;gap:8px}
+@media (max-width:782px){
+	.rnrd-arrow-link,.rnrd-mb__delete,.rnrd-mb__reveal>summary,.rnrd-mb__meta>summary{min-height:44px}
+}

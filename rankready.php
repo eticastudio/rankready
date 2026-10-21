@@ -3,7 +3,7 @@
  * Plugin Name:       RankReady – AI SEO, Schema, llms.txt, AEO and GEO for ChatGPT, Gemini and Perplexity
  * Plugin URI:        https://hostmy.blog/plugins/rankready/
  * Description:       Make your WordPress content readable by ChatGPT, Perplexity, Claude, Gemini, and Google AI Overviews. AI summaries, FAQ schema, llms.txt, Markdown endpoints, agent discovery headers, WebMCP, and crawler controls — in one plugin.
- * Version:           1.4.1
+ * Version:           1.4.2
  * Requires at least: 6.9
  * Requires PHP:      7.4
  * Author:            HostMyBlog
@@ -289,7 +289,7 @@ if ( defined( 'RNRD_VERSION' ) ) {
 
 // ── Constants (guarded to prevent conflicts) ─────────────────────────────────
 if ( ! defined( 'RNRD_VERSION' ) ) {
-	define( 'RNRD_VERSION',  '1.4.1' );
+	define( 'RNRD_VERSION',  '1.4.2' );
 	define( 'RNRD_FILE',     __FILE__ );
 	define( 'RNRD_DIR',      plugin_dir_path( __FILE__ ) );
 	define( 'RNRD_URL',      plugin_dir_url( __FILE__ ) );
@@ -612,17 +612,6 @@ if ( ! function_exists( 'rnrd_is_pro' ) ) {
 	}
 
 	/**
-	 * Where an upgrade prompt sends the user.
-	 *
-	 * Prefers the Freemius pricing screen inside wp-admin, because a license
-	 * bought there activates itself and the buyer never handles a key. Falls
-	 * back to the public pricing page when the SDK is unavailable, which is the
-	 * case on a site that skipped the opt-in.
-	 *
-	 * @param string $context Short slug naming the surface the click came from,
-	 *                        so the upgrade page can report what people click.
-	 */
-	/**
 	 * Where "Free vs Pro" points. A comparison is a different intent from a
 	 * price: someone clicking it is not ready to buy, they are checking whether
 	 * the paid thing is even relevant to them. Sending both to the same page
@@ -633,17 +622,6 @@ if ( ! function_exists( 'rnrd_is_pro' ) ) {
 		return $context ? add_query_arg( 'from', rawurlencode( $context ), $url ) : $url;
 	}
 
-	/**
-	 * The inline gate shown next to a control a free site cannot use.
-	 *
-	 * Deliberately quiet: one sentence saying why THIS feature is paid, one
-	 * action, one comparison link. Modelled on Relume's inline gate rather than
-	 * on a marketing banner, because this sits beside a checkbox in a settings
-	 * screen and anything louder reads as an advert.
-	 *
-	 * @param string $why     One sentence. Specific to the feature, never generic.
-	 * @param string $context Slug for upgrade attribution.
-	 */
 	/**
 	 * A field-level Pro note. One line, inline, sitting where a `.description`
 	 * would sit.
@@ -866,6 +844,17 @@ if ( ! function_exists( 'rnrd_is_pro' ) ) {
 		);
 	}
 
+	/**
+	 * Where an upgrade prompt sends the user.
+	 *
+	 * Prefers the Freemius pricing screen inside wp-admin, because a license
+	 * bought there activates itself and the buyer never handles a key. Falls
+	 * back to the public pricing page when the SDK is unavailable, which is the
+	 * case on a site that skipped the opt-in.
+	 *
+	 * @param string $context Short slug naming the surface the click came from,
+	 *                        so the upgrade page can report what people click.
+	 */
 	function rnrd_upgrade_url( string $context = '' ): string {
 		if ( function_exists( 'admin_url' ) && is_admin() ) {
 			$url = admin_url( 'admin.php?page=rankready-pro-upgrade' );
@@ -968,7 +957,10 @@ function rnrd_maybe_merge_auto_display_options(): void {
 		$pos = (string) get_option( RNRD_OPT_FAQ_POSITION, 'after' );
 		update_option( RNRD_OPT_FAQ_AUTO_DISPLAY, 'before' === $pos ? 'before' : 'after', false );
 	}
-	update_option( 'rnrd_auto_display_merged', '1', false );
+	// Autoloaded on purpose: this flag is read on every request (see the
+	// plugins_loaded bootstrap), and a non-autoloaded option costs one SELECT per
+	// request on any site without a persistent object cache.
+	update_option( 'rnrd_auto_display_merged', '1', true );
 }
 }
 
@@ -1308,8 +1300,8 @@ add_action( 'admin_init', function (): void {
 // ═════════════════════════════════════════════════════════════════════════════
 // Updates: handled by WordPress.org SVN (auto-updates via Plugins screen).
 // ─────────────────────────────────────────────────────────────────────────────
-// v1.0.0+ ships exclusively from WordPress.org. The Plugin Update Checker
-// (PUC) library was removed from the WP.org distribution per WP.org policy.
+// v1.0.0+ ships exclusively from WordPress.org. The third-party update-checker
+// library was removed from the WP.org distribution per WP.org policy.
 // ═════════════════════════════════════════════════════════════════════════════
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -1411,6 +1403,25 @@ function rnrd_migrate_unicode_meta_batch(): void {
 		return;
 	}
 
+	/*
+	 * Locked, because the cursor is a read-modify-write driving a direct
+	 * postmeta sweep. Two ticks that read the same cursor walk the same 2000
+	 * rows and issue the same UPDATEs: the re-encode is idempotent so nothing
+	 * corrupts, but the migrated count double-counts and the work is done
+	 * twice on a table that can be large, which is the opposite of what a
+	 * batched migration is for. A tick that cannot take the lock returns and
+	 * the already-scheduled follow-up event picks the work back up.
+	 *
+	 * The TTL is longer than a batch should ever take and shorter than the
+	 * 30 second gap between scheduled events, so a crashed tick frees the
+	 * lock before the next one needs it.
+	 */
+	$batch_token = null;
+	if ( class_exists( 'RNRD_Atomic' )
+		&& ! RNRD_Atomic::acquire_lock( 'rnrd_unicode_meta_lock', 25, $batch_token ) ) {
+		return;
+	}
+
 	global $wpdb;
 	$batch  = 2000;
 	$cursor = (int) get_option( 'rnrd_unicode_meta_cursor', 0 );
@@ -1457,6 +1468,9 @@ function rnrd_migrate_unicode_meta_batch(): void {
 			// Cached reads may still hold the escaped values.
 			wp_cache_flush_group( 'post_meta' );
 		}
+		if ( null !== $batch_token ) {
+			RNRD_Atomic::release_lock( 'rnrd_unicode_meta_lock', $batch_token );
+		}
 		return;
 	}
 
@@ -1464,6 +1478,10 @@ function rnrd_migrate_unicode_meta_batch(): void {
 	update_option( 'rnrd_unicode_meta_migrated_count', $migrated, false );
 	if ( ! wp_next_scheduled( 'rnrd_unicode_meta_migrate' ) ) {
 		wp_schedule_single_event( time() + 30, 'rnrd_unicode_meta_migrate' );
+	}
+
+	if ( null !== $batch_token ) {
+		RNRD_Atomic::release_lock( 'rnrd_unicode_meta_lock', $batch_token );
 	}
 }
 }
@@ -1488,7 +1506,30 @@ add_action( 'plugins_loaded', function (): void {
 
 	// Auto-flush rewrite rules after plugin update (activation hook doesn't fire on updates).
 	$stored_version = get_option( 'rnrd_installed_version', '' );
-	if ( $stored_version !== RNRD_VERSION ) {
+
+	/*
+	 * One lock around the whole upgrade routine, rather than one per migration
+	 * flag inside it. Every block below is a read-modify-write on its own
+	 * one-shot flag, and most of them are harmless to run twice, but the
+	 * legacy AI Post Summary migration at the end is not: its INSERT selects
+	 * the posts that have no _rnrd_summary row and inserts one for each, and
+	 * two requests evaluating that subquery at the same time both see the row
+	 * missing and both insert. Duplicate postmeta rows are the failure mode
+	 * this plugin has already been bitten by, get_post_meta() then returns one
+	 * of them arbitrarily, and nothing afterwards removes the other.
+	 *
+	 * An upgrade request is exactly when concurrency is likely: the first
+	 * admin page load after an update often arrives alongside a cron spawn or
+	 * a second tab. A request that cannot take the lock skips the migrations
+	 * and loses nothing, because the version stamp is only written by the
+	 * holder, so the next request re-enters and runs them.
+	 */
+	$rnrd_upgrade_token = null;
+	$rnrd_run_upgrade   = ( $stored_version !== RNRD_VERSION )
+		&& ( ! class_exists( 'RNRD_Atomic' )
+			|| RNRD_Atomic::acquire_lock( 'rnrd_upgrade_lock', 120, $rnrd_upgrade_token ) );
+
+	if ( $rnrd_run_upgrade ) {
 		// 1.4.1 — existing installs keep today's effective behaviour: the option
 		// was never required to exist and every read site defaulted to 'on'.
 		if ( '' !== $stored_version && false === get_option( RNRD_OPT_MD_ACCEPT_NEGOTIATION ) ) {
@@ -1630,6 +1671,23 @@ add_action( 'plugins_loaded', function (): void {
 		}
 
 		update_option( 'rnrd_installed_version', RNRD_VERSION );
+
+		/*
+		 * 1.4.2 — three tiny options are read on EVERY request but were stored
+		 * with autoload off, so each cost its own SELECT per request on any site
+		 * without a persistent object cache. Flip the existing rows to autoload
+		 * (a few dozen bytes in total). The write sites now pass autoload true,
+		 * so a fresh install is already right. Missing rows are skipped: the
+		 * function returns false and writes nothing.
+		 */
+		foreach ( array( 'rnrd_installed_version', 'rnrd_auto_display_merged', 'rnrd_md_settings_ver' ) as $rnrd_hot_opt ) {
+			wp_set_option_autoload( $rnrd_hot_opt, true );
+		}
+		// The legacy site-wide tips flag was dropped by an admin_init hook that
+		// ran one SELECT on every admin request for a row that is long gone on
+		// most sites. Nothing writes it any more, so drop it once, here.
+		delete_option( 'rnrd_tips_optin_sent' );
+
 		// Defer rewrite rule registration + flush to 'init' — $wp_rewrite is not
 		// ready at plugins_loaded and calling add_rewrite_rule() before init causes
 		// a fatal "Call to a member function add_rule() on null".
@@ -1683,6 +1741,10 @@ add_action( 'plugins_loaded', function (): void {
 				) );
 			}
 			update_option( 'rnrd_aps_migrated', true );
+		}
+
+		if ( null !== $rnrd_upgrade_token ) {
+			RNRD_Atomic::release_lock( 'rnrd_upgrade_lock', $rnrd_upgrade_token );
 		}
 	}
 

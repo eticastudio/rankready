@@ -1087,31 +1087,6 @@ class RNRD_Diagnostics {
 	}
 
 	/**
-	 * FREE-99 — External edge-cache HIT probe.
-	 *
-	 * Fetches /llms.txt over HTTP and inspects response cache headers to detect
-	 * server-level caches (nginx FastCGI, Varnish, Cloudflare APO, LSWS) that
-	 * sit in front of PHP and cannot be detected from inside WordPress.
-	 *
-	 * If a HIT is reported, surfaces the .htaccess / nginx snippet as the fix.
-	 */
-	/**
-	 * FREE-108 — End-to-end Accept: text/markdown probe.
-	 *
-	 * Hits the live homepage with `Accept: text/markdown` and inspects the
-	 * Content-Type of the FINAL response (post-CDN, post-cache). Three failure
-	 * modes detected:
-	 *
-	 *   1. Returns text/html → some cache layer (most commonly Cloudflare)
-	 *      is serving the cached HTML response to markdown requests because
-	 *      its cache key doesn't vary by Accept. Surface the Cloudflare
-	 *      Cache Rule snippet as the fix.
-	 *   2. Returns 4xx/5xx → routing or rewrite-rule problem.
-	 *   3. Returns text/markdown → all good.
-	 *
-	 * @since 1.0.1
-	 */
-	/**
 	 * 1.4.1 — warn when a caching layer is detected while same-URL Accept
 	 * negotiation is on. Reads response headers of a plain homepage request.
 	 */
@@ -1149,6 +1124,22 @@ class RNRD_Diagnostics {
 			array( 'layers' => $found ) );
 	}
 
+	/**
+	 * FREE-108 — End-to-end Accept: text/markdown probe.
+	 *
+	 * Hits the live homepage with `Accept: text/markdown` and inspects the
+	 * Content-Type of the FINAL response (post-CDN, post-cache). Three failure
+	 * modes detected:
+	 *
+	 *   1. Returns text/html → some cache layer (most commonly Cloudflare)
+	 *      is serving the cached HTML response to markdown requests because
+	 *      its cache key doesn't vary by Accept. Surface the Cloudflare
+	 *      Cache Rule snippet as the fix.
+	 *   2. Returns 4xx/5xx → routing or rewrite-rule problem.
+	 *   3. Returns text/markdown → all good.
+	 *
+	 * @since 1.0.1
+	 */
 	private static function probe_markdown_negotiation(): array {
 		if ( 'on' !== get_option( RNRD_OPT_MD_ENABLE, 'off' ) ) {
 			return self::result( 'md_negotiation', 'Accept: text/markdown end-to-end', 'info',
@@ -1249,6 +1240,15 @@ class RNRD_Diagnostics {
 			array( 'content-type' => $ctype, 'cf_cache' => $cf_cache ) );
 	}
 
+	/**
+	 * FREE-99 — External edge-cache HIT probe.
+	 *
+	 * Fetches /llms.txt over HTTP and inspects response cache headers to detect
+	 * server-level caches (nginx FastCGI, Varnish, Cloudflare APO, LSWS) that
+	 * sit in front of PHP and cannot be detected from inside WordPress.
+	 *
+	 * If a HIT is reported, surfaces the .htaccess / nginx snippet as the fix.
+	 */
 	private static function probe_edge_cache_hit(): array {
 		if ( ! class_exists( 'RNRD_Cache' ) ) {
 			return self::result( 'edge_cache_hit', 'Edge cache HIT scan', 'info',
@@ -1794,7 +1794,17 @@ class RNRD_Diagnostics {
 			);
 		}
 
-		$url     = sprintf( $cfg['url'], $key );
+		/*
+		 * The four PROVIDER_PROBES URLs are literals with no format specifier,
+		 * so the key has always reached headers only. This used to run the URL
+		 * through sprintf() with the key as the argument, which did nothing
+		 * today but meant that adding one %s to a probe URL later would have
+		 * silently moved the API key into a query string, where every proxy and
+		 * access log on the path records it. Audited 2026-10-20: taking the URL
+		 * verbatim makes "the key is never in the URL" structural, not a
+		 * property of the current table.
+		 */
+		$url     = (string) $cfg['url'];
 		$headers = array();
 		if ( ! empty( $cfg['header'] ) ) {
 			$parts = explode( ': ', sprintf( $cfg['header'], $key ), 2 );

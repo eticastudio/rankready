@@ -91,9 +91,23 @@ class RNRD_Notices {
 	private static function installed_days(): int {
 		$first = (int) get_option( 'rnrd_first_activated', 0 );
 		if ( ! $first ) {
-			// Never recorded, so backfill once rather than guessing zero forever.
+			/*
+			 * Claimed, not written. Two requests backfilling at once would
+			 * each write their own timestamp and the second would win, which
+			 * costs nothing today because the two differ by milliseconds. It
+			 * is claimed anyway because this is the install date every
+			 * age-gated notice is measured from, and the correct primitive for
+			 * "create this row once" costs one call.
+			 */
 			$first = time();
-			update_option( 'rnrd_first_activated', $first, false );
+			if ( class_exists( 'RNRD_Atomic' )
+				&& ! RNRD_Atomic::claim_option( 'rnrd_first_activated', (string) $first ) ) {
+				wp_cache_delete( 'rnrd_first_activated', 'options' );
+				$winner = (int) get_option( 'rnrd_first_activated', 0 );
+				$first  = $winner > 0 ? $winner : $first;
+			} elseif ( ! class_exists( 'RNRD_Atomic' ) ) {
+				update_option( 'rnrd_first_activated', $first, false );
+			}
 		}
 		return (int) floor( ( time() - $first ) / DAY_IN_SECONDS );
 	}

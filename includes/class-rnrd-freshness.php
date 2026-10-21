@@ -324,10 +324,30 @@ class RNRD_Freshness {
 		 */
 		$stale_days = self::stale_days( $stale_days );
 
+		// One scan, three conditional sums. This was three COUNT(*) queries that each
+		// walked the same published rows; post_modified_gmt has no index in core, so
+		// every extra query was another pass. Still a live count (no cache), and the
+		// buckets are the same ranges count_bucket() uses.
+		global $wpdb;
+		$post_types   = self::tracked_post_types();
+		$placeholders = implode( ',', array_fill( 0, count( $post_types ), '%s' ) );
+		$stale_cutoff = gmdate( 'Y-m-d H:i:s', time() - $stale_days * DAY_IN_SECONDS );
+		$going_cutoff = gmdate( 'Y-m-d H:i:s', time() - self::going_stale_days( $stale_days ) * DAY_IN_SECONDS );
+
+		$sql  = "SELECT
+				COALESCE( SUM( post_modified_gmt < %s ), 0 ) AS stale,
+				COALESCE( SUM( post_modified_gmt < %s AND post_modified_gmt >= %s ), 0 ) AS going_stale,
+				COALESCE( SUM( post_modified_gmt >= %s ), 0 ) AS fresh
+			FROM {$wpdb->posts}
+			WHERE post_status = 'publish' AND post_password = '' AND post_type IN ($placeholders)";
+		$args = array_merge( array( $stale_cutoff, $going_cutoff, $stale_cutoff, $going_cutoff ), $post_types );
+		// phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,PluginCheck.Security.DirectDB.UnescapedDBParameter
+		$row = $wpdb->get_row( $wpdb->prepare( $sql, $args ), ARRAY_A );
+
 		return array(
-			'stale'       => self::count_bucket( 'stale', $stale_days ),
-			'going_stale' => self::count_bucket( 'going_stale', $stale_days ),
-			'fresh'       => self::count_bucket( 'fresh', $stale_days ),
+			'stale'       => (int) ( $row['stale'] ?? 0 ),
+			'going_stale' => (int) ( $row['going_stale'] ?? 0 ),
+			'fresh'       => (int) ( $row['fresh'] ?? 0 ),
 		);
 	}
 

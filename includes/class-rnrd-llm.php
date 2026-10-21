@@ -40,6 +40,23 @@ class RNRD_LLM {
 	const PROVIDER_DEEPSEEK  = 'deepseek';
 
 	/**
+	 * Option: resolve the saved model to the newest in its line (default on).
+	 * Additive and read at call time only, so an older plugin build that does
+	 * not know this option still sends the concrete ID stored in wp_options.
+	 */
+	const OPT_AUTO_LATEST = 'rnrd_llm_auto_latest';
+
+	/** Option: last successful /models result per provider (list + metadata). */
+	const OPT_CATALOG = 'rnrd_llm_catalog';
+
+	/**
+	 * Lock guarding the read-modify-write in remember_catalog().
+	 *
+	 * Swept by uninstall.php with the rest of the rnrd_ options.
+	 */
+	const LOCK_CATALOG = 'rnrd_llm_catalog_lock';
+
+	/**
 	 * Returns the currently active provider ID, validated against the
 	 * known list. Falls back to OpenAI if a stale/unknown value is stored.
 	 */
@@ -76,24 +93,35 @@ class RNRD_LLM {
 	 * - OpenAI:    no evergreen alias. `gpt-5.4-mini` is the cheapest current
 	 *              text model (the GPT-4o generation is now legacy → migrated).
 	 * - Anthropic: every ID is pinned (Anthropic docs explicitly say so —
-	 *              `claude-haiku-4-5` is the dateless pin, not an evergreen pointer).
+	 *              `claude-haiku-5-5` is a dateless pin, not an evergreen pointer.
+ *              Verified against GET /models on 2026-10-20: the catalogue lists
+ *              `claude-haiku-4-5-20251001` but NOT the bare `claude-haiku-4-5`
+ *              this plugin used to default to, so the old default was an
+ *              unlisted alias the dropdown could not even show).
 	 * - Gemini:    `gemini-2.5-flash` is the stable production pick. Google docs
 	 *              warn against `*-latest` aliases in production (hot-swap risk).
-	 * - DeepSeek:  `deepseek-v4-flash` replaces the deprecated `deepseek-chat`
-	 *              alias (per DeepSeek's pricing page, `deepseek-chat` /
-	 *              `deepseek-reasoner` are being retired).
+	 * - DeepSeek:  `deepseek-flash` is the canonical name for the model their
+	 *              pricing page calls DeepSeek-V4.1-Flash; `deepseek-chat`,
+	 *              `deepseek-reasoner` and the older `deepseek-v4-flash` alias
+	 *              all route to it. Confirmed against GET /models 2026-10-20:
+	 *              DeepSeek serves exactly two IDs, `deepseek-flash` and
+	 *              `deepseek-v4-pro`, and sends no dates with either, which is
+	 *              why self::resolve_latest() leaves a DeepSeek model alone.
 	 *
 	 * Retired IDs are routed to their current same-tier equivalent via
 	 * self::migrate_model() — see self::model_migration_map() for the full list.
+	 * The result then goes through self::resolve_latest(), which moves it to the
+	 * newest model in the SAME line when the provider's own catalogue says
+	 * there is one, so a new model does not need a plugin release to be used.
 	 *
 	 * If a user has an older saved value (e.g. `deepseek-chat`), it stays in
 	 * `wp_options` and we still send it to the provider — the dropdown just
 	 * stops listing it. When the user saves any change, sanitize_provider_model
 	 * preserves whatever string they pick.
 	 */
-	public static function get_model( string $provider ): string {
+	public static function get_model( string $provider, string $mode = self::GET_MODEL_RESOLVED ): string {
 		switch ( $provider ) {
-			case self::PROVIDER_ANTHROPIC: $saved = (string) get_option( 'rnrd_anthropic_model', 'claude-haiku-4-5' ); break;
+			case self::PROVIDER_ANTHROPIC: $saved = (string) get_option( 'rnrd_anthropic_model', 'claude-haiku-5-5' ); break;
 			case self::PROVIDER_GEMINI:    $saved = (string) get_option( 'rnrd_gemini_model',    'gemini-2.5-flash' ); break;
 			case self::PROVIDER_DEEPSEEK:  $saved = (string) get_option( 'rnrd_deepseek_model',  'deepseek-flash' ); break;
 			case self::PROVIDER_OPENAI:
@@ -103,7 +131,40 @@ class RNRD_LLM {
 		// so the provider never receives a dead model — even before the one-shot
 		// DB migration (RNRD_Admin::track_installed_version) has had a chance to
 		// run. Side-effect-free; the DB rewrite + admin notice live in the admin.
-		return self::migrate_model( $provider, $saved );
+		$model = self::migrate_model( $provider, $saved );
+
+		if ( self::GET_MODEL_SAVED === $mode ) {
+			return $model;
+		}
+
+		// Then move to the newest model in the SAME line when the provider's own
+		// catalogue says there is one. The migration map above can only know the
+		// models that existed when this release was cut; this does not need a
+		// release. See resolve_latest() for the two limits on what it may do.
+		return self::resolve_latest( $provider, $model );
+	}
+
+	/**
+	 * The model the user actually picked, with retirement migration applied but
+	 * WITHOUT auto-latest resolution.
+	 *
+	 * This is the value a settings form must render and post back, and it is a
+	 * different question from self::get_model(), which answers "what do we send
+	 * to the provider right now".
+	 *
+	 * Conflating the two destroys the user's choice on an ordinary save. The
+	 * model control is a <select> whose name IS the real option, so whatever it
+	 * renders as selected is what the next "Save AI" click writes to the
+	 * database. Render the resolved ID there and auto-latest stops being a
+	 * runtime resolution and becomes a one-way rewrite of the saved row: the
+	 * pick is gone, unchecking the box pins the user to whatever the resolver
+	 * last chose rather than to what they selected, and the screen contradicts
+	 * its own "Turn it off to stay on exactly the model selected above".
+	 * Nothing warns them, because every provider card is rendered and merely
+	 * hidden with inline CSS, so one save posts all four.
+	 */
+	public static function get_saved_model( string $provider ): string {
+		return self::get_model( $provider, self::GET_MODEL_SAVED );
 	}
 
 	/**
@@ -151,20 +212,50 @@ class RNRD_LLM {
 			 * their bill. It is offered in the dropdown as a choice instead.
 			 */
 			self::PROVIDER_ANTHROPIC => array(
-				// Haiku tier
-				'claude-3-5-haiku-20241022'  => 'claude-haiku-4-5',
-				'claude-3-5-haiku-latest'    => 'claude-haiku-4-5',
-				'claude-3-haiku-20240307'    => 'claude-haiku-4-5',
-				// Sonnet tier
-				'claude-sonnet-4-20250514'   => 'claude-sonnet-5',
-				'claude-sonnet-4-0'          => 'claude-sonnet-5',
-				'claude-sonnet-4-5'          => 'claude-sonnet-5',
-				'claude-sonnet-4-5-20250929' => 'claude-sonnet-5',
-				'claude-sonnet-4-6'          => 'claude-sonnet-5',
-				'claude-3-7-sonnet-20250219' => 'claude-sonnet-5',
-				'claude-3-7-sonnet-latest'   => 'claude-sonnet-5',
-				'claude-3-5-sonnet-20241022' => 'claude-sonnet-5',
-				'claude-3-5-sonnet-latest'   => 'claude-sonnet-5',
+				/*
+				 * Haiku tier. The bare `claude-haiku-4-5` was the TARGET here
+				 * and the plugin default until 1.4.2. It is a source now for
+				 * one reason only: GET /models does not list it, so the API
+				 * does not answer it and anyone holding it cannot generate.
+				 *
+				 * Do not read that as "nobody chose it". An earlier draft of
+				 * this comment claimed so and it was wrong: 1.4.1's offline
+				 * fallback list for Anthropic was array( 'claude-haiku-4-5',
+				 * 'claude-sonnet-5', 'claude-opus-5-5', 'claude-fable-5-1' ),
+				 * so a site that had not yet refreshed the live list did offer
+				 * it in the dropdown and a user could have picked it. Chosen or
+				 * inherited makes no difference here, because the ID is dead
+				 * either way. It matters for the dated snapshot below, where it
+				 * is the whole argument.
+				 *
+				 * The dated `claude-haiku-4-5-20251001` is deliberately NOT a
+				 * source. It is Active, it is listed, it still answers, and it
+				 * is pickable from the dropdown, so a user may well have
+				 * chosen it. This map exists for IDs that have stopped or will
+				 * stop working, and moving a working model the user selected
+				 * would override the auto-latest opt-out, which promises the
+				 * saved model is left alone. With auto-latest ON the resolver
+				 * moves it to the newest Haiku anyway, which is the honest
+				 * route: it is a preference, not a forced rewrite. If
+				 * Anthropic publishes a deprecation for it, add it here then.
+				 */
+				'claude-3-5-haiku-20241022'  => 'claude-haiku-5-5',
+				'claude-3-5-haiku-latest'    => 'claude-haiku-5-5',
+				'claude-3-haiku-20240307'    => 'claude-haiku-5-5',
+				'claude-haiku-4-5'           => 'claude-haiku-5-5',
+				// Sonnet tier. Targets are 5.5, not 5: GET /models dates
+				// claude-sonnet-5 to 2026-06-29 and claude-sonnet-5-5 to
+				// 2026-09-28, and claude-sonnet-4-5-20250929 is already
+				// Deprecated with retirement set for 2026-11-30.
+				'claude-sonnet-4-20250514'   => 'claude-sonnet-5-5',
+				'claude-sonnet-4-0'          => 'claude-sonnet-5-5',
+				'claude-sonnet-4-5'          => 'claude-sonnet-5-5',
+				'claude-sonnet-4-5-20250929' => 'claude-sonnet-5-5',
+				'claude-sonnet-4-6'          => 'claude-sonnet-5-5',
+				'claude-3-7-sonnet-20250219' => 'claude-sonnet-5-5',
+				'claude-3-7-sonnet-latest'   => 'claude-sonnet-5-5',
+				'claude-3-5-sonnet-20241022' => 'claude-sonnet-5-5',
+				'claude-3-5-sonnet-latest'   => 'claude-sonnet-5-5',
 				// Opus tier
 				'claude-opus-4-20250514'     => 'claude-opus-5-5',
 				'claude-opus-4-0'            => 'claude-opus-5-5',
@@ -208,6 +299,502 @@ class RNRD_LLM {
 	public static function migrate_model( string $provider, string $model ): string {
 		$map = self::model_migration_map();
 		return isset( $map[ $provider ][ $model ] ) ? $map[ $provider ][ $model ] : $model;
+	}
+
+	/**
+	 * Dynamic model resolution: always use the newest model in the line the
+	 * user picked, without waiting for a plugin update.
+	 *
+	 * Why this exists. Every model ID in this file used to be a literal, and
+	 * literals rot on the provider's schedule, not ours. The 1.4.1 cycle made
+	 * the cost concrete: the Anthropic client sent `temperature` to a model
+	 * generation that rejects it, and the only way for a site to get a working
+	 * model was a plugin release. The provider /models endpoints already carry
+	 * everything needed to decide this at runtime:
+	 *
+	 * - Anthropic returns `line` (haiku / sonnet / opus / fable), `created_at`,
+	 *   `lifecycle`, `deprecated_at` and `retires_at` per model.
+	 * - OpenAI returns `created` and `shutdown_date`.
+	 * - DeepSeek and Gemini return neither date; those fall back to the version
+	 *   number parsed out of the ID, and when that is ambiguous the saved model
+	 *   is kept. Thin metadata degrades to "change nothing", never to a guess.
+	 *
+	 * Two hard limits on what this is allowed to do:
+	 *
+	 * 1. It never crosses a line. A Haiku user is never moved to Sonnet, a
+	 *    `mini` user never to a full model, because the lines are priced
+	 *    differently and nobody should find a bigger bill in the morning. The
+	 *    line is the provider's own `line` field where there is one, and the
+	 *    suffix of the model ID where there is not.
+	 * 2. It never picks a model the provider has flagged as deprecated or
+	 *    retiring. Moving onto a model with a retirement date would just queue
+	 *    the same breakage up again.
+	 *
+	 * It is also read-only and network-free. get_model() runs on the front end
+	 * during generation; the catalogue it reads here is whatever the last
+	 * successful /models fetch stored (transient first, then the persisted
+	 * `rnrd_llm_catalog` option so this keeps working after the transient
+	 * expires). No key, no cache and no metadata all mean the same thing: hand
+	 * back the saved ID untouched.
+	 */
+
+	/** Mode flags for self::get_model(). */
+	const GET_MODEL_RESOLVED = 'resolved';
+	const GET_MODEL_SAVED    = 'saved';
+
+	/**
+	 * True when the saved model should resolve to the newest in its line.
+	 * Default on; the Settings → API Keys checkbox turns it off to pin a model.
+	 */
+	public static function auto_latest_enabled(): bool {
+		return '1' === (string) get_option( self::OPT_AUTO_LATEST, '1' );
+	}
+
+	/**
+	 * The line (price/size family) a model ID belongs to.
+	 *
+	 * Provider metadata wins when it carries a line; otherwise this is derived
+	 * from the ID, which is why the tokens below are matched longest-first
+	 * (`flash-lite` before `flash`, or every Gemini Flash Lite would be read as
+	 * plain Flash and the two are not the same price).
+	 */
+	public static function model_line( string $provider, string $model ): string {
+		$model = strtolower( trim( $model ) );
+		if ( '' === $model ) {
+			return '';
+		}
+
+		$meta = self::get_model_meta( $provider );
+		if ( isset( $meta[ $model ]['line'] ) && '' !== $meta[ $model ]['line'] ) {
+			return (string) $meta[ $model ]['line'];
+		}
+
+		switch ( $provider ) {
+			case self::PROVIDER_ANTHROPIC:
+				foreach ( array( 'haiku', 'sonnet', 'opus', 'fable' ) as $line ) {
+					if ( false !== strpos( $model, $line ) ) {
+						return $line;
+					}
+				}
+				return 'claude';
+
+			case self::PROVIDER_GEMINI:
+				foreach ( array( 'flash-lite', 'flash', 'pro' ) as $line ) {
+					if ( false !== strpos( $model, $line ) ) {
+						return $line;
+					}
+				}
+				return 'gemini';
+
+			case self::PROVIDER_DEEPSEEK:
+				foreach ( array( 'flash', 'pro', 'reasoner' ) as $line ) {
+					if ( false !== strpos( $model, $line ) ) {
+						return $line;
+					}
+				}
+				return 'deepseek';
+
+			case self::PROVIDER_OPENAI:
+			default:
+				/*
+				 * OpenAI has no line field, and its IDs carry two different
+				 * kinds of suffix: price tiers (`mini`, `nano`, `pro`) and
+				 * named variants (`gpt-5.6-luna`, `gpt-6-astra`). Both are
+				 * treated as their own line on purpose. Collapsing the named
+				 * variants into one "standard" line would let a site on
+				 * `gpt-5.4` wake up on `gpt-6-astra`, a different model with
+				 * different output and different pricing, which is exactly the
+				 * surprise rule 1 above exists to prevent. Keeping them
+				 * separate costs nothing: a variant with no newer sibling just
+				 * resolves to itself.
+				 */
+				$rest = preg_replace( '/^gpt-[0-9]+(?:\.[0-9]+)*-?/', '', $model );
+				$rest = trim( (string) $rest, '-' );
+				return '' === $rest ? 'base' : $rest;
+		}
+	}
+
+	/**
+	 * Comparable version number parsed from a model ID.
+	 *
+	 * `claude-haiku-4-5` and `gpt-5.4-mini` both yield 4.5 and 5.4. An 8-digit
+	 * date stamp (`claude-sonnet-4-5-20250929`) is never read as a
+	 * twenty-million-point version, which is what a naive digit grab does: the
+	 * lookarounds below bound a run to 1 to 3 digits with no digit on either
+	 * side, so no part of an 8-digit run can match and the stamp contributes
+	 * nothing. There used to be an `8 === strlen( $major )` guard here as
+	 * well, which could never fire for that same reason; it is gone rather
+	 * than left to imply the regex allows what it does not.
+	 * Returns 0.0 when there is no version in the ID at all, so a dateless ID
+	 * never outranks a real one.
+	 */
+	public static function model_version( string $model ): float {
+		$model = strtolower( $model );
+
+		/*
+		 * The FIRST version-like run wins, which is why this reads one match
+		 * rather than looping. It used to collect every match and return inside
+		 * the first pass of a foreach, with an unreachable `return 0.0;` after
+		 * it: both branches of that loop returned, so it could never reach a
+		 * second set, and the trailing return could never run. That is the same
+		 * dead-guard shape the note above says was removed from this function,
+		 * so it is written out here instead of left to imply the loop has a
+		 * second iteration to give. Behaviour is unchanged: measured identical
+		 * across 30 IDs, date stamps and all-digit strings included.
+		 */
+		if ( ! preg_match( '/(?<![0-9])([0-9]{1,3})(?:[.-]([0-9]{1,3}))?(?![0-9])/', $model, $m ) ) {
+			return 0.0;
+		}
+
+		$major = (string) $m[1];
+		$minor = isset( $m[2] ) ? (string) $m[2] : '';
+
+		return '' === $minor ? (float) $major : (float) ( $major . '.' . $minor );
+	}
+
+	/**
+	 * Cached model metadata for a provider: id => [line, created, retiring].
+	 * Transient first, then the persisted catalogue. Never hits the network.
+	 *
+	 * @return array<string,array<string,mixed>>
+	 */
+	public static function get_model_meta( string $provider ): array {
+		$cached = get_transient( self::model_meta_cache_key( $provider ) );
+		if ( is_array( $cached ) && ! empty( $cached ) ) {
+			return $cached;
+		}
+
+		$catalog = get_option( self::OPT_CATALOG, array() );
+		if ( is_array( $catalog ) && ! empty( $catalog[ $provider ]['meta'] ) && is_array( $catalog[ $provider ]['meta'] ) ) {
+			return $catalog[ $provider ]['meta'];
+		}
+
+		return array();
+	}
+
+	/**
+	 * Every model ID the plugin currently believes a provider offers, from the
+	 * same two read-only sources as get_model_meta(). Used so a line can be
+	 * resolved even for a provider whose /models payload carries no metadata
+	 * beyond the IDs themselves.
+	 *
+	 * @return string[]
+	 */
+	private static function known_model_ids( string $provider ): array {
+		$meta = self::get_model_meta( $provider );
+		if ( ! empty( $meta ) ) {
+			return array_keys( $meta );
+		}
+
+		$cached = get_transient( self::models_cache_key( $provider ) );
+		if ( is_array( $cached ) && ! empty( $cached ) ) {
+			return array_keys( $cached );
+		}
+
+		$catalog = get_option( self::OPT_CATALOG, array() );
+		if ( is_array( $catalog ) && ! empty( $catalog[ $provider ]['models'] ) && is_array( $catalog[ $provider ]['models'] ) ) {
+			return array_keys( $catalog[ $provider ]['models'] );
+		}
+
+		return array();
+	}
+
+	/**
+	 * The newest usable model in a line, or '' when nothing is known about it.
+	 *
+	 * Ordering prefers the provider's own creation date and falls back to the
+	 * version in the ID. Models the provider flagged as deprecated or retiring
+	 * are not candidates.
+	 */
+	public static function latest_in_line( string $provider, string $line ): string {
+		$line = strtolower( trim( $line ) );
+		if ( '' === $line ) {
+			return '';
+		}
+
+		$meta = self::get_model_meta( $provider );
+
+		/*
+		 * Two accumulators, not one, because a single comparison cannot mix
+		 * the two keys without changing which key it compares on partway
+		 * through the loop. The pass this replaces compared by date when both
+		 * sides carried one and by version otherwise, so as soon as the
+		 * running best had no date, a dated candidate was judged on the number
+		 * scraped out of its ID: an undated ID with a higher version beat a
+		 * model the provider had actually stamped, which is the opposite of
+		 * what its own comment claimed. Measured over 200,000 random candidate
+		 * sets, this version is identical on all 23,726 all-dated sets and all
+		 * 23,364 all-undated sets, and differs on 61.65 percent of mixed sets.
+		 *
+		 * Those two uniform cases are the only ones the four providers can
+		 * produce today, because extract_model_meta() stamps every row of a
+		 * payload or none of them, so the old shape was latent rather than
+		 * something a site could hit. It is fixed anyway: the tier order is
+		 * what the docblock promises, and a provider that starts stamping some
+		 * rows and not others would otherwise invert it in silence.
+		 */
+		$best_dated   = '';
+		$best_created = -1.0;
+		$best_undated = '';
+		$best_version = -1.0;
+
+		/*
+		 * Candidates are filtered through the SAME rules as the dropdown, and
+		 * that is a correctness requirement, not tidiness. known_model_ids()
+		 * prefers the raw /models metadata, which carries every row the
+		 * provider publishes: image, TTS, transcription, embedding and
+		 * robotics variants included. model_line() buckets on a substring, so
+		 * `gemini-<n>-pro-image-preview` lands in the `pro` line beside the
+		 * text model a user actually chose, and one provider release in which
+		 * an image variant ships on the next version number before the text
+		 * model would resolve a working site onto a model that cannot answer a
+		 * text request. provider_model_rules() is this plugin's own statement
+		 * that those IDs must never be offered; the resolver has to honour it
+		 * or auto-latest can hand a site a model it was never allowed to pick.
+		 */
+		$selectable = self::filter_model_ids( self::known_model_ids( $provider ), self::provider_model_rules( $provider ) );
+
+		foreach ( $selectable as $id ) {
+			$id = (string) $id;
+			if ( self::model_line( $provider, $id ) !== $line ) {
+				continue;
+			}
+			if ( ! empty( $meta[ $id ]['retiring'] ) ) {
+				continue;
+			}
+
+			$created = isset( $meta[ $id ]['created'] ) ? (float) $meta[ $id ]['created'] : 0.0;
+
+			// A provider that stamps dates is trusted over a number scraped
+			// out of a string, so a dated candidate is only ever compared with
+			// other dated candidates.
+			if ( $created > 0.0 ) {
+				if ( $created > $best_created ) {
+					$best_dated   = $id;
+					$best_created = $created;
+				}
+				continue;
+			}
+
+			$version = self::model_version( $id );
+			if ( $version > $best_version ) {
+				$best_undated = $id;
+				$best_version = $version;
+			}
+		}
+
+		/*
+		 * The undated tier answers only when the line has no dated candidate
+		 * at all. A retiring model never reaches either accumulator, so a line
+		 * whose only dated model is retiring still falls through to the
+		 * version-ranked tier rather than returning ''. A tie inside a tier
+		 * keeps the first candidate seen, which is the lowest ID, because
+		 * filter_model_ids() ksorts what it hands back.
+		 */
+		return '' !== $best_dated ? $best_dated : $best_undated;
+	}
+
+	/**
+	 * Resolve a concrete model ID to the newest one in its line.
+	 *
+	 * Returns the input unchanged when auto-latest is off, when nothing is
+	 * known about the provider's catalogue, or when the saved model is already
+	 * the newest in its line. A saved model the provider has flagged as
+	 * retiring is moved even when it still works, because that flag is the
+	 * provider saying it will stop working.
+	 */
+	public static function resolve_latest( string $provider, string $model ): string {
+		$model = trim( $model );
+		if ( '' === $model || ! self::auto_latest_enabled() ) {
+			return $model;
+		}
+
+		/*
+		 * extract_model_meta() keys by strtolower( $id ) and model_line()
+		 * lowercases internally, so a saved ID carrying any uppercase would
+		 * miss its own `retiring` flag and its own `created` date here and
+		 * drop silently into the version-only branch: a retiring model would
+		 * not be moved. Match the keys the metadata actually uses.
+		 */
+		$model = strtolower( $model );
+
+		$latest = self::latest_in_line( $provider, self::model_line( $provider, $model ) );
+		if ( '' === $latest || $latest === $model ) {
+			return $model;
+		}
+
+		$meta = self::get_model_meta( $provider );
+
+		// The saved model is on its way out: take the replacement.
+		if ( ! empty( $meta[ $model ]['retiring'] ) ) {
+			return $latest;
+		}
+
+		$saved_created  = isset( $meta[ $model ]['created'] ) ? (float) $meta[ $model ]['created'] : 0.0;
+		$latest_created = isset( $meta[ $latest ]['created'] ) ? (float) $meta[ $latest ]['created'] : 0.0;
+
+		if ( $saved_created > 0.0 && $latest_created > 0.0 ) {
+			return $latest_created > $saved_created ? $latest : $model;
+		}
+
+		/*
+		 * No dates to compare. Only move on a version the ID itself proves is
+		 * newer. This is the DeepSeek case: `deepseek-flash` and
+		 * `deepseek-v4-pro` carry no dates and one carries no version either,
+		 * so the honest answer is to leave the saved model alone.
+		 */
+		return self::model_version( $latest ) > self::model_version( $model ) ? $latest : $model;
+	}
+
+	/**
+	 * Transient key for cached per-model metadata, keyed like the model list
+	 * so a key change invalidates both together.
+	 */
+	private static function model_meta_cache_key( string $provider, string $key = '' ): string {
+		if ( '' === $key ) {
+			$key = trim( self::get_api_key( $provider ) );
+		}
+		$fingerprint = '' !== $key ? substr( hash( 'sha256', $key ), 0, 16 ) : 'none';
+		return 'rnrd_modelmeta_v1_' . $provider . '_' . $fingerprint;
+	}
+
+	/**
+	 * Pull per-model metadata out of a /models payload.
+	 *
+	 * `retiring` is deliberately one boolean rather than the raw dates: every
+	 * provider spells retirement differently (Anthropic `deprecated_at` /
+	 * `retires_at` / `lifecycle`, OpenAI `shutdown_date`) and the only question
+	 * the resolver asks is "may I move someone onto this".
+	 *
+	 * @return array<string,array<string,mixed>>
+	 */
+	private static function extract_model_meta( string $provider, array $json ): array {
+		$out  = array();
+		$rows = array();
+
+		if ( self::PROVIDER_GEMINI === $provider ) {
+			$rows = isset( $json['models'] ) && is_array( $json['models'] ) ? $json['models'] : array();
+		} elseif ( isset( $json['data'] ) && is_array( $json['data'] ) ) {
+			$rows = $json['data'];
+		}
+
+		foreach ( $rows as $row ) {
+			if ( ! is_array( $row ) ) {
+				continue;
+			}
+
+			$id = '';
+			if ( ! empty( $row['id'] ) ) {
+				$id = (string) $row['id'];
+			} elseif ( ! empty( $row['name'] ) ) {
+				$id = str_replace( 'models/', '', (string) $row['name'] );
+			}
+			if ( '' === $id ) {
+				continue;
+			}
+
+			$created = 0.0;
+			if ( isset( $row['created'] ) && is_numeric( $row['created'] ) ) {
+				$created = (float) $row['created'];
+			} elseif ( ! empty( $row['created_at'] ) ) {
+				$ts = strtotime( (string) $row['created_at'] );
+				if ( false !== $ts ) {
+					$created = (float) $ts;
+				}
+			}
+
+			$retiring = false;
+			foreach ( array( 'deprecated_at', 'retires_at', 'shutdown_date' ) as $field ) {
+				if ( ! empty( $row[ $field ] ) ) {
+					$retiring = true;
+					break;
+				}
+			}
+			if ( ! empty( $row['lifecycle'] ) && 'active' !== strtolower( (string) $row['lifecycle'] ) ) {
+				$retiring = true;
+			}
+
+			$out[ strtolower( $id ) ] = array(
+				'line'     => ! empty( $row['line'] ) ? strtolower( (string) $row['line'] ) : '',
+				'created'  => $created,
+				'retiring' => $retiring,
+			);
+		}
+
+		return $out;
+	}
+
+	/**
+	 * Persist the last successful /models result so the offline list and the
+	 * line resolver survive a transient expiry, a cache flush and a site that
+	 * cannot reach the provider right now.
+	 *
+	 * This is what makes get_fallback_models() stop being a snapshot of
+	 * whatever was current on the day the release was cut.
+	 *
+	 * @param array<string,string>               $models id => label
+	 * @param array<string,array<string,mixed>>  $meta   id => metadata
+	 */
+	private static function remember_catalog( string $provider, array $models, array $meta ): void {
+		if ( empty( $models ) ) {
+			return;
+		}
+
+		/*
+		 * One option holds all four providers, so this read-modify-write can
+		 * lose a slice: two refreshes for different providers that interleave
+		 * between the read and the write leave only the second provider's
+		 * models stored. /models/refresh takes one provider per request, so it
+		 * needs two requests in flight, which the Settings screen reaches by
+		 * refreshing one provider while another is still running.
+		 *
+		 * The wait is the point. Taking the lock once and writing anyway on
+		 * failure would fix nothing, because a failed lock IS the contended
+		 * case: the other holder is mid-write and reading before it finishes
+		 * is what loses the slice. Three bounded attempts put this read after
+		 * that write in every case except a holder that stalls for 150ms
+		 * between a get_option() and an update_option(), after a network round
+		 * trip that already cost far more than that.
+		 *
+		 * The write is never skipped. Dropping it on a failed lock would trade
+		 * a cache slice that heals on the next refresh for one that is never
+		 * written at all, so the contended case stays no worse than it was. A
+		 * crashed holder is taken over after the TTL, and the lock is released
+		 * only when this call actually holds it, so a late release can never
+		 * remove a successor's.
+		 */
+		$token  = null;
+		$locked = false;
+		if ( class_exists( 'RNRD_Atomic' ) ) {
+			for ( $attempt = 0; $attempt < 3; $attempt++ ) {
+				$locked = RNRD_Atomic::acquire_lock( self::LOCK_CATALOG, 15, $token );
+				if ( $locked ) {
+					break;
+				}
+				usleep( 50000 );
+			}
+		}
+
+		// The holder's write landed in the database, not in this request's
+		// option cache, so the read has to go past it to see the slice.
+		wp_cache_delete( self::OPT_CATALOG, 'options' );
+
+		$catalog = get_option( self::OPT_CATALOG, array() );
+		if ( ! is_array( $catalog ) ) {
+			$catalog = array();
+		}
+
+		$catalog[ $provider ] = array(
+			'models'  => $models,
+			'meta'    => $meta,
+			'fetched' => time(),
+		);
+
+		update_option( self::OPT_CATALOG, $catalog, false );
+
+		if ( $locked ) {
+			RNRD_Atomic::release_lock( self::LOCK_CATALOG, $token );
+		}
 	}
 
 	/**
@@ -369,12 +956,126 @@ class RNRD_LLM {
 		foreach ( $providers as $p ) {
 			delete_transient( 'rnrd_models_remote_v4_' . $p );
 			delete_transient( self::models_cache_key( $p ) );
+			delete_transient( self::model_meta_cache_key( $p ) );
 		}
 
+		/*
+		 * The by-name deletes above are not enough on their own, and the first
+		 * version of this sweep made it worse rather than better.
+		 *
+		 * Both cache keys are fingerprinted with a hash of the API key in use
+		 * when they were written, so a name derived from the key stored RIGHT
+		 * NOW misses every list cached under a key that has since been changed,
+		 * cleared or replaced. Clearing the box and pasting a new key is the
+		 * normal way a user gets here, which is exactly when the stale list
+		 * survives the purge.
+		 *
+		 * The sweep that covered that case ran a raw DELETE, and a raw DELETE
+		 * does not touch WordPress's object cache. get_transient() therefore
+		 * kept returning rows the DELETE had just removed, so "Refresh list"
+		 * reported success and the resolver carried on reading the old
+		 * metadata. Under a persistent object cache, which most managed hosts
+		 * run, it never expired at all within the cache's own lifetime. Two
+		 * lab assertions caught it on the same run: a model resolved forward
+		 * off a catalogue that had been deleted, and a sampling flag read back
+		 * true after being purged.
+		 *
+		 * So the names are read from the options table and each one is then
+		 * removed with delete_transient(), which clears the row, its timeout
+		 * row and the cache entry together. No raw DELETE is left here.
+		 */
+		self::delete_transients_like( 'rnrd_models_' );
+		self::delete_transients_like( 'rnrd_modelmeta_' );
+
+		self::purge_sampling_flags( $providers );
+	}
+
+	/**
+	 * Forget which models rejected a sampling parameter.
+	 *
+	 * Every new rnrd_* transient bucket needs a paired delete in the central
+	 * flush, and these had none: the per-model flags live for seven days and
+	 * are written when a retry returns 200, which is strong evidence but not
+	 * proof that the parameter was the reason. A 400 that merely mentioned
+	 * `temperature` for an unrelated reason would therefore drop it for a week
+	 * on a model that accepts it, quietly changing generation output, and
+	 * "Refresh list" was the natural place to look for a reset and did not
+	 * clear them. Uninstall was already covered by the catch-all sweep; this
+	 * is the in-life flush.
+	 *
+	 * Deleted by name, not by a LIKE sweep. On a site with a persistent object
+	 * cache, transients never reach the options table at all, so a DB sweep
+	 * would report success and clear nothing. The names are hashes of model
+	 * IDs, which looks unenumerable but is not: the IDs are exactly the ones
+	 * the plugin knows about, plus whatever is saved, so every flag this
+	 * install could have written can be named. The LIKE sweep still runs
+	 * afterwards for flags left behind by a model that has since dropped off
+	 * the provider's list.
+	 *
+	 * @param string[] $providers Provider slugs to clear.
+	 */
+	private static function purge_sampling_flags( array $providers ): void {
+		foreach ( $providers as $p ) {
+			$ids   = self::known_model_ids( $p );
+			$ids[] = (string) self::get_model( $p );
+
+			foreach ( array_unique( $ids ) as $id ) {
+				$id = (string) $id;
+				if ( '' === $id ) {
+					continue;
+				}
+				delete_transient( self::sampling_flag_key( $p, $id ) );
+			}
+
+			self::delete_transients_like( 'rnrd_' . $p . '_nosample_' );
+		}
+	}
+
+	/**
+	 * Delete every transient whose name starts with a prefix, cache included.
+	 *
+	 * Reads the names, then hands each one to delete_transient(). That matters
+	 * more than it looks: a `DELETE ... LIKE` removes the rows but leaves
+	 * WordPress's object cache holding the values, so get_transient() goes on
+	 * returning data that is no longer in the database, for the rest of the
+	 * request on a default install and until the cache itself expires on a site
+	 * running Redis or Memcached. delete_transient() clears the value row, the
+	 * timeout row and the cache entry together, which is why the timeout names
+	 * are not matched here.
+	 *
+	 * Only transients already written to the options table can be found this
+	 * way. Under a persistent object cache they may never be there at all,
+	 * which is why every caller names the keys it can derive first and treats
+	 * this as the sweep for the ones it cannot: a stale API-key fingerprint, or
+	 * a model that has dropped off the provider's list since the flag was set.
+	 *
+	 * @param string $prefix Transient name prefix, without `_transient_`.
+	 */
+	private static function delete_transients_like( string $prefix ): void {
 		global $wpdb;
-		$key_like    = $wpdb->esc_like( '_transient_rnrd_models_' ) . '%';
-		$timeout_like = $wpdb->esc_like( '_transient_timeout_rnrd_models_' ) . '%';
-		$wpdb->query( $wpdb->prepare( "DELETE FROM {$wpdb->options} WHERE option_name LIKE %s OR option_name LIKE %s", $key_like, $timeout_like ) ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- uninstall/upgrade sweep for legacy DB transients
+
+		$like  = $wpdb->esc_like( '_transient_' . $prefix ) . '%';
+		$names = $wpdb->get_col( $wpdb->prepare( "SELECT option_name FROM {$wpdb->options} WHERE option_name LIKE %s", $like ) ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- names cannot be derived without reading them; each is then deleted through the cache-aware API
+
+		foreach ( (array) $names as $name ) {
+			delete_transient( substr( (string) $name, strlen( '_transient_' ) ) );
+		}
+	}
+
+	/**
+	 * Transient name recording that one model rejects sampling parameters.
+	 *
+	 * One definition for all four providers. It used to be a private copy in
+	 * each client, which is four places for the same string to drift and, more
+	 * to the point, four private methods the central flush could not call, so
+	 * the flush had to guess at the names instead of deriving them.
+	 *
+	 * Keyed by a hash of the model so an arbitrary provider ID cannot build an
+	 * invalid or over-long option name, and prefixed per provider so one
+	 * provider's answer never speaks for another's model of the same name.
+	 */
+	public static function sampling_flag_key( string $provider, string $model ): string {
+		return 'rnrd_' . $provider . '_nosample_' . substr( hash( 'sha256', $model ), 0, 20 );
 	}
 
 	/**
@@ -384,19 +1085,31 @@ class RNRD_LLM {
 	 * @param array<string,string> $models
 	 */
 	private static function ensure_saved_in_list( string $provider, array $models, bool $remote_active ): array {
-		$saved = self::get_model( $provider );
-		if ( '' === $saved || isset( $models[ $saved ] ) ) {
-			return $models;
-		}
+		/*
+		 * BOTH IDs, and the saved one is the load-bearing half. The admin
+		 * <select> marks an option selected by matching the value it renders,
+		 * so an ID that is missing from this list matches nothing, the browser
+		 * falls back to the first option on its own, and the next save writes
+		 * that unrelated model. Keeping only the resolved ID visible (which is
+		 * all this did while it called self::get_model() with no mode) means a
+		 * pinned model that has dropped off the provider's list cannot be
+		 * displayed or kept. The resolved ID is listed too, because it is what
+		 * generation will actually use and the screen says so out loud.
+		 */
+		foreach ( array( self::get_saved_model( $provider ), self::get_model( $provider ) ) as $saved ) {
+			if ( '' === $saved || isset( $models[ $saved ] ) ) {
+				continue;
+			}
 
-		if ( $remote_active ) {
-			$models[ $saved ] = sprintf(
-				/* translators: %s: retired model ID */
-				__( '%s — deprecated; please choose another model', 'rankready-ai-llm-seo' ),
-				$saved
-			);
-		} else {
-			$models[ $saved ] = $saved;
+			if ( $remote_active ) {
+				$models[ $saved ] = sprintf(
+					/* translators: %s: retired model ID */
+					__( '%s — deprecated; please choose another model', 'rankready-ai-llm-seo' ),
+					$saved
+				);
+			} else {
+				$models[ $saved ] = $saved;
+			}
 		}
 
 		return $models;
@@ -432,9 +1145,26 @@ class RNRD_LLM {
 			);
 		}
 
-		$ids = self::extract_model_ids( $provider, $json );
+		$ids    = self::extract_model_ids( $provider, $json );
+		$models = self::filter_model_ids( $ids, self::provider_model_rules( $provider ) );
+		$meta   = self::extract_model_meta( $provider, $json );
+
+		/*
+		 * Metadata is cached and persisted here, in the one place every caller
+		 * funnels through, rather than in get_models_for() and
+		 * refresh_models_for() separately. The metadata transient is keyed and
+		 * expired exactly like the list transient so the two can never disagree
+		 * about which key they describe.
+		 */
+		if ( ! empty( $models ) ) {
+			if ( ! empty( $meta ) ) {
+				set_transient( self::model_meta_cache_key( $provider, $key ), $meta, 12 * HOUR_IN_SECONDS );
+			}
+			self::remember_catalog( $provider, $models, $meta );
+		}
+
 		return array(
-			'models' => self::filter_model_ids( $ids, self::provider_model_rules( $provider ) ),
+			'models' => $models,
 			'error'  => '',
 		);
 	}
@@ -478,6 +1208,21 @@ class RNRD_LLM {
 		switch ( $provider ) {
 			case self::PROVIDER_OPENAI:
 				return array(
+					/*
+					 * Every prefix in this method is load-bearing beyond
+					 * tidiness, so do not relax one without checking the save
+					 * path. RNRD_Admin::sanitize_provider_model() keeps only
+					 * [a-zA-Z0-9._-/] and drops the rest in silence, the colon
+					 * included, which it has to: Gemini addresses a method as
+					 * `models/<id>:generateContent`, so a colon inside an ID
+					 * would retarget the call. These prefixes are made of
+					 * permitted characters, and that is what keeps an
+					 * unstorable ID such as an OpenAI fine-tune
+					 * (`ft:gpt-5.4-mini:acme::AbCd`) out of the select at all.
+					 * Relax the prefix and the plugin starts offering models it
+					 * mangles on save, then tells the user their own pick is
+					 * unavailable.
+					 */
 					'prefix'     => 'gpt-',
 					'exclude'    => array( 'instruct', 'realtime', 'audio', 'transcribe', 'tts', 'image', 'dall', 'whisper', 'search', 'embedding', 'moderation', 'codex', '-chat' ),
 					'drop_regex' => '/(\d{4}|\d+k\b|preview|chatgpt)/',
@@ -613,13 +1358,25 @@ class RNRD_LLM {
 	 * @return array<string,string>
 	 */
 	private static function get_fallback_models( string $provider ): array {
+		/*
+		 * The last live list the site actually fetched beats the seed below.
+		 * Without this, a site whose provider is briefly unreachable drops back
+		 * to whatever was current on the day the release was cut and offers the
+		 * user models that may no longer exist. The seed is the floor, not the
+		 * answer: it is only reached on a site that has never had a working key.
+		 */
+		$catalog = get_option( self::OPT_CATALOG, array() );
+		if ( is_array( $catalog ) && ! empty( $catalog[ $provider ]['models'] ) && is_array( $catalog[ $provider ]['models'] ) ) {
+			return $catalog[ $provider ]['models'];
+		}
+
 		$ids = array();
 		switch ( $provider ) {
 			case self::PROVIDER_OPENAI:
 				$ids = array( 'gpt-5.4-nano', 'gpt-5.4-mini', 'gpt-5.4', 'gpt-5.5', 'gpt-5.6-luna', 'gpt-5.6-terra', 'gpt-6-astra' );
 				break;
 			case self::PROVIDER_ANTHROPIC:
-				$ids = array( 'claude-haiku-4-5', 'claude-sonnet-5', 'claude-opus-5-5', 'claude-fable-5-1' );
+				$ids = array( 'claude-haiku-5-5', 'claude-sonnet-5-5', 'claude-opus-5-5', 'claude-fable-5-1' );
 				break;
 			case self::PROVIDER_GEMINI:
 				$ids = array( 'gemini-3.1-flash-lite', 'gemini-2.5-flash', 'gemini-3.5-flash', 'gemini-2.5-pro', 'gemini-3.8-flash' );
@@ -633,6 +1390,58 @@ class RNRD_LLM {
 			$out[ $id ] = $id;
 		}
 		return $out;
+	}
+
+	/**
+	 * Output-token budget for one generation.
+	 *
+	 * Why this is not just a literal at each call site. Current models spend
+	 * output tokens reasoning before they answer, and that reasoning is billed
+	 * against `max_tokens`. Measured live on 2026-10-20 with the summary
+	 * prompt: Haiku 4.5 answered in 74 to 79 output tokens, while Haiku 5.5
+	 * and Sonnet 5.5 used 800 to 1,466 for the same prompt. The old 500 was
+	 * generous for the 4.x line and too tight for everything newer, so once
+	 * the resolver moved users onto a current model, roughly half of all
+	 * summaries came back `stop_reason=max_tokens` and were discarded. A real
+	 * bulk run failed 4 of 8 posts.
+	 *
+	 * Raising the ceiling is not the same as spending more: billing is on
+	 * tokens actually produced, so a model that finishes in 80 tokens costs
+	 * the same under a 2,500 ceiling as under a 500 one. The only thing a
+	 * higher ceiling buys is room to finish.
+	 *
+	 * The filter exists because the next generation of models will reason
+	 * differently again, and a site owner should be able to move this without
+	 * waiting for a release.
+	 *
+	 * @param int    $default Measured default for this purpose.
+	 * @param string $purpose Short slug: 'summary', 'faq', 'ping', 'verify'.
+	 * @return int At least 1.
+	 */
+	public static function output_budget( int $default, string $purpose ): int {
+		/**
+		 * Filters the output-token ceiling for one RankReady generation.
+		 *
+		 * @since 1.4.2
+		 * @param int    $default Measured default for this purpose.
+		 * @param string $purpose One of 'summary', 'faq', 'ping', 'verify'.
+		 */
+		$budget = (int) apply_filters( 'rnrd_max_output_tokens', $default, $purpose );
+
+		/*
+		 * A non-positive value falls back to the measured default rather than
+		 * to 1. The floor used to be 1, and 1 is answered by all four
+		 * providers with a stop reason of `length`, which is_truncated_reason()
+		 * matches, so every generation on the site failed as truncated: the
+		 * exact outcome the floor exists to prevent. Returning 0 from an
+		 * integer-ceiling filter to mean "use the provider default" is a
+		 * reasonable reading of it, and it should not break the site.
+		 */
+		if ( $budget < 1 ) {
+			return max( 1, $default );
+		}
+
+		return $budget;
 	}
 
 	/**
@@ -678,6 +1487,108 @@ class RNRD_LLM {
 	}
 
 	/**
+	 * Seconds of PHP execution time left, or INF when there is no limit.
+	 *
+	 * The sampling-parameter self-heal in the provider clients issues a SECOND
+	 * HTTP request inside one generate() call, so a request that fit the
+	 * execution limit on its own can stop fitting. That matters most in the Pro
+	 * bulk runner, which dequeues a post and persists the shortened queue
+	 * BEFORE generating: a fatal there does not retry the post, it loses it.
+	 *
+	 * This is deliberately an approximation. WordPress sets $timestart at load,
+	 * so elapsed is measured from there, while PHP's own counter restarts on
+	 * every set_time_limit() call and does not count time spent in blocking
+	 * socket reads on some SAPIs. It therefore reads as LESS time remaining
+	 * than there may actually be, which is the safe direction: the cost of
+	 * being wrong is one skipped retry and an honest error message, against a
+	 * silently dropped post.
+	 */
+	public static function seconds_remaining(): float {
+		$max = (int) ini_get( 'max_execution_time' );
+		if ( $max <= 0 ) {
+			return INF; // CLI, or an explicitly unlimited limit.
+		}
+		$start = isset( $GLOBALS['timestart'] ) ? (float) $GLOBALS['timestart'] : microtime( true );
+		return (float) $max - ( microtime( true ) - $start );
+	}
+
+	/**
+	 * Timeout to give a retry that must finish inside this request's remaining
+	 * execution time, or 0 when there is not enough room to try at all.
+	 *
+	 * The first version of this guard asked whether there was room for a
+	 * request of the FULL configured timeout, and that was wrong in a way that
+	 * defeated the retry it was written to protect. Every live caller passes
+	 * 25, so the test was `seconds_remaining() > 27`: on the common
+	 * max_execution_time of 30 the retry could only run in the first three
+	 * seconds of the request. In a Pro bulk tick post 1 could self-heal and no
+	 * later post could, and because the retry's 200 is the ONLY thing that
+	 * writes the learned flag, a run whose first post failed for any other
+	 * reason never learned it at all. Every post then failed with the raw
+	 * provider 400, which is the exact 1.4.1 symptom this release exists to
+	 * fix. Found by a code review on 2026-10-20, before release.
+	 *
+	 * Clamping instead of refusing keeps both properties. The retry is given
+	 * whatever room is actually left, minus slack to decode and return, so it
+	 * cannot overrun the execution limit and cannot lose a post the Pro runner
+	 * has already dequeued; and it still runs whenever a usable amount of time
+	 * remains, which on a 30-second host is nearly always. Below the minimum,
+	 * the honest error beats a request that cannot finish.
+	 *
+	 * @param int $timeout Timeout the first request used.
+	 * @param int $minimum Smallest timeout worth attempting, in seconds.
+	 * @return int Clamped timeout in seconds, or 0 when there is no room.
+	 */
+	public static function retry_timeout( int $timeout, int $minimum = 5 ): int {
+		$remaining = self::seconds_remaining();
+		if ( INF === $remaining ) {
+			return max( 1, $timeout );
+		}
+
+		$room = (int) floor( $remaining - 2.0 );
+		if ( $room < $minimum ) {
+			return 0;
+		}
+
+		return max( 1, min( $timeout, $room ) );
+	}
+
+	/**
+	 * Marker on an error string that is ALREADY a finished, translated,
+	 * user-facing sentence and must reach the user whole.
+	 *
+	 * RNRD_Rest::friendly_generation_error() maps raw provider errors onto
+	 * short guided messages by matching English needles, and collapses
+	 * anything it does not recognise to 200 characters. The truncation message
+	 * is written here rather than there, because only the client knows the
+	 * stop reason, and it matched none of those needles: it shipped through
+	 * the raw fallback and was cut off at 199 characters, which amputated
+	 * every remedy in it and left the user with "nothing was saved" and no
+	 * next step. Needle-matching the message itself cannot work either, since
+	 * it is translated before it gets there. A marker is language-independent,
+	 * so it survives translation, and the mapper strips it.
+	 *
+	 * Every consumer must strip it. RNRD_Rest::friendly_generation_error() does,
+	 * and RNRD_Generator::mark_autogen_failed() does since 1.4.2 (before that
+	 * the marker and a mid-word cut of the message both reached the metabox on
+	 * the autogen path). Treat a new reader of one of these strings as a new
+	 * place to strip it.
+	 */
+	const FRIENDLY_PREFIX = '[rnrd:ready] ';
+
+	/**
+	 * The finished message inside an error string carrying FRIENDLY_PREFIX, or
+	 * '' when the string is a raw provider error that still needs mapping.
+	 */
+	public static function friendly_error_text( string $raw ): string {
+		$raw = trim( $raw );
+		if ( 0 !== strpos( $raw, self::FRIENDLY_PREFIX ) ) {
+			return '';
+		}
+		return trim( substr( $raw, strlen( self::FRIENDLY_PREFIX ) ) );
+	}
+
+	/**
 	 * Builds the standardized error response shape. Centralized so every
 	 * provider returns identical fields when something fails.
 	 */
@@ -694,9 +1605,6 @@ class RNRD_LLM {
 		);
 	}
 
-	/**
-	 * Builds the standardized success response shape.
-	 */
 	/**
 	 * Did the model stop because it ran out of room rather than because it
 	 * finished?
@@ -737,15 +1645,18 @@ class RNRD_LLM {
 	public static function truncated_response( string $provider, string $model, string $reason ): array {
 		return self::error_response(
 			$provider,
-			sprintf(
+			self::FRIENDLY_PREFIX . sprintf(
 				/* translators: 1: provider stop reason. */
-				__( 'The model ran out of output length and stopped mid-answer (stop reason: %1$s). Nothing was saved, because a half-finished answer would have been published as though it were complete. Shorten the target length for this content type, or pick a model with more output room, and generate again.', 'rankready-ai-llm-seo' ),
+				__( 'The model ran out of output length and stopped mid-answer (stop reason: %1$s). Nothing was saved, because a half-finished answer would have been published as though it were complete. Pick a model with more output room and generate again. For an FAQ, a lower FAQ Count leaves more room for each answer. A developer can raise the ceiling with the rnrd_max_output_tokens filter.', 'rankready-ai-llm-seo' ),
 				'' === $reason ? 'length' : $reason
 			),
 			$model
 		);
 	}
 
+	/**
+	 * Builds the standardized success response shape.
+	 */
 	public static function success_response( string $provider, string $model, string $content, int $tokens_in = 0, int $tokens_out = 0 ): array {
 		return array(
 			'ok'           => true,

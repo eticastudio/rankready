@@ -647,6 +647,15 @@ class RNRD_Faq {
 			return self::get_faq_data( $post_id );
 		}
 
+		// A body that could not be read must not reach the model; the answer
+		// would replace a good stored FAQ. Same bar as the summary endpoint.
+		if ( RNRD_Generator::is_thin_content( $post->post_title . "\n\n" . $content ) ) {
+			return new \WP_Error(
+				'thin_content',
+				__( 'Not enough readable content to write an FAQ. The existing FAQ was left unchanged.', 'rankready-ai-llm-seo' )
+			);
+		}
+
 		// Get brand terms. Prefer canonical brand list from AI Crawlers tab
 		// (RNRD_OPT_BRAND_TERMS — wired in v1.2.0). Fall back to FAQ-tab field
 		// for backwards compatibility, then to the site title.
@@ -756,7 +765,10 @@ class RNRD_Faq {
 
 		// Dispatch through the LLM abstraction — provider-agnostic.
 		$result = RNRD_LLM::generate( $faq_system, $prompt, array(
-			'max_tokens'  => 2000,
+			// FAQ held up at 2,000 in live testing, but it carries the same
+			// reasoning overhead as the summary on top of a much longer answer,
+			// so it gets the same headroom rather than the old bare minimum.
+			'max_tokens'  => RNRD_LLM::output_budget( 4000, 'faq' ),
 			'temperature' => 0.3,
 			'json'        => true,
 			'timeout'     => 25,

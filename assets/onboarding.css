@@ -457,12 +457,12 @@
 }
 .rnrd-onboard__btn--primary {
 	background: var(--rnrd-mint-500, #59F7C2);
-	color: var(--rnrd-text-on-mint, #0A3D2B);
+	color: var(--rnrd-text-on-mint, #0A2A1F);
 	border: 1px solid var(--rnrd-mint-500, #59F7C2);
 }
 .rnrd-onboard__btn--primary:hover {
 	background: var(--rnrd-mint-400, #7CF9CE);
-	color: var(--rnrd-text-on-mint, #0A3D2B);
+	color: var(--rnrd-text-on-mint, #0A2A1F);
 	border-color: var(--rnrd-mint-400, #7CF9CE);
 }
 .rnrd-onboard__btn--primary:focus-visible {
@@ -634,23 +634,23 @@
 }
 .rnrd-onboard__feat-check {
 	flex-shrink: 0;
-	width: 18px;
-	height: 18px;
 	margin: 2px 0 0;
-	accent-color: var(--rnrd-mint-600, #10B981);
 }
 /*
- * accent-color alone is dead weight here: WordPress core sets
- * appearance:none on admin checkboxes and paints the checked state
- * itself in core blue, which a browser honours over accent-color.
- * Every box on the first screen a new user sees was therefore blue on
- * a mint page. Core's tick glyph is already white, so only the fill
- * and border need retargeting.
+ * No width/height here on purpose. Core's own selector won that fight and
+ * painted 16px anyway, and a size with no matching :checked::before geometry
+ * is the shape of the 1.4.1 misaligned-tick bug. Box and glyph size come from
+ * the one shared rule in admin.css (.rnrd-wrap input[type=checkbox]).
+ * accent-color is gone too: core sets appearance:none and paints the checked
+ * state itself, so a browser never honours it. Core's tick glyph is white, so
+ * only the fill and border need retargeting, and they use mint-700 because
+ * white on mint-600 is 2.30:1 and WCAG 1.4.11 wants 3:1 (white on mint-700 is
+ * 3.49:1).
  */
 .rnrd-onboard input[type="checkbox"]:checked,
 .rnrd-onboard input[type="radio"]:checked {
-	background: var(--rnrd-mint-600, #10B981);
-	border-color: var(--rnrd-mint-600, #10B981);
+	background: var(--rnrd-mint-700, #0F9C70);
+	border-color: var(--rnrd-mint-700, #0F9C70);
 }
 .rnrd-onboard input[type="radio"]:checked::before {
 	background-color: #fff;
@@ -952,7 +952,9 @@
 	flex-shrink: 0;
 	margin: 1px 0 0 !important;   /* optical-center against the first label line */
 	padding: 0 !important;
-	border: 1.5px solid var(--rnrd-border-strong, #B0B3AB) !important;
+	/* 1.4.11: the boundary must be 3:1 against the page. border-strong is
+	 * 1.65:1 on white, so the unchecked edge is #8C8F87 (3.28:1). */
+	border: 1.5px solid var(--rnrd-optin-edge, #8C8F87) !important;
 	border-radius: 6px !important;
 	background: var(--rnrd-bg-surface, #fff) !important;
 	background-image: none !important;
@@ -962,11 +964,13 @@
 	transition: border-color 0.15s ease, background 0.15s ease;
 }
 .rnrd-onboard__optin-check:hover {
-	border-color: var(--rnrd-mint-500, #59F7C2) !important;
+	border-color: var(--rnrd-mint-700, #0F9C70) !important;
 }
+/* Fill stays brand mint-500 (9.29:1 under the dark tick). The edge is
+ * mint-700, 3.49:1 against white, so the box keeps a boundary when checked. */
 .rnrd-onboard__optin-check:checked {
-	background: var(--rnrd-mint-500, #59F7C2) !important;
-	border-color: var(--rnrd-mint-500, #59F7C2) !important;
+	background: var(--rnrd-mint-500, #2DE3A8) !important;
+	border-color: var(--rnrd-mint-700, #0F9C70) !important;
 }
 .rnrd-onboard__optin-check:checked::after {
 	content: "";
@@ -975,7 +979,7 @@
 	top: 2px;
 	width: 5px;
 	height: 10px;
-	border: solid var(--rnrd-text-on-mint, #0A3D2B);
+	border: solid var(--rnrd-text-on-mint, #0A2A1F);
 	border-width: 0 2px 2px 0;
 	transform: rotate(45deg);
 }
@@ -1003,4 +1007,12 @@
 .rnrd-onboard__optin-hint {
 	margin-top: 10px !important;
 	margin-bottom: 0 !important;
+}
+
+/* RAN-20 round 3: 24px hit area on the wizard skip link, 44px on phones. */
+.rnrd-onboard a{color:var(--rnrd-mint-800,#0A6E50)}
+.rnrd-onboard a.rnrd-onboard__btn--primary{color:#fff}
+.rnrd-onboard__skip{display:inline-flex;align-items:center;min-height:24px;box-sizing:border-box}
+@media (max-width:782px){
+	.rnrd-onboard__skip{min-height:44px}
 }

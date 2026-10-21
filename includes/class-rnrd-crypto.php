@@ -130,14 +130,6 @@ class RNRD_Crypto {
 	// ── Primitives ─────────────────────────────────────────────────────────
 
 	/**
-	 * Encrypt plaintext with AES-256-GCM.
-	 *
-	 * Format: rnrdenc:base64(iv ‖ tag ‖ ciphertext)
-	 *
-	 * @param string $plaintext Raw value to encrypt.
-	 * @return string Prefixed ciphertext. Returns empty string on encryption failure.
-	 */
-	/**
 	 * Is this stored value sitting in the database as plaintext?
 	 *
 	 * IMPORTANT: encrypt() deliberately FALLS BACK to storing the raw value when openssl
@@ -267,6 +259,14 @@ class RNRD_Crypto {
 		return self::SECRET_OPTIONS;
 	}
 
+	/**
+	 * Encrypt plaintext with AES-256-GCM.
+	 *
+	 * Format: rnrdenc:base64(iv ‖ tag ‖ ciphertext)
+	 *
+	 * @param string $plaintext Raw value to encrypt.
+	 * @return string Prefixed ciphertext. Returns empty string on encryption failure.
+	 */
 	public static function encrypt( string $plaintext ): string {
 		if ( '' === $plaintext ) {
 			return '';
@@ -384,8 +384,43 @@ class RNRD_Crypto {
 			// readable across requests.
 			$material = get_option( 'rnrd_crypto_fallback_key' );
 			if ( ! is_string( $material ) || '' === $material ) {
-				$material = bin2hex( random_bytes( 32 ) );
-				update_option( 'rnrd_crypto_fallback_key', $material, false );
+				/*
+				 * Claimed, not written. A plain read-then-write here loses
+				 * data permanently rather than just racing: two requests that
+				 * both find no key each generate one and the second
+				 * update_option() overwrites the first, so anything the first
+				 * request already encrypted and saved can never be decrypted
+				 * again. The stored API key then fails with no way back, which
+				 * is indistinguishable to the user from the provider
+				 * rejecting it.
+				 *
+				 * claim_option() is one INSERT IGNORE against the UNIQUE
+				 * option_name, so exactly one caller creates the row. A caller
+				 * that loses takes the winner's key, because that is the one
+				 * every later request will read. Only an install with neither
+				 * AUTH_KEY nor SECURE_AUTH_SALT reaches any of this.
+				 */
+				$candidate = bin2hex( random_bytes( 32 ) );
+				$claimed   = class_exists( 'RNRD_Atomic' )
+					&& RNRD_Atomic::claim_option( 'rnrd_crypto_fallback_key', $candidate );
+
+				if ( $claimed ) {
+					$material = $candidate;
+				} else {
+					// The winner's row is in the database, not in this
+					// request's option cache, so the read has to go past it.
+					wp_cache_delete( 'rnrd_crypto_fallback_key', 'options' );
+					$stored = get_option( 'rnrd_crypto_fallback_key' );
+
+					if ( is_string( $stored ) && '' !== $stored ) {
+						$material = $stored;
+					} else {
+						// No winner to defer to, so this is the pre-existing
+						// path and is left no worse than it was.
+						$material = $candidate;
+						update_option( 'rnrd_crypto_fallback_key', $material, false );
+					}
+				}
 			}
 		}
 

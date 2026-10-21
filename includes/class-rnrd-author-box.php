@@ -776,14 +776,6 @@ class RNRD_Author_Box {
 	}
 
 	/**
-	 * Smart merge: RankReady's Author Box data wins for the fields the user
-	 * explicitly filled in, sameAs is merged-and-deduped, everything else is
-	 * additive. See enhance_graph() docblock for the full rationale.
-	 *
-	 * @param array $node   The existing Person node from the SEO plugin graph (modified in place).
-	 * @param array $person The Person data built from RankReady's Author Box fields.
-	 */
-	/**
 	 * Did this user actually upload a headshot in the Author Box?
 	 *
 	 * build_person_schema() falls back to get_avatar_url() when they did not,
@@ -801,6 +793,10 @@ class RNRD_Author_Box {
 	}
 
 	/**
+	 * Smart merge: RankReady's Author Box data wins for the fields the user
+	 * explicitly filled in, sameAs is merged-and-deduped, everything else is
+	 * additive. See enhance_graph() docblock for the full rationale.
+	 *
 	 * @param array $node           Existing Person node from the SEO plugin graph, modified in place.
 	 * @param array $person         Person data built from RankReady's Author Box fields.
 	 * @param bool  $image_explicit Whether $person['image'] came from an uploaded

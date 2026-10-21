@@ -4,7 +4,7 @@ Tags: seo, schema, ai seo, aeo, llms.txt
 Requires at least: 6.9
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 1.4.1
+Stable tag: 1.4.2
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -41,7 +41,7 @@ Nothing runs on your front end: no JavaScript, one small stylesheet only on page
 
 ## llms.txt and llms-full.txt — the AI-native sitemap for LLMs
 
-RankReady serves the [llmstxt.org](https://llmstxt.org) standard at `/llms.txt` (a curated index of your best content) and `/llms-full.txt` (the full content concatenated as Markdown). LLMs and AI crawlers read these files first to understand your site. It is the single highest-leverage AI SEO file you can publish. Brand identity and what goes in are set from the **AI Crawlers** tab.
+RankReady serves the [llmstxt.org](https://llmstxt.org) standard at `/llms.txt` (a curated index of your best content) and `/llms-full.txt` (the full content concatenated as Markdown). LLMs and AI crawlers read these files first to understand your site. It is the file the standard asks for, and the one AI crawlers look for first. Brand identity and what goes in are set from the **AI Crawlers** tab.
 
 * **You choose what goes in.** Post types, maximum count, category and tag exclusions
 * **Multilingual ready.** Emits hreflang discovery links when WPML, Polylang, TranslatePress, Weglot or GTranslate is detected
@@ -320,6 +320,19 @@ Yes. RankReady is open source under GPL-2.0-or-later. The complete source ships 
 
 == Changelog ==
 
+= 1.4.2, 2026-10-21 =
+* Fix: AI generation failing with "your Claude model is unavailable" on a model that was current and selectable.
+* Fix: summaries and FAQs coming back empty or cut short on Claude's current models. If one came back empty before, generate it again. The new rnrd_max_output_tokens filter sets your own limit.
+* Fix: a failed generation now names the real reason, including a rejected key, a provider outage and running out of output length.
+* Fix: Verify Key on Claude tests the model your site is set to use, and the DeepSeek model list matches the models DeepSeek serves.
+* Fix: on LiteSpeed Cache, your own cache exclusion rules are kept.
+* Fix: API keys save reliably on a site whose wp-config.php is missing its auth salts.
+* Fix: the generation error log keeps every entry when failures land together. It still keeps the latest 50.
+* New: RankReady keeps you on the current model in the family you chose, so generation does not stop when a provider retires one. This is on after you update, and it can change the model your site generates with: a site saved on Claude Sonnet 5 will use Claude Sonnet 5.5. It stays inside the family you picked, so Haiku never becomes Opus. To stay on the exact model you chose, turn off Model updates under Settings, API Keys.
+* Change: new installs start on Claude Haiku 5.5. Older Claude IDs that Anthropic no longer serves, including the undated claude-haiku-4-5 and the Claude 3 and 4 IDs, now map to the current model in the same tier.
+* Change: better contrast and larger tap targets on the setup wizard checkboxes and the settings screens.
+* Pro: no Pro update is needed for any of this. Manual generation stays unlimited in the free plugin; Pro adds bulk and unattended runs.
+
 = 1.4.1, 2026-10-12 =
 * Fix: API Keys buttons now say how to fix a missing key instead of just reporting it.
 * Fix: the browser tab title names the current RankReady tab.
@@ -336,7 +349,6 @@ Yes. RankReady is open source under GPL-2.0-or-later. The complete source ships 
 * FAQ count clamps to 3-10.
 * Robots.txt screen: radios have labels and the state header stays visible.
 * OKF index no longer prints an empty dash for entries without a description.
-
 * Fixed: Server-rendered blocks, such as Latest Posts, reusable blocks and ACF blocks, now appear in your Markdown output and llms-full.txt.
 * Fixed: Cached Markdown now refreshes when a summary, FAQ, term or registered custom field changes, including on sites with Redis or Memcached.
 * Improved: Markdown cache hits no longer re-render builder pages.
@@ -471,6 +483,9 @@ Yes. RankReady is open source under GPL-2.0-or-later. The complete source ships 
 First public release. The AI-search layer for WordPress: unlimited manual AI Summaries and FAQ schema, llms.txt + llms-full.txt, Markdown endpoints, 29 AI-crawler controls with robots.txt sync, E-E-A-T + Article/Speakable schema (coexists with Rank Math / Yoast / AIOSEO without duplicate output), content freshness, Insights, broad cache-plugin compatibility, multilingual llms.txt, and a Diagnostics suite.
 
 == Upgrade Notice ==
+
+= 1.4.2 =
+Fixes AI summaries and FAQs coming back empty or cut off, and generation failing with a model-is-unavailable error. RankReady now keeps you on the current model in the family you picked, so the model your site uses can change. Turn Model updates off under Settings, API Keys to stay put.
 
 = 1.4.1 =
 Fixes server-rendered blocks missing from Markdown output and stale cached Markdown after summary, FAQ or custom field changes. No settings change needed, no data lost.

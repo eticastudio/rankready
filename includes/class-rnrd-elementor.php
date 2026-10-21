@@ -106,18 +106,6 @@ class RNRD_Elementor_Widget extends \Elementor\Widget_Base {
 	}
 
 	/**
-	 * Shared builder for the editor-panel "generate" control used by BOTH the
-	 * AI Summary and FAQ widgets — one markup, one JS handler, one CSS block, so
-	 * the two stay standardised. `$kind` ("summary"|"faq") tells the editor JS
-	 * which REST endpoints + labels to use; the label is resolved per-post at
-	 * runtime (Elementor caches RAW_HTML, so it can't be set per-post here).
-	 *
-	 * @since 1.0.30
-	 * @param string $kind          'summary' | 'faq'.
-	 * @param string $default_label Initial button text before JS resolves state.
-	 * @param string $hint          Small helper line under the button.
-	 */
-	/**
 	 * Editor-only placeholder for a widget that would otherwise render nothing, so it can be seen and
 	 * selected. Prints nothing on the front end and nothing in a preview that is not the Elementor editor.
 	 *
@@ -130,6 +118,18 @@ class RNRD_Elementor_Widget extends \Elementor\Widget_Base {
 		echo '<div class="rnrd-el-placeholder" style="padding:12px 14px;border:1px dashed #8c8f94;color:#50575e;font-size:13px;line-height:1.5">' . esc_html( $message ) . '</div>';
 	}
 
+	/**
+	 * Shared builder for the editor-panel "generate" control used by BOTH the
+	 * AI Summary and FAQ widgets — one markup, one JS handler, one CSS block, so
+	 * the two stay standardised. `$kind` ("summary"|"faq") tells the editor JS
+	 * which REST endpoints + labels to use; the label is resolved per-post at
+	 * runtime (Elementor caches RAW_HTML, so it can't be set per-post here).
+	 *
+	 * @since 1.0.30
+	 * @param string $kind          'summary' | 'faq'.
+	 * @param string $default_label Initial button text before JS resolves state.
+	 * @param string $hint          Small helper line under the button.
+	 */
 	public static function regen_control_html( string $kind, string $default_label, string $hint ): string {
 		return '<div class="rnrd-el-regen" data-rnrd-kind="' . esc_attr( $kind ) . '">'
 			. '<button type="button" class="elementor-button rnrd-el-regen__btn" data-idle-label="' . esc_attr( $default_label ) . '">' . esc_html( $default_label ) . '</button>'

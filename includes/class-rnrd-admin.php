@@ -93,12 +93,36 @@ class RNRD_Admin {
 		if ( ! current_user_can( 'manage_options' ) ) {
 			return;
 		}
-		$stored = (string) get_option( RNRD_OPT_INSTALLED_VERSION, '' );
-		if ( $stored !== RNRD_VERSION ) {
-			update_option( RNRD_OPT_INSTALLED_VERSION, RNRD_VERSION, false );
+		/*
+		 * Gated on this method's own marker, NOT on rnrd_installed_version.
+		 * rnrd_maybe_upgrade() runs on plugins_loaded and stamps that option
+		 * first, so by the time admin_init reaches here on a normal update it
+		 * already reads as current, and gating on it meant the saved-model
+		 * rewrite and its notice never ran for a site that updated in one
+		 * request. The marker below is written only after the loop has run.
+		 *
+		 * Everything below is upgrade work, so a site whose marker is already
+		 * on this version has nothing left to do and takes no further cost:
+		 * the marker is autoloaded, so this is a read from the options cache.
+		 * RNRD_LLM::get_model() applies migrate_model() at call time as well,
+		 * which is what actually protects a request in the meantime.
+		 */
+		if ( RNRD_VERSION === (string) get_option( 'rnrd_model_migration_ver', '' ) ) {
+			return;
 		}
 
 		if ( ! class_exists( 'RNRD_LLM' ) ) {
+			/*
+			 * Return WITHOUT stamping. RNRD_LLM is autoloaded (see the
+			 * spl_autoload_register in the main plugin file), so class_exists()
+			 * only fails when includes/class-rnrd-llm.php is genuinely absent:
+			 * a half-finished upload or a partially restored backup. Stamping
+			 * here would record "already migrated" for a version whose
+			 * migration never ran, and the guard above then skips it forever
+			 * once the file comes back. Retrying costs one autoloaded
+			 * get_option() and one class_exists() per admin page load, which
+			 * is cheaper than a saved model silently left on a retired ID.
+			 */
 			return;
 		}
 
@@ -108,6 +132,28 @@ class RNRD_Admin {
 			'gemini'    => RNRD_OPT_GEMINI_MODEL,
 			'deepseek'  => RNRD_OPT_DEEPSEEK_MODEL,
 		);
+
+		/*
+		 * Locked, and returning without stamping on failure for the same
+		 * reason as the two guards above. The notice queue is a
+		 * read-modify-write: two requests arriving on the same upgrade each
+		 * read it, each append their own lines, and the second write drops the
+		 * first set, so the admin is told about some of the model changes made
+		 * under them and not the rest. The migration beside it also rewrites
+		 * four provider options, so running it twice is wasted work on top.
+		 *
+		 * A request that cannot take the lock leaves the work to the next page
+		 * load rather than racing.
+		 */
+		$mig_token = null;
+		if ( class_exists( 'RNRD_Atomic' )
+			&& ! RNRD_Atomic::acquire_lock( 'rnrd_model_migration_lock', 60, $mig_token ) ) {
+			return;
+		}
+
+		// The other holder's queue landed in the database, not in this
+		// request's option cache.
+		wp_cache_delete( 'rnrd_model_migrations', 'options' );
 
 		$queued = (array) get_option( 'rnrd_model_migrations', array() );
 
@@ -129,6 +175,21 @@ class RNRD_Admin {
 
 		if ( ! empty( $queued ) ) {
 			update_option( 'rnrd_model_migrations', $queued, false );
+		}
+
+		/*
+		 * Stamped last, not first: a fatal anywhere in the loop above leaves
+		 * the marker old, so the next admin load retries. rnrd_installed_version
+		 * is deliberately left alone. It is the upgrade routine's "done"
+		 * signal (rnrd_maybe_upgrade() in rankready.php, under
+		 * rnrd_upgrade_lock), and this method holds a different lock, so a
+		 * stamp from here could land while another request was still part-way
+		 * through that routine and the rest of its migrations would never run.
+		 */
+		update_option( 'rnrd_model_migration_ver', RNRD_VERSION, true );
+
+		if ( null !== $mig_token ) {
+			RNRD_Atomic::release_lock( 'rnrd_model_migration_lock', $mig_token );
 		}
 	}
 
@@ -642,7 +703,7 @@ class RNRD_Admin {
 		register_setting( self::SETTINGS_GROUP, RNRD_OPT_ANTHROPIC_MODEL, array(
 			'type'              => 'string',
 			'sanitize_callback' => array( self::class, 'sanitize_provider_model' ),
-			'default'           => 'claude-haiku-4-5',
+			'default'           => 'claude-haiku-5-5',
 		) );
 
 		// Gemini key + model.
@@ -657,16 +718,32 @@ class RNRD_Admin {
 			'default'           => 'gemini-2.5-flash',
 		) );
 
+		/*
+		 * Auto-latest. Registered in SETTINGS_GROUP because the checkbox sits in
+		 * the AI card, which posts that group. Stored as '1'/'0' rather than a
+		 * bool so an unchecked box (which posts nothing) is distinguishable from
+		 * an install that has never seen the setting: the paired hidden input in
+		 * the markup always posts a value.
+		 */
+		register_setting( self::SETTINGS_GROUP, RNRD_LLM::OPT_AUTO_LATEST, array(
+			'type'              => 'string',
+			'sanitize_callback' => array( self::class, 'sanitize_bool_flag' ),
+			'default'           => '1',
+		) );
+
 		// DeepSeek key + model.
 		register_setting( self::SETTINGS_GROUP, RNRD_OPT_DEEPSEEK_KEY, array(
 			'type'              => 'string',
 			'sanitize_callback' => array( self::class, 'sanitize_deepseek_key' ),
 			'default'           => '',
 		) );
+		// 'deepseek-flash' not 'deepseek-v4-flash': the latter is the legacy name
+		// and this default had drifted away from RNRD_LLM::get_model()'s, so the
+		// two disagreed about what an unsaved install is running.
 		register_setting( self::SETTINGS_GROUP, RNRD_OPT_DEEPSEEK_MODEL, array(
 			'type'              => 'string',
 			'sanitize_callback' => array( self::class, 'sanitize_provider_model' ),
-			'default'           => 'deepseek-v4-flash',
+			'default'           => 'deepseek-flash',
 		) );
 
 		// v1.0.1 — These 8 options were previously registered against
@@ -1319,9 +1396,6 @@ class RNRD_Admin {
 		return implode( ',', array_unique( $valid ) );
 	}
 
-	/**
-	 * Sanitize revalidate secret. Preserves sentinel (don't change) and mask.
-	 */
 	/** 1.4.1 — refuse private, loopback and link-local webhook targets, with a visible message. */
 	public static function sanitize_revalidate_url( $value ): string {
 		$url = esc_url_raw( trim( (string) $value ) );
@@ -1340,6 +1414,9 @@ class RNRD_Admin {
 		return $url;
 	}
 
+	/**
+	 * Sanitize revalidate secret. Preserves sentinel (don't change) and mask.
+	 */
 	public static function sanitize_revalidate_secret( $value ): string {
 		$value = (string) $value;
 		if ( '__UNCHANGED__' === $value ) {
@@ -1496,8 +1573,15 @@ class RNRD_Admin {
 	}
 
 	/**
+	 * Checkbox flag sanitizer: anything truthy becomes '1', everything else '0'.
+	 */
+	public static function sanitize_bool_flag( $value ): string {
+		return ( '1' === (string) $value || 'on' === (string) $value || 'true' === (string) $value ) ? '1' : '0';
+	}
+
+	/**
 	 * Model ID sanitizer for every LLM provider (OpenAI, Anthropic, Gemini, DeepSeek).
-	 * Light validation only — no hard allowlist — so curated / future model IDs
+	 * Light validation only, no hard allowlist, so curated and future model IDs
 	 * save correctly without a plugin update.
 	 */
 	public static function sanitize_provider_model( $value ): string {
@@ -1745,6 +1829,41 @@ class RNRD_Admin {
 	}
 
 	/**
+	 * Sub-tab forced by legacy slug translation, or null when the URL decides.
+	 *
+	 * @since 1.4.2
+	 * @var string|null
+	 */
+	private static $forced_sub = null;
+
+	/**
+	 * The sub-tab to render.
+	 *
+	 * Replaces four copies of a raw sub-tab query read. render_page() used to
+	 * translate a legacy tab slug by WRITING into the query superglobal so the render
+	 * methods downstream would pick the value up. The value was always a
+	 * literal from legacy_tab_target()'s hardcoded map, so nothing unsafe ever
+	 * reached it, but mutating a superglobal makes that a property of today's
+	 * map rather than a guarantee, it leaves the request array disagreeing with the actual
+	 * request for every later reader including other plugins, and it is a
+	 * pattern wp.org reviewers flag on sight. Routing it through one accessor
+	 * keeps the URL read-only.
+	 *
+	 * @since 1.4.2
+	 * @param string $default Sub-tab to use when neither a forced value nor a
+	 *                        query argument is present.
+	 * @return string Sanitized sub-tab slug.
+	 */
+	private static function current_sub( string $default ): string {
+		if ( null !== self::$forced_sub ) {
+			return self::$forced_sub;
+		}
+
+		// phpcs:ignore WordPress.Security.NonceVerification.Recommended -- Read-only display routing; no state change.
+		return isset( $_GET['sub'] ) ? sanitize_key( wp_unslash( $_GET['sub'] ) ) : $default;
+	}
+
+	/**
 	 * Map a legacy top-level tab slug to its current tab + subtab.
 	 *
 	 * These slugs were real top-level tabs in earlier versions and are kept
@@ -1868,9 +1987,8 @@ class RNRD_Admin {
 		 */
 		$legacy_sub = self::legacy_tab_target( $active_tab );
 		if ( null !== $legacy_sub ) {
-			$active_tab = $legacy_sub['tab'];
-			// phpcs:ignore WordPress.Security.NonceVerification.Recommended -- display routing only.
-			$_GET['sub'] = $legacy_sub['sub'];
+			$active_tab        = $legacy_sub['tab'];
+			self::$forced_sub  = $legacy_sub['sub'];
 		}
 
 		// Redirect old tab slugs to new merged tabs (backward compat for bookmarks / links).
@@ -3114,8 +3232,7 @@ class RNRD_Admin {
 	 * AI Content tab — subtabs for Summary, FAQ, Author Box, and Schema.
 	 */
 	private static function render_tab_content(): void {
-		// phpcs:ignore WordPress.Security.NonceVerification.Recommended -- Read-only $_GET[sub] for sub-tab display routing.
-		$sub = isset( $_GET['sub'] ) ? sanitize_key( wp_unslash( $_GET['sub'] ) ) : 'summary';
+		$sub = self::current_sub( 'summary' );
 		$sub_tabs = array(
 			'summary' => __( 'AI Summary', 'rankready-ai-llm-seo' ),
 			'faq'     => __( 'AI FAQ', 'rankready-ai-llm-seo' ),
@@ -3420,8 +3537,7 @@ class RNRD_Admin {
 	// Each has its own sub-section header explaining the stage of the funnel.
 
 	private static function render_tab_insights(): void {
-		// phpcs:ignore WordPress.Security.NonceVerification.Recommended -- Read-only $_GET[sub] for sub-tab display routing.
-		$sub = isset( $_GET['sub'] ) ? sanitize_key( wp_unslash( $_GET['sub'] ) ) : 'bot-activity';
+		$sub = self::current_sub( 'bot-activity' );
 		$sub_tabs = array(
 			'bot-activity' => __( 'Training Bots', 'rankready-ai-llm-seo' ),
 			'citation'     => __( 'Answer-engine bots', 'rankready-ai-llm-seo' ),
@@ -4125,8 +4241,7 @@ class RNRD_Admin {
 	 * Settings tab — API Keys | Cloudflare | Advanced subtabs (mirrors Insights subnav pattern).
 	 */
 	private static function render_tab_settings(): void {
-		// phpcs:ignore WordPress.Security.NonceVerification.Recommended -- Read-only $_GET[sub] for sub-tab display routing.
-		$sub = isset( $_GET['sub'] ) ? sanitize_key( wp_unslash( $_GET['sub'] ) ) : 'api-keys';
+		$sub = self::current_sub( 'api-keys' );
 		$sub_tabs = array(
 			'api-keys'    => __( 'API Keys', 'rankready-ai-llm-seo' ),
 			'cloudflare' => __( 'Cloudflare', 'rankready-ai-llm-seo' ),
@@ -4377,7 +4492,17 @@ class RNRD_Admin {
 				};
 
 				$render_model_field = function ( $provider_id, $select_id, $option_name ) {
-					$cur     = RNRD_LLM::get_model( $provider_id );
+					/*
+					 * The SAVED pick, never the resolved one. This select's
+					 * name is the real option, so whatever renders as selected
+					 * is what the next "Save AI" writes. Rendering the
+					 * auto-latest result here turned a runtime resolution into
+					 * a silent one-way rewrite of the user's choice on any
+					 * save of this screen, for all four providers at once,
+					 * since every card is rendered and merely hidden. The
+					 * resolution is shown as text under the checkbox instead.
+					 */
+					$cur     = RNRD_LLM::get_saved_model( $provider_id );
 					$models  = RNRD_LLM::get_models_for( $provider_id );
 					?>
 					<div class="rnrd-input-action-row">
@@ -4522,6 +4647,51 @@ class RNRD_Admin {
 					</tr>
 				</table>
 			</div>
+
+			<?php
+			/*
+			 * One checkbox for all four providers, deliberately outside the
+			 * provider cards. The cards are all rendered and merely hidden with
+			 * inline CSS, so a checkbox inside each would put four inputs of
+			 * the same name in one form and the last one in the DOM would win
+			 * regardless of which card the user was looking at.
+			 */
+			$rnrd_auto_latest   = RNRD_LLM::auto_latest_enabled();
+			/*
+			 * Read this through the same accessor the select uses, so the two
+			 * can never disagree. A raw get_option() here also went blank on a
+			 * fresh install, where the option row does not exist yet and the
+			 * default lives in the accessor, which suppressed the line below
+			 * exactly when a new user would most want to see it.
+			 */
+			$rnrd_saved_model   = RNRD_LLM::get_saved_model( $active_provider );
+			$rnrd_resolved      = RNRD_LLM::get_model( $active_provider );
+			?>
+			<table class="form-table rnrd-form-table">
+				<tr>
+					<th scope="row"><?php esc_html_e( 'Model updates', 'rankready-ai-llm-seo' ); ?></th>
+					<td>
+						<input type="hidden" name="<?php echo esc_attr( RNRD_LLM::OPT_AUTO_LATEST ); ?>" value="0" />
+						<label for="rnrd_llm_auto_latest">
+							<input type="checkbox" id="rnrd_llm_auto_latest"
+							       name="<?php echo esc_attr( RNRD_LLM::OPT_AUTO_LATEST ); ?>"
+							       value="1" <?php checked( $rnrd_auto_latest ); ?> />
+							<?php esc_html_e( 'Always use the newest model in the family selected above', 'rankready-ai-llm-seo' ); ?>
+						</label>
+						<p class="description"><?php esc_html_e( 'Providers retire models on their own schedule. With this on, RankReady follows the provider\'s own model list and moves to the newest model in the same family, so generation keeps working without waiting for a plugin update. It never changes family, so it cannot move you from a cheaper tier onto a more expensive one, and it never picks a model the provider has already flagged for retirement. Turn it off to stay on exactly the model selected above.', 'rankready-ai-llm-seo' ); ?></p>
+						<?php if ( $rnrd_auto_latest && '' !== $rnrd_resolved && $rnrd_resolved !== $rnrd_saved_model && '' !== $rnrd_saved_model ) : ?>
+							<p class="description"><strong><?php
+								printf(
+									/* translators: 1: saved model ID, 2: model ID actually used */
+									esc_html__( 'Currently resolving %1$s to %2$s.', 'rankready-ai-llm-seo' ),
+									esc_html( $rnrd_saved_model ),
+									esc_html( $rnrd_resolved )
+								);
+							?></strong></p>
+						<?php endif; ?>
+					</td>
+				</tr>
+			</table>
 				<?php submit_button( __( 'Save AI', 'rankready-ai-llm-seo' ), 'primary', 'submit_ai', false ); ?>
 			</div><!-- /.rnrd-card "AI" (merged: Provider picker + Provider config) -->
 
@@ -5215,8 +5385,7 @@ class RNRD_Admin {
 	 * AI Visibility tab router — subtabs for machine-readable AI surfaces.
 	 */
 	private static function render_tab_llm(): void {
-		// phpcs:ignore WordPress.Security.NonceVerification.Recommended -- Read-only $_GET[sub] for sub-tab display routing.
-		$sub = isset( $_GET['sub'] ) ? sanitize_key( wp_unslash( $_GET['sub'] ) ) : 'brand';
+		$sub = self::current_sub( 'brand' );
 		$sub_tabs = array(
 			'brand'    => __( 'Brand Identity', 'rankready-ai-llm-seo' ),
 			'robots'   => __( 'Robots.txt', 'rankready-ai-llm-seo' ),
@@ -5641,7 +5810,7 @@ class RNRD_Admin {
 									'block'   => __( 'Block', 'rankready-ai-llm-seo' ),
 								);
 								?>
-								<fieldset style="max-height:460px;overflow-y:auto;overflow-x:auto;min-width:0;max-width:100%;box-sizing:border-box;border:1px solid #ddd;padding:12px 16px;border-radius:4px;">
+								<fieldset tabindex="0" role="region" aria-label="<?php echo esc_attr__( 'AI crawler access list', 'rankready-ai-llm-seo' ); ?>" style="max-height:460px;overflow-y:auto;overflow-x:auto;min-width:0;max-width:100%;box-sizing:border-box;border:1px solid #ddd;padding:12px 16px;border-radius:4px;">
 									<div class="rnrd-crawler-row rnrd-crawler-head" style="display:flex;align-items:center;gap:6px;margin:0 0 6px;position:sticky;top:-12px;z-index:2;background:#fff;padding:6px 0;">
 										<?php foreach ( $rnrd_states as $rnrd_key => $rnrd_label ) : ?>
 											<span style="flex:0 0 62px;text-align:center;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;color:#1d2327;"><?php echo esc_html( $rnrd_label ); ?></span>
@@ -5923,7 +6092,7 @@ class RNRD_Admin {
 												<input type="checkbox" name="<?php echo esc_attr( RNRD_OPT_LLMS_EXCLUDE_CATS ); ?>[]"
 													   value="<?php echo esc_attr( $cat->term_id ); ?>"
 													   <?php checked( in_array( (int) $cat->term_id, $exclude_cats, true ) ); ?> />
-												<?php echo esc_html( $cat->name ); ?> <span style="color:#999;">(<?php echo esc_html( $cat->count ); ?>)</span>
+												<?php echo esc_html( $cat->name ); ?> <span style="color:#646970;">(<?php echo esc_html( $cat->count ); ?>)</span>
 											</label>
 										<?php endforeach; ?>
 									</fieldset>
@@ -5950,7 +6119,7 @@ class RNRD_Admin {
 												<input type="checkbox" name="<?php echo esc_attr( RNRD_OPT_LLMS_EXCLUDE_TAGS ); ?>[]"
 													   value="<?php echo esc_attr( $tag->term_id ); ?>"
 													   <?php checked( in_array( (int) $tag->term_id, $exclude_tags, true ) ); ?> />
-												<?php echo esc_html( $tag->name ); ?> <span style="color:#999;">(<?php echo esc_html( $tag->count ); ?>)</span>
+												<?php echo esc_html( $tag->name ); ?> <span style="color:#646970;">(<?php echo esc_html( $tag->count ); ?>)</span>
 											</label>
 										<?php endforeach; ?>
 									</fieldset>
@@ -7418,14 +7587,6 @@ class RNRD_Admin {
 	// method was orphan code with no callers — full removal here.)
 
 	/**
-	 * Warn when plain permalinks are active.
-	 *
-	 * RankReady's virtual endpoints (llms.txt, llms-full.txt, *.md) rely on
-	 * WordPress rewrite rules which only work with pretty permalinks. When the
-	 * site uses the default ?p=123 structure, those endpoints return 404 and
-	 * LLM crawlers cannot access the content.
-	 */
-	/**
 	 * Remove third-party admin notices on RankReady's own settings screen only.
 	 *
 	 * WordPress fires admin_notices / all_admin_notices / user_admin_notices on every
@@ -7705,6 +7866,14 @@ class RNRD_Admin {
 		exit;
 	}
 
+	/**
+	 * Warn when plain permalinks are active.
+	 *
+	 * RankReady's virtual endpoints (llms.txt, llms-full.txt, *.md) rely on
+	 * WordPress rewrite rules which only work with pretty permalinks. When the
+	 * site uses the default ?p=123 structure, those endpoints return 404 and
+	 * LLM crawlers cannot access the content.
+	 */
 	public static function permalink_notice(): void {
 		$screen = get_current_screen();
 		if ( ! $screen || 'toplevel_page_' . self::MENU_SLUG !== $screen->id ) {
@@ -7802,7 +7971,7 @@ class RNRD_Admin {
 		$show_faq     = ! empty( $faq_types ) && in_array( $post_type, $faq_types, true );
 
 		if ( ! $show_summary && ! $show_faq ) {
-			echo '<span style="color:#999;">—</span>';
+			echo '<span style="color:#646970;">—</span>';
 			return;
 		}
 
@@ -7817,9 +7986,9 @@ class RNRD_Admin {
 			if ( $disabled ) {
 				$lines[] = '<span style="color:#d63638;" title="' . esc_attr__( 'Disabled for this post', 'rankready-ai-llm-seo' ) . '">' . esc_html__( 'Summary: off', 'rankready-ai-llm-seo' ) . '</span>';
 			} elseif ( ! empty( $summary ) ) {
-				$lines[] = '<span style="color:#00a32a;white-space:nowrap;" title="' . esc_attr__( 'Summary generated', 'rankready-ai-llm-seo' ) . '">' . esc_html__( 'Summary:', 'rankready-ai-llm-seo' ) . ' ' . '<span class="dashicons dashicons-yes" style="font-size:17px;width:17px;height:17px;line-height:1.1;vertical-align:text-bottom;" aria-hidden="true"></span></span>';
+				$lines[] = '<span style="color:#007a1f;white-space:nowrap;" title="' . esc_attr__( 'Summary generated', 'rankready-ai-llm-seo' ) . '">' . esc_html__( 'Summary:', 'rankready-ai-llm-seo' ) . ' ' . '<span class="dashicons dashicons-yes" style="font-size:17px;width:17px;height:17px;line-height:1.1;vertical-align:text-bottom;" aria-hidden="true"></span></span>';
 			} else {
-				$lines[] = '<span style="color:#999;" title="' . esc_attr__( 'No summary yet', 'rankready-ai-llm-seo' ) . '">' . esc_html__( 'Summary: —', 'rankready-ai-llm-seo' ) . '</span>';
+				$lines[] = '<span style="color:#646970;" title="' . esc_attr__( 'No summary yet', 'rankready-ai-llm-seo' ) . '">' . esc_html__( 'Summary: —', 'rankready-ai-llm-seo' ) . '</span>';
 			}
 		}
 
@@ -7827,9 +7996,9 @@ class RNRD_Admin {
 			if ( $faq_off ) {
 				$lines[] = '<span style="color:#d63638;" title="' . esc_attr__( 'Disabled for this post', 'rankready-ai-llm-seo' ) . '">' . esc_html__( 'FAQ: off', 'rankready-ai-llm-seo' ) . '</span>';
 			} elseif ( ! empty( $faq ) ) {
-				$lines[] = '<span style="color:#00a32a;white-space:nowrap;" title="' . esc_attr__( 'FAQ generated', 'rankready-ai-llm-seo' ) . '">' . esc_html__( 'FAQ:', 'rankready-ai-llm-seo' ) . ' ' . '<span class="dashicons dashicons-yes" style="font-size:17px;width:17px;height:17px;line-height:1.1;vertical-align:text-bottom;" aria-hidden="true"></span></span>';
+				$lines[] = '<span style="color:#007a1f;white-space:nowrap;" title="' . esc_attr__( 'FAQ generated', 'rankready-ai-llm-seo' ) . '">' . esc_html__( 'FAQ:', 'rankready-ai-llm-seo' ) . ' ' . '<span class="dashicons dashicons-yes" style="font-size:17px;width:17px;height:17px;line-height:1.1;vertical-align:text-bottom;" aria-hidden="true"></span></span>';
 			} else {
-				$lines[] = '<span style="color:#999;" title="' . esc_attr__( 'No FAQ yet', 'rankready-ai-llm-seo' ) . '">' . esc_html__( 'FAQ: —', 'rankready-ai-llm-seo' ) . '</span>';
+				$lines[] = '<span style="color:#646970;" title="' . esc_attr__( 'No FAQ yet', 'rankready-ai-llm-seo' ) . '">' . esc_html__( 'FAQ: —', 'rankready-ai-llm-seo' ) . '</span>';
 			}
 		}
 
@@ -7845,7 +8014,7 @@ class RNRD_Admin {
 			 * enqueued by core on every admin screen, costs this plugin nothing,
 			 * and is explicitly allowed by the no-emoji rule.
 			 */
-			$lines[] = '<span style="color:#dba617;white-space:nowrap;" title="' . esc_attr__( 'Excluded from llms.txt, Markdown, OKF, and MCP', 'rankready-ai-llm-seo' ) . '"><span class="dashicons dashicons-warning" style="font-size:15px;width:15px;height:15px;line-height:1.3;vertical-align:text-bottom;" aria-hidden="true"></span> ' . esc_html__( 'Excluded from AI', 'rankready-ai-llm-seo' ) . '</span>';
+			$lines[] = '<span style="color:#8a5a00;white-space:nowrap;" title="' . esc_attr__( 'Excluded from llms.txt, Markdown, OKF, and MCP', 'rankready-ai-llm-seo' ) . '"><span class="dashicons dashicons-warning" style="font-size:15px;width:15px;height:15px;line-height:1.3;vertical-align:text-bottom;" aria-hidden="true"></span> ' . esc_html__( 'Excluded from AI', 'rankready-ai-llm-seo' ) . '</span>';
 		}
 
 		// phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- all values escaped above

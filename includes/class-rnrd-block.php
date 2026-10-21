@@ -90,8 +90,25 @@ class RNRD_Block {
 	// ── Assets ────────────────────────────────────────────────────────────────
 
 	public static function enqueue_editor_assets(): void {
+		/*
+		 * rnrd-block-data carries no file. It exists only to hold the
+		 * rnrdBlockData payload, and all three block scripts depend on it.
+		 *
+		 * The payload used to be localized onto rnrd-block-editor while
+		 * faq-block.js and author-box-block.js read window.rnrdBlockData at
+		 * their own top level, on separate handles that did not depend on it.
+		 * That worked only because WordPress happened to print the three in
+		 * enqueue order: nothing enforced it, and a theme or plugin that
+		 * dequeued or reordered rnrd-block-editor left the other two reading
+		 * an empty object, silently losing their labels, their feature hints
+		 * and the author picker's user list with no console error. A real
+		 * dependency cannot be printed out of order, and the data now prints
+		 * once no matter how many scripts read it.
+		 */
+		wp_register_script( 'rnrd-block-data', false, array( 'rnrd-i18n' ), rnrd_asset_ver( 'assets/block.js' ), true );
+
 		$deps = array(
-			'rnrd-i18n',
+			'rnrd-i18n', 'rnrd-block-data',
 			'wp-blocks', 'wp-element', 'wp-block-editor',
 			'wp-components', 'wp-data', 'wp-api-fetch', 'wp-i18n',
 		);
@@ -131,7 +148,7 @@ class RNRD_Block {
 			$users_data[] = array( 'id' => (int) $u->ID, 'name' => $u->display_name );
 		}
 
-		wp_localize_script( 'rnrd-block-editor', 'rnrdBlockData', array(
+		wp_localize_script( 'rnrd-block-data', 'rnrdBlockData', array(
 			'i18n'     => self::editor_js_i18n(),
 			'defaults' => array(
 				'label'         => (string) get_option( RNRD_OPT_LABEL, __( 'Key Takeaways', 'rankready-ai-llm-seo' ) ),
@@ -281,6 +298,19 @@ class RNRD_Block {
 		'aboutTheAuthor'                => __( 'About the Author', 'rankready-ai-llm-seo' ),
 		'authorBlockTitle'              => __( 'Author Box — RankReady', 'rankready-ai-llm-seo' ),
 		'authorBlockDescription'        => __( 'Author box with name, job title, employer, bio and headshot from the user profile fields added by RankReady. A basic Person JSON-LD node for the same fields is published on author archive pages. Profile links, topics, credentials, memberships, awards and the extended Person schema are part of RankReady Pro.', 'rankready-ai-llm-seo' ),
+		/*
+		 * Editor-only hints telling the author why a block renders nothing on the
+		 * front end. These shipped with a JS fallback but no PHP definition, so
+		 * they were untranslatable in every locale. Caught by check.sh section 4b.
+		 */
+		'openPostToGenerate'            => __( 'Open a post to generate', 'rankready-ai-llm-seo' ),
+		/* translators: 1: feature name, e.g. "AI Summary". 2: settings tab name, e.g. "Summary". */
+		'featureOffHint'                => __( '%1$s is off. Turn it on in AI Content, then %2$s.', 'rankready-ai-llm-seo' ),
+		/* translators: 1: feature name, e.g. "AI Summary". 2: settings tab name, e.g. "Summary". */
+		'typeOffHint'                   => __( '%1$s is not enabled for this post type. Turn it on in AI Content, then %2$s, Post types.', 'rankready-ai-llm-seo' ),
+		'authorOffHint'                 => __( 'Author Box is off. Turn it on in AI Content, then Author Box.', 'rankready-ai-llm-seo' ),
+		'authorTypeOffHint'             => __( 'Author Box is not enabled for this post type. Turn it on in AI Content, then Author Box, Post types.', 'rankready-ai-llm-seo' ),
+		'authorFromPost'                => __( 'Shows the author of the post this block is on.', 'rankready-ai-llm-seo' ),
 		// Shared inspector / typography (summary + FAQ + author box).
 		'themeDefault'                  => __( '— Theme default —', 'rankready-ai-llm-seo' ),
 		'inherit'                       => __( '— Inherit —', 'rankready-ai-llm-seo' ),

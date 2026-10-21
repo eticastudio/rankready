@@ -69,8 +69,12 @@ class RNRD_Agent_Dashboard {
 		$surfaces_on     = class_exists( 'RNRD_Crawler_Log' ) && RNRD_Crawler_Log::has_loggable_endpoints();
 		$training_active = $training_on && $surfaces_on;
 		$citation_active = $citation_on && $surfaces_on;
-		$training        = $training_active ? self::sum_bot_intent( 'training' ) : 0;
-		$citation        = $citation_active ? self::sum_bot_intent( 'citation' ) : 0;
+		// One aggregate over the crawler log feeds both KPIs; it was run twice.
+		$bot_rows        = ( $training_active || $citation_active ) && class_exists( 'RNRD_Crawler_Log' )
+			? (array) RNRD_Crawler_Log::get_bot_stats( 30 )
+			: array();
+		$training        = $training_active ? self::sum_bot_intent( 'training', $bot_rows ) : 0;
+		$citation        = $citation_active ? self::sum_bot_intent( 'citation', $bot_rows ) : 0;
 		$referral_on = 'on' === get_option( RNRD_OPT_AI_REFERRAL_ENABLE, 'on' );
 		$referrals = ( $referral_on && class_exists( 'RNRD_AI_Referral' ) ) ? (int) RNRD_AI_Referral::total_last_n_days( 30 ) : 0;
 		?>
@@ -147,15 +151,17 @@ class RNRD_Agent_Dashboard {
 
 	/**
 	 * Sum the last-30-day hit totals for every logged bot whose intent matches
-	 * $intent ('training' | 'citation'). Returns 0 when the crawler log is
-	 * unavailable.
+	 * $intent ('training' | 'citation') from the rows RNRD_Crawler_Log::get_bot_stats()
+	 * returned. Returns 0 when the crawler log is unavailable.
+	 *
+	 * @param array<int, array<string, mixed>> $rows Per-bot stat rows, fetched once by the caller.
 	 */
-	private static function sum_bot_intent( string $intent ): int {
+	private static function sum_bot_intent( string $intent, array $rows ): int {
 		if ( ! class_exists( 'RNRD_Crawler_Log' ) ) {
 			return 0;
 		}
 		$sum = 0;
-		foreach ( (array) RNRD_Crawler_Log::get_bot_stats( 30 ) as $row ) {
+		foreach ( $rows as $row ) {
 			$bot = isset( $row['bot_name'] ) ? (string) $row['bot_name'] : '';
 			if ( '' !== $bot && RNRD_Crawler_Log::bot_intent( $bot ) === $intent ) {
 				$sum += isset( $row['total'] ) ? (int) $row['total'] : 0;

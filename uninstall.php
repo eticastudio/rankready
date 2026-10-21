@@ -242,6 +242,7 @@ if ( ! function_exists( 'rnrd_uninstall_site' ) ) {
 
 			// v1.1.1+ — "What's new" banner version tracker.
 			'rnrd_installed_version',
+			'rnrd_model_migration_ver',
 
 			// AI Summary.
 			'rnrd_openai_api_key',

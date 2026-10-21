@@ -283,12 +283,45 @@ class RNRD_Cache {
 		// Without this, a cold-cache /llms.txt request gets a stale HTML
 		// response from disk and our headers never fire. (Audit C2.)
 		if ( defined( 'LSCWP_V' ) || defined( 'LITESPEED_VERSION' ) ) {
+			/*
+			 * Locked, and this is the one read-modify-write here that can lose
+			 * somebody else's data rather than our own. The row belongs to
+			 * LiteSpeed Cache: a merge computed from a stale read and written
+			 * back drops any exclusion added in between, whether that came
+			 * from a second RankReady save or from the user's own LSCWP
+			 * settings screen. The user then has a cache rule they entered
+			 * and we silently removed, with nothing in our UI to explain it.
+			 *
+			 * Reading inside the lock is the whole point, so the read is
+			 * repeated past the option cache after the lock is taken. The
+			 * write still happens on a failed lock, because skipping it would
+			 * leave the endpoint exclusions missing entirely and serve stale
+			 * HTML for /llms.txt, which is the bug this block exists to stop.
+			 */
+			$ls_token  = null;
+			$ls_locked = false;
+			if ( class_exists( 'RNRD_Atomic' ) ) {
+				for ( $attempt = 0; $attempt < 3; $attempt++ ) {
+					$ls_locked = RNRD_Atomic::acquire_lock( 'rnrd_lscache_exc_lock', 15, $ls_token );
+					if ( $ls_locked ) {
+						break;
+					}
+					usleep( 50000 );
+				}
+			}
+
+			wp_cache_delete( 'litespeed.conf.cache-exc', 'options' );
+
 			$existing = (array) get_option( 'litespeed.conf.cache-exc', array() );
 			$merged   = array_values( array_unique( array_merge( $existing, $patterns ) ) );
 			if ( $merged !== $existing ) {
 				update_option( 'litespeed.conf.cache-exc', $merged );
 				// phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- LiteSpeed Cache published action; must use its name to integrate.
 				do_action( 'litespeed_purge_all' );
+			}
+
+			if ( $ls_locked ) {
+				RNRD_Atomic::release_lock( 'rnrd_lscache_exc_lock', $ls_token );
 			}
 		}
 

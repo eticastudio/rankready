@@ -574,6 +574,20 @@ class RNRD_Rest {
 	 * Public since 1.4.0 so Pro's bulk runner can show the same reason per post.
 	 */
 	public static function friendly_generation_error( string $raw ): string {
+		/*
+		 * Some failures are already written for the user, with the remedy in
+		 * them. RNRD_LLM marks those with a prefix and this returns them whole.
+		 * Needle-matching their text instead cannot work: the message is
+		 * translated before it reaches here, so an English needle misses every
+		 * non-English site. Without this they fell through to the raw fallback
+		 * at the bottom, which truncates at 199 characters and cut the remedy
+		 * off the end of the longest one.
+		 */
+		$ready = class_exists( 'RNRD_LLM' ) ? RNRD_LLM::friendly_error_text( $raw ) : '';
+		if ( '' !== $ready ) {
+			return $ready;
+		}
+
 		$low      = strtolower( $raw );
 		$provider = class_exists( 'RNRD_LLM' )
 			? RNRD_LLM::get_provider_label( RNRD_LLM::get_active_provider() )
@@ -601,14 +615,70 @@ class RNRD_Rest {
 			return sprintf( __( '%s says the account is out of credits or rate-limited. Check your usage/billing on the provider dashboard, then try again.', 'rankready-ai-llm-seo' ), $provider );
 		}
 
-		// Auth / invalid key.
-		if ( $has( array( 'invalid api key', 'invalid_api_key', 'invalid key', 'incorrect api key', 'unauthorized', 'authentication', 'permission', '401', '403' ) ) ) {
+		/*
+		 * Auth / invalid key.
+		 *
+		 * `api key not valid` and `api_key_invalid` are Google's wording and
+		 * were both missing, which is how a live probe on 2026-10-20 with a
+		 * deliberately wrong Gemini key ended up showing the visitor-facing
+		 * notice the entire raw 400 JSON body instead of "the key was
+		 * rejected". Google also answers 400 rather than 401 for a bad key, so
+		 * the status-code needles never caught it either. The other three
+		 * providers were already covered: Anthropic says `invalid x-api-key`
+		 * with type `authentication_error`, OpenAI says `Incorrect API key
+		 * provided`, DeepSeek says `Authentication Fails`.
+		 */
+		if ( $has( array( 'invalid api key', 'invalid_api_key', 'invalid key', 'incorrect api key', 'api key not valid', 'api_key_invalid', 'api key expired', 'expired api key', 'unauthorized', 'authentication', 'permission', '401', '403' ) ) ) {
 			/* translators: %s: AI provider name. */
 			return sprintf( __( '%s rejected the API key. Re-check it under RankReady → Settings → API Keys.', 'rankready-ai-llm-seo' ), $provider );
 		}
 
-		// Model unavailable / retired.
-		if ( $has( array( 'model' ) ) && $has( array( 'not found', 'does not exist', 'deprecat', 'unavailable', 'not supported' ) ) ) {
+		/*
+		 * Rejected sampling parameter. Checked BEFORE the model branch below,
+		 * which used to claim the answer: Anthropic's current models reject a
+		 * non-default `temperature` with a 400 whose body names both the
+		 * parameter and the model, so the model branch matched first and told
+		 * the user to pick a different model. Every model they could pick
+		 * failed the same way, so the advice sent them in a circle while their
+		 * key, their billing and their model were all fine. The provider
+		 * clients retry without the parameter, so reaching this message means
+		 * the retry failed too and the parameter is worth naming.
+		 */
+		if ( $has( array( 'temperature', 'top_p', 'top_k', 'frequency_penalty' ) ) ) {
+			/* translators: %s: AI provider name. */
+			return sprintf( __( '%s rejected one of the generation settings this request sent. Update RankReady to the latest version, then try again.', 'rankready-ai-llm-seo' ), $provider );
+		}
+
+		/*
+		 * Provider outage / overload.
+		 *
+		 * Checked BEFORE the model branch, and the order is the whole point.
+		 * Anthropic answers 529 `overloaded_error`, OpenAI and DeepSeek answer
+		 * 503 "the server is overloaded", and Gemini answers 503 "The model is
+		 * overloaded. Please try again later." That Gemini body carries both
+		 * `model` and, in some variants, `unavailable`, so the model branch
+		 * below used to claim it and tell the user to pick a different model.
+		 * Every model they picked was overloaded too, which is the same circle
+		 * the sampling-parameter bug sent them round. Without this branch the
+		 * whole class fell through to the raw fallback, so an outage showed the
+		 * visitor-facing notice a line of provider JSON.
+		 *
+		 * Deliberately no bare `500`: $has matches a digit run as a whole
+		 * number, and "500" occurs in token counts and request ids. The named
+		 * codes below do not collide that way in practice, and the text
+		 * needles catch the rest.
+		 *
+		 * Also sits AFTER the quota/rate-limit branch: a 429 is the account's
+		 * own limit, not an outage, and it has its own remedy.
+		 */
+		if ( $has( array( 'overloaded', 'overloaded_error', 'service unavailable', 'service_unavailable', 'bad gateway', 'gateway timeout', 'internal server error', 'temporarily unavailable', '529', '503', '502', '504' ) ) ) {
+			/* translators: %s: AI provider name. */
+			return sprintf( __( '%s is temporarily overloaded or down. Nothing is wrong with your key or your model. Try again in a few minutes.', 'rankready-ai-llm-seo' ), $provider );
+		}
+
+		// Model unavailable / retired. `not_found` matches Anthropic's
+		// `not_found_error` type, which the spaced 'not found' never did.
+		if ( $has( array( 'model' ) ) && $has( array( 'not found', 'not_found', 'does not exist', 'deprecat', 'unavailable', 'not supported' ) ) ) {
 			/* translators: %s: AI provider name. */
 			return sprintf( __( 'The selected %s model is unavailable. Pick a current model under RankReady → Settings → API Keys.', 'rankready-ai-llm-seo' ), $provider );
 		}
@@ -625,8 +695,20 @@ class RNRD_Rest {
 			return sprintf( __( '%s returned an unexpected response. Try again in a moment.', 'rankready-ai-llm-seo' ), $provider );
 		}
 
-		// Fallback — show the raw provider error if we have one, else generic.
-		if ( '' !== trim( $raw ) ) {
+		/*
+		 * Fallback — show the raw provider error if we have one, else generic.
+		 *
+		 * Collapsed to a single line and capped before it goes out. Providers
+		 * answer with pretty-printed JSON, and the admin notice this lands in
+		 * is one line: an uncollapsed body pushed the useful first clause off
+		 * screen behind twelve lines of braces. The text is not changed, only
+		 * its whitespace, so nothing is hidden from whoever is debugging.
+		 */
+		$raw = trim( preg_replace( '/\s+/', ' ', $raw ) );
+		if ( '' !== $raw ) {
+			if ( mb_strlen( $raw ) > 200 ) {
+				$raw = mb_substr( $raw, 0, 199 ) . '…';
+			}
 			/* translators: %s: the raw error returned by the AI provider. */
 			return sprintf( __( 'AI generation failed: %s', 'rankready-ai-llm-seo' ), $raw );
 		}
@@ -1393,6 +1475,29 @@ class RNRD_Rest {
 	// follow-up — kept narrow here to not reshape working UI.
 	// ══════════════════════════════════════════════════════════════════════════
 
+	/**
+	 * Output ceiling for a key-verification probe, safe when RNRD_LLM is gone.
+	 *
+	 * The probe closures below already refuse to call RNRD_LLM::get_model()
+	 * without checking the class is there, because it is autoloaded and so is
+	 * absent exactly when includes/class-rnrd-llm.php is: a half-finished
+	 * upload or a partly restored backup. Reading the ceiling through
+	 * RNRD_LLM in the same breath threw that away, since the unguarded call
+	 * fatals in the one case the guard upstairs exists for, and it does it
+	 * inside a REST handler. The fallback is the same 64 the call asks for,
+	 * so a site in that state gets a verify result instead of a 500.
+	 *
+	 * @param int $default Ceiling to fall back to.
+	 * @return int
+	 */
+	private static function verify_output_budget( int $default ): int {
+		if ( ! class_exists( 'RNRD_LLM' ) || ! method_exists( 'RNRD_LLM', 'output_budget' ) ) {
+			return $default;
+		}
+
+		return (int) RNRD_LLM::output_budget( $default, 'verify' );
+	}
+
 	public static function verify_api_key( $request ) {
 		$key      = (string) $request->get_param( 'key' );
 		$provider = sanitize_key( (string) $request->get_param( 'provider' ) );
@@ -1425,7 +1530,9 @@ class RNRD_Rest {
 							'model'                 => $model,
 							// GPT-5.x reasoning counts against this budget; 1 is too
 							// low and returns "max_tokens or model output limit".
-							'max_completion_tokens' => 64,
+							// Filterable with the rest of the ceilings so a site
+							// whose models need more room can raise this one too.
+							'max_completion_tokens' => self::verify_output_budget( 64 ),
 							'messages'              => array( array( 'role' => 'user', 'content' => 'hi' ) ),
 						) ),
 					) );
@@ -1433,7 +1540,27 @@ class RNRD_Rest {
 			),
 			'anthropic' => array(
 				'verify'  => function ( $key, $model = '' ) {
-					// Tiny messages call — `model` is required, 1-token output keeps cost trivial.
+					/*
+					 * Probe the model the site will actually generate with, the
+					 * same way the OpenAI branch above does, so Verify fails
+					 * loudly when generation would fail.
+					 *
+					 * This used to send the literal 'claude-haiku-4-5'. Anthropic
+					 * publishes no evergreen alias, so that was a pinned snapshot
+					 * with a retirement date, and its published commitment ("not
+					 * sooner than October 15, 2026") has now passed. Once that ID
+					 * is withdrawn, a hardcoded probe reports every correct key as
+					 * invalid, and the one thing the user would change is the one
+					 * thing that was never wrong. Resolving it keeps Verify
+					 * truthful across model generations with no release.
+					 */
+					$model = sanitize_text_field( (string) $model );
+					if ( '' === $model && class_exists( 'RNRD_LLM' ) && method_exists( 'RNRD_LLM', 'get_model' ) ) {
+						$model = RNRD_LLM::get_model( RNRD_LLM::PROVIDER_ANTHROPIC );
+					}
+					if ( '' === $model ) {
+						$model = 'claude-haiku-5-5';
+					}
 					return wp_remote_post( 'https://api.anthropic.com/v1/messages', array(
 						'timeout' => 15,
 						'headers' => array(
@@ -1441,12 +1568,13 @@ class RNRD_Rest {
 							'anthropic-version' => '2023-06-01',
 							'content-type'      => 'application/json',
 						),
-						// Cheapest valid Anthropic ID for an auth probe. Update
-						// this when Haiku ships a new generation — Anthropic
-						// has no evergreen alias, every ID is a pinned snapshot.
 						'body' => wp_json_encode( array(
-							'model'      => 'claude-haiku-4-5',
-							'max_tokens' => 1,
+							'model' => $model,
+							// Reasoning counts against this budget, so 1 token
+							// would come back truncated on a current model. Same
+							// reason the OpenAI probe above uses 64, and the same
+							// 'verify' filter context.
+							'max_tokens' => self::verify_output_budget( 64 ),
 							'messages'   => array( array( 'role' => 'user', 'content' => 'hi' ) ),
 						) ),
 					) );

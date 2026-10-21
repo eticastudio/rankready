@@ -52,7 +52,9 @@ class RNRD_Welcome {
 		add_action( 'admin_menu',  array( self::class, 'register_page' ) );
 		add_action( 'admin_init',  array( self::class, 'maybe_redirect' ) );
 		add_action( 'admin_init',  array( self::class, 'maybe_handle_submit' ) );
-		add_action( 'admin_init',  array( self::class, 'maybe_migrate_tips_flag' ) );
+		// maybe_migrate_tips_flag() is no longer hooked: it ran one SELECT on every
+		// admin request. The legacy flag is dropped once by the 1.4.2 upgrade routine
+		// in rankready.php. The method stays, as a public static contract.
 		add_action( 'admin_enqueue_scripts', array( self::class, 'enqueue_assets' ) );
 	}
 

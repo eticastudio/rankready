@@ -12,6 +12,13 @@ class RNRD_Generator {
 	/** Minimum seconds between API calls for the same post. */
 	private const MIN_INTERVAL = 30;
 
+	/**
+	 * Fewest words (title included) worth sending to the model. The manual REST
+	 * endpoint has always refused below this; every other route into the model
+	 * now shares the same bar, so an unreadable body cannot reach the provider.
+	 */
+	public const MIN_WORDS = 25;
+
 	public static function init(): void {
 		// NOTE: the save_post-driven auto-generation hook (`schedule_generation`)
 		// is a Pro engine. It is NOT registered here — the Pro add-on
@@ -143,6 +150,24 @@ class RNRD_Generator {
 	public static function mark_autogen_failed( string $kind, int $post_id, string $detail ): void {
 		delete_transient( 'rnrd_autogen_' . $kind . '_' . $post_id );
 		$detail = trim( wp_strip_all_tags( $detail ) );
+
+		/*
+		 * Our own finished message first, recognised by its marker. This
+		 * transient is printed straight into the metabox, so the marker is
+		 * user-visible from here, and these messages are written to END in the
+		 * remedy, which is exactly the half a 300-character cut removes. The
+		 * truncation notice is 394 characters: the user was shown
+		 * "[rnrd:ready] The model ran out of output length ... leaves more r"
+		 * and never got to "a developer can raise the ceiling". RNRD_Rest
+		 * stripped the marker on its own path, which is why this went unseen
+		 * on the one path that has no REST response to strip it.
+		 */
+		$ready = class_exists( 'RNRD_LLM' ) ? RNRD_LLM::friendly_error_text( $detail ) : '';
+		if ( '' !== $ready ) {
+			set_transient( 'rnrd_autogen_err_' . $kind . '_' . $post_id, $ready, 10 * MINUTE_IN_SECONDS );
+			return;
+		}
+
 		// Providers answer errors with a JSON body ("DeepSeek HTTP 401: {"error":
 		// {"message":"..."}}"). A person should read the message, not the braces.
 		if ( preg_match( '/^(.*?HTTP\s+\d{3}):\s*(\{.*\})\s*$/s', $detail, $m ) ) {
@@ -162,7 +187,16 @@ class RNRD_Generator {
 		if ( '' === $detail ) {
 			$detail = __( 'The AI provider did not return a usable answer. Try again in a moment.', 'rankready-ai-llm-seo' );
 		}
-		set_transient( 'rnrd_autogen_err_' . $kind . '_' . $post_id, mb_substr( $detail, 0, 300 ), 10 * MINUTE_IN_SECONDS );
+		// A raw provider blob still gets a hard cap, on a word boundary so it
+		// does not end mid-word. Only our own messages above are kept whole,
+		// because only those have a known author and a known length.
+		if ( mb_strlen( $detail ) > 300 ) {
+			$clipped = mb_substr( $detail, 0, 300 );
+			$space   = mb_strrpos( $clipped, ' ' );
+			$detail  = ( false !== $space && $space > 200 ) ? mb_substr( $clipped, 0, $space ) : $clipped;
+		}
+
+		set_transient( 'rnrd_autogen_err_' . $kind . '_' . $post_id, $detail, 10 * MINUTE_IN_SECONDS );
 	}
 
 	/**
@@ -246,7 +280,15 @@ class RNRD_Generator {
 
 		try {
 			$content = self::get_content_string( $post );
-			$result  = self::call_openai( $content, $post );
+			// A body that could not be read must not reach the model: its answer
+			// would replace a good stored summary. Nothing is written, so
+			// maybe_schedule() tries this post again once the body is readable.
+			if ( self::is_thin_content( $content ) ) {
+				self::$last_error = self::thin_content_message();
+				$result           = false;
+			} else {
+				$result = self::call_openai( $content, $post );
+			}
 		} finally {
 			RNRD_Atomic::release_lock( $lock_name, $lock_token );
 		}
@@ -295,6 +337,16 @@ class RNRD_Generator {
 
 		$content  = self::get_content_string( $post );
 		$new_hash = md5( $content );
+
+		// Same bar as the manual endpoint. Without it a body that failed to
+		// resolve (builder meta that did not render, a shortcode that returned
+		// nothing) sent the title alone to the model and the answer replaced a
+		// good stored summary. Bulk and Start Over both come through here.
+		if ( self::is_thin_content( $content ) ) {
+			self::$last_error = self::thin_content_message();
+			self::log_error( 'Generator', self::$last_error, $post_id );
+			return false;
+		}
 
 		// Skip if content unchanged and summary already exists.
 		if ( $skip_unchanged ) {
@@ -417,7 +469,9 @@ Blog Post:
 		);
 
 		$result = RNRD_LLM::generate( $system_prompt, $user_prompt, array(
-			'max_tokens'  => 500,
+			// See RNRD_LLM::output_budget(): 500 truncated about half of all
+			// summaries once the resolver moved users onto a reasoning model.
+			'max_tokens'  => RNRD_LLM::output_budget( 2500, 'summary' ),
 			'temperature' => 0.2,
 			'json'        => true,
 			'timeout'     => 25,
@@ -507,7 +561,11 @@ Blog Post:
 			'You reply with the single word OK.',
 			'Reply with OK only.',
 			array(
-				'max_tokens'  => 5,
+				// 5 is enough for "OK" on the 4.x line and was measured fine on
+				// Haiku 5.5 too, but a model that reasons first would spend the
+				// whole budget thinking and report a working key as broken. The
+				// ceiling costs nothing when the answer really is two letters.
+				'max_tokens'  => RNRD_LLM::output_budget( 256, 'ping' ),
 				'temperature' => 0.0,
 				'json'        => false,
 				'timeout'     => 10,
@@ -518,6 +576,15 @@ Blog Post:
 	}
 
 	// ── Helpers ───────────────────────────────────────────────────────────────
+
+	public static function is_thin_content( string $content ): bool {
+		$words = preg_match_all( '/\S+/', $content );
+		return ( false === $words ? 0 : $words ) < self::MIN_WORDS;
+	}
+
+	private static function thin_content_message(): string {
+		return __( 'Not enough readable content to summarise. The existing summary was left unchanged.', 'rankready-ai-llm-seo' );
+	}
 
 	public static function get_content_string( $post ): string {
 		// issue #9 — page builders (Elementor etc.) leave post_content empty or
@@ -741,14 +808,57 @@ Blog Post:
 	// ── Error logging ────────────────────────────────────────────────────────
 
 	public static function log_error( string $source, string $message, int $post_id = 0 ): void {
-		$log = (array) get_option( 'rnrd_error_log', array() );
-
-		$log[] = array(
+		$entry = array(
 			'time'    => time(),
 			'source'  => $source,
 			'message' => mb_substr( $message, 0, 500 ),
 			'post_id' => $post_id,
 		);
+
+		/*
+		 * Locked, because this ring buffer is a read-modify-write and errors
+		 * arrive in bursts rather than evenly: a bulk run that fails ten posts
+		 * writes ten entries in a few seconds, which is exactly when two
+		 * writers overlap and one entry is lost. Bulk summaries and bulk FAQ
+		 * hold different locks and both call this, so neither of those
+		 * critical sections excludes the other here.
+		 *
+		 * The lost entry is the one that matters. This log is the only place
+		 * the plugin explains WHY a generation failed, and a provider outage
+		 * is precisely the case that fails many posts at once, so the burst
+		 * that loses entries is the burst somebody is about to read.
+		 *
+		 * The write is never skipped on a failed lock. A duplicated or
+		 * clobbered line is recoverable; silence on an error path is not, and
+		 * dropping the entry would trade a rare lost line for a guaranteed
+		 * one. Three bounded attempts, matching remember_catalog(), put this
+		 * read after the holder's write in every case except a holder that
+		 * stalls 150ms between its own get and set.
+		 */
+		$token  = null;
+		$locked = false;
+		if ( class_exists( 'RNRD_Atomic' ) ) {
+			// The lock is unfair: a writer inside a burst can retake it before a
+			// waiter's next try, and on a loaded host a holder can stall. Three
+			// tries (150ms) measurably let the waiter fall through and clobber an
+			// entry, so wait up to about five seconds. The lock TTL is 10s and the
+			// critical section is one get and one set, so this only ever costs
+			// time under real contention.
+			for ( $attempt = 0; $attempt < 100; $attempt++ ) {
+				$locked = RNRD_Atomic::acquire_lock( 'rnrd_error_log_lock', 10, $token );
+				if ( $locked ) {
+					break;
+				}
+				usleep( 50000 );
+			}
+		}
+
+		// The holder's write landed in the database, not in this request's
+		// option cache, so the read has to go past it.
+		wp_cache_delete( 'rnrd_error_log', 'options' );
+
+		$log   = (array) get_option( 'rnrd_error_log', array() );
+		$log[] = $entry;
 
 		// Keep last 50 entries.
 		if ( count( $log ) > 50 ) {
@@ -756,6 +866,10 @@ Blog Post:
 		}
 
 		update_option( 'rnrd_error_log', $log, false );
+
+		if ( $locked ) {
+			RNRD_Atomic::release_lock( 'rnrd_error_log_lock', $token );
+		}
 	}
 
 	public static function get_error_log(): array {

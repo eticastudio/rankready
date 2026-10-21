@@ -104,14 +104,6 @@ class RNRD_Markdown {
 	}
 
 	/**
-	 * Show a one-time, dismissible admin notice if Cloudflare APO is detected
-	 * AND markdown endpoints are enabled. Provides the exact Cache Rule snippet
-	 * the user needs to paste into Cloudflare → Caching → Cache Rules.
-	 *
-	 * The notice is only shown on RankReady's own admin pages so it doesn't
-	 * pollute every wp-admin screen.
-	 */
-	/**
 	 * Is Cloudflare APO active? APO caches HTML at the edge and ignores both
 	 * Vary: Accept and origin Cache-Control, so same-URL Accept negotiation is
 	 * unsafe there. Cheap to call per-request — RNRD_Cache::detect_active() is
@@ -125,6 +117,14 @@ class RNRD_Markdown {
 		return isset( $active['cloudflare-apo'] );
 	}
 
+	/**
+	 * Show a one-time, dismissible admin notice if Cloudflare APO is detected
+	 * AND markdown endpoints are enabled. Provides the exact Cache Rule snippet
+	 * the user needs to paste into Cloudflare → Caching → Cache Rules.
+	 *
+	 * The notice is only shown on RankReady's own admin pages so it doesn't
+	 * pollute every wp-admin screen.
+	 */
 	public static function maybe_cloudflare_apo_notice(): void {
 		// Only on RankReady screens — never spam other plugin pages.
 		$screen = function_exists( 'get_current_screen' ) ? get_current_screen() : null;
@@ -303,7 +303,8 @@ class RNRD_Markdown {
 			return;
 		}
 		self::$md_settings_bumped = true;
-		update_option( self::MD_SETTINGS_VER_OPT, substr( md5( uniqid( '', true ) ), 0, 12 ), false );
+		// Autoloaded: md_cache_key() reads it on every Markdown request.
+		update_option( self::MD_SETTINGS_VER_OPT, substr( md5( uniqid( '', true ) ), 0, 12 ), true );
 	}
 
 	/**
@@ -1588,16 +1589,6 @@ class RNRD_Markdown {
 	// enough. None of these hooks fire when no translation plugin is active,
 	// so the helper is a no-op on monolingual sites.
 
-	/**
-	 * Best-effort swap of $post to its translated counterpart for the active
-	 * locale (or the visitor's Accept-Language when no plugin language is set).
-	 *
-	 * Order: explicit lang query var → WPML → Polylang → original post.
-	 * Returns the original post if no translation plugin resolves anything.
-	 *
-	 * @param WP_Post $post Original post resolved from the URL.
-	 * @return WP_Post Translated post or the original if no translation exists.
-	 */
 	/** True when detect_request_language() fell through to Accept-Language. */
 	private static $lang_from_header = false;
 
@@ -1622,6 +1613,16 @@ class RNRD_Markdown {
 		return self::$negotiated_by_header;
 	}
 
+	/**
+	 * Best-effort swap of $post to its translated counterpart for the active
+	 * locale (or the visitor's Accept-Language when no plugin language is set).
+	 *
+	 * Order: explicit lang query var → WPML → Polylang → original post.
+	 * Returns the original post if no translation plugin resolves anything.
+	 *
+	 * @param WP_Post $post Original post resolved from the URL.
+	 * @return WP_Post Translated post or the original if no translation exists.
+	 */
 	public static function translate_post( WP_Post $post ): WP_Post {
 		self::$negotiated_by_header = false;
 
